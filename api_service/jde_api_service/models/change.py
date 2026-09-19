@@ -147,6 +147,13 @@ class Change(ApiModel):
     updated_at: str
     updated_by: str = ""
 
+    # Live status of an in-flight Receive/Improve/Check run (Section
+    # 12.1's driver), presentational only -- None once there is no run
+    # associated with this change, or once it has finished and been
+    # folded into user_story/state below.
+    processing_stage: Optional[Literal["receiving", "improving", "checking", "done", "failed"]] = None
+    processing_error: Optional[str] = None
+
     user_story: Optional[UserStory] = None
     story_approval: Optional[ApprovalRecord] = None
     architect_decision: Optional[ArchitectDecision] = None

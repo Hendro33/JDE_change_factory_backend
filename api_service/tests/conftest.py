@@ -57,7 +57,11 @@ def client(isolated_dirs):
     from fastapi.testclient import TestClient
     from jde_api_service.main import app
 
-    return TestClient(app)
+    # `with` triggers FastAPI's startup lifecycle (pilot-dataset
+    # seeding included) the same way a real `uvicorn` run does --
+    # without it, tests would see different behaviour than production.
+    with TestClient(app) as c:
+        yield c
 
 
 def headers(user: str = "u-hendro", customer: str | None = "vdb") -> dict:

@@ -87,6 +87,32 @@ def test_evidence_entries_are_surfaced_on_the_change(client):
     assert entries[0]["prevHash"] == "GENESIS"
 
 
+def test_malformed_complexity_signal_falls_back_to_unknown_instead_of_crashing(client):
+    # Regression: a real Check Agent run once passed a full sentence
+    # ("Unknown. Could not confirm...") instead of the exact enum
+    # token -- backlog.py stores whatever string a tool caller passes,
+    # with no validation of its own, and reading it straight into the
+    # strict Complexity literal crashed the whole request with a 500
+    # that the browser reported as a misleading CORS failure.
+    _make_backlog_story("S-MALFORMED-COMPLEXITY")
+    _link(None, "S-MALFORMED-COMPLEXITY", "vdb")
+
+    from jde_mcp_server import backlog as backlog_module
+    import json
+    import os
+
+    path = os.path.join(backlog_module.BACKLOG_DIR, "S-MALFORMED-COMPLEXITY.json")
+    with open(path, encoding="utf-8") as f:
+        record = json.load(f)
+    record["rough_complexity_signal"] = "Unknown. Could not confirm without further discovery."
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(record, f)
+
+    r = client.get("/changes/S-MALFORMED-COMPLEXITY", headers=headers())
+    assert r.status_code == 200
+    assert r.json()["complexitySignal"] == "Unknown"
+
+
 def test_metrics_and_activity_are_derived_not_hardcoded(client):
     r = client.get("/metrics", headers=headers())
     assert r.json()["totals"][0]["value"] == 0

@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 _MCP_SERVER_SRC = os.path.normpath(os.path.join(_THIS_DIR, "..", "..", "mcp_server"))
+_REPO_ROOT_DEFAULT = os.path.normpath(os.path.join(_THIS_DIR, "..", ".."))
 
 if _MCP_SERVER_SRC not in sys.path:
     try:
@@ -59,6 +60,12 @@ class Settings:
     demo_identity_header: str = "X-Demo-User-Id"
     demo_customer_header: str = "X-Customer-Id"
     default_identity_id: str = os.environ.get("JDE_API_DEFAULT_IDENTITY", "u-hendro")
+
+    # The repo root that orchestration_driver.py passes as the Claude
+    # Agent SDK session's cwd, so it discovers the EXISTING
+    # .claude/agents/*.md subagents and .mcp.json -- same directory a
+    # human running `claude` from the repo root would use.
+    repo_root: str = os.environ.get("JDE_API_REPO_ROOT", _REPO_ROOT_DEFAULT)
 
 
 settings = Settings()

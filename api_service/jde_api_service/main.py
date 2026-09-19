@@ -10,17 +10,35 @@ Run locally:
 
 from __future__ import annotations
 
-from fastapi import FastAPI
+import logging
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from .config import settings
+
+logger = logging.getLogger("jde_api_service")
 from .routers import change_requests, changes, session
+from .services.registry import get_change_request_service
+from .services.seed_service import ensure_bicycleworks_pilot_dataset
+
+
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    # Idempotent -- safe on every restart, never duplicates existing
+    # records. See services/seed_service.py.
+    ensure_bicycleworks_pilot_dataset(get_change_request_service())
+    yield
+
 
 app = FastAPI(
     title="JDE Change Factory API",
     description="Phase 1: read-only endpoints + direct-entry intake. "
     "See docs/ for the architecture analysis this implements.",
     version="0.1.0",
+    lifespan=_lifespan,
 )
 
 app.add_middleware(
@@ -34,6 +52,17 @@ app.add_middleware(
 app.include_router(session.router)
 app.include_router(changes.router)
 app.include_router(change_requests.router)
+
+
+@app.exception_handler(Exception)
+async def _unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    # FastAPI's exception handlers run INSIDE the CORS middleware, so
+    # the response below carries CORS headers -- Starlette's own
+    # default 500 (for anything with no registered handler) does not,
+    # which the browser then reports as a CORS failure rather than the
+    # real server error it's masking.
+    logger.exception("unhandled exception on %s %s", request.method, request.url.path)
+    return JSONResponse(status_code=500, content={"detail": "internal server error"})
 
 
 @app.get("/health", tags=["health"])

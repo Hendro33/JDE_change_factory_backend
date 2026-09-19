@@ -3,13 +3,13 @@ from __future__ import annotations
 from .conftest import headers
 
 
-def test_default_identity_is_consultant_with_three_customers(client):
+def test_default_identity_is_consultant_with_four_customers(client):
     r = client.get("/session")
     assert r.status_code == 200
     body = r.json()
     assert body["userId"] == "u-hendro"
     assert body["role"] == "ConsultIQ Consultant"
-    assert {c["id"] for c in body["customers"]} == {"vdb", "nhd", "mrv"}
+    assert {c["id"] for c in body["customers"]} == {"vdb", "nhd", "mrv", "bwm"}
     assert body["activeCustomerId"] == "vdb"
 
 

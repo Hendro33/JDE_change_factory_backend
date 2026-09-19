@@ -1,12 +1,19 @@
 [project]
 name = "jde-api-service"
 version = "0.1.0"
-description = "REST API boundary for the JDE Change Factory frontend -- Phase 1 (read-only + direct-entry intake). Sibling application to mcp_server; imports it read-only and never modifies its behaviour."
+description = "REST API boundary for the JDE Change Factory frontend. Sibling application to mcp_server; imports it read-only and never modifies its behaviour."
 requires-python = ">=3.10"
 dependencies = [
     "fastapi>=0.110.0",
     "uvicorn[standard]>=0.27.0",
     "pydantic>=2.0.0",
+    # Drives the EXISTING .claude/agents/*.md subagents via Claude Code --
+    # a different product from the Claude API SDK. Requires an isolated
+    # venv: its transitive `mcp` dependency conflicts with the system
+    # cryptography/cffi install that the real MCP server subprocess
+    # (spawned by .mcp.json, which we cannot modify) depends on. See
+    # services/orchestration_driver.py.
+    "claude-agent-sdk>=0.1.0",
 ]
 
 [project.optional-dependencies]

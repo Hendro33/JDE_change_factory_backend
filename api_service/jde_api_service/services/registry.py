@@ -18,6 +18,7 @@ from ..config import settings
 from .change_request_service import ChangeRequestService
 from .change_service import ChangeService
 from .customer_link_service import CustomerLinkService
+from .enhancement_run_service import EnhancementRunService
 from .metrics_service import MetricsService
 
 
@@ -29,8 +30,14 @@ def get_customer_link_service() -> CustomerLinkService:
     return CustomerLinkService(os.path.join(settings.data_dir, "customer_links"))
 
 
+def get_enhancement_run_service() -> EnhancementRunService:
+    return EnhancementRunService(os.path.join(settings.data_dir, "enhancement_runs"))
+
+
 def get_change_service() -> ChangeService:
-    return ChangeService(get_change_request_service(), get_customer_link_service())
+    return ChangeService(
+        get_change_request_service(), get_customer_link_service(), get_enhancement_run_service()
+    )
 
 
 def get_metrics_service() -> MetricsService:

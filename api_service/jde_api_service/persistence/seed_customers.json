@@ -1,5 +1,6 @@
 [
   { "id": "vdb", "name": "Van den Berg Logistiek", "short_name": "Van den Berg", "tools_release": "9.2.7", "environment": "DEV" },
   { "id": "nhd", "name": "Noord-Holland Dairy", "short_name": "NH Dairy", "tools_release": "9.2.8", "environment": "DEV" },
-  { "id": "mrv", "name": "Maasrivier Industrials", "short_name": "Maasrivier", "tools_release": "9.2.5", "environment": "DEV" }
+  { "id": "mrv", "name": "Maasrivier Industrials", "short_name": "Maasrivier", "tools_release": "9.2.5", "environment": "DEV" },
+  { "id": "bwm", "name": "BicycleWorks Manufacturing BV", "short_name": "BicycleWorks", "tools_release": "9.2.7", "environment": "DEV", "_tools_release_note": "not stated by the customer -- placeholder pending real confirmation" }
 ]

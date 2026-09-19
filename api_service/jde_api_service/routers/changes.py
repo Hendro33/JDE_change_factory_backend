@@ -1,11 +1,19 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 
+from ..config import settings
 from ..dependencies import AuthContext, require_customer_access
 from ..models.change import Change
 from ..models.metrics import ActivityEntry, FactoryMetrics
-from ..services.registry import get_change_service, get_metrics_service
+from ..services.orchestration_driver import run_enhancement
+from ..services.registry import (
+    get_change_request_service,
+    get_change_service,
+    get_customer_link_service,
+    get_enhancement_run_service,
+    get_metrics_service,
+)
 
 router = APIRouter(tags=["changes"])
 
@@ -23,6 +31,44 @@ def get_change(change_id: str, ctx: AuthContext = Depends(require_customer_acces
         # different customer must look identical to one that doesn't
         # exist at all -- confirming existence is itself a leak.
         raise HTTPException(status_code=404, detail=f"no such change: {change_id}")
+    return change
+
+
+@router.post("/changes/{change_id}/enhance", response_model=Change, status_code=202)
+async def enhance_change(
+    change_id: str,
+    background_tasks: BackgroundTasks,
+    ctx: AuthContext = Depends(require_customer_access),
+) -> Change:
+    """Starts Receive -> Improve -> Check (orchestration_driver.py)
+    against an existing, not-yet-promoted ChangeRequest, as a
+    background task -- a real run can take minutes, so this returns
+    immediately (202) rather than blocking the request. Poll
+    GET /changes/{id} for progress via its processingStage field."""
+    change_request_service = get_change_request_service()
+    cr = change_request_service.get(change_id)
+    if cr is None or cr.customer_id != ctx.customer_id:
+        raise HTTPException(status_code=404, detail=f"no such change request: {change_id}")
+
+    run_service = get_enhancement_run_service()
+    existing = run_service.get(change_id)
+    if existing is not None and existing.stage in ("receiving", "improving", "checking"):
+        raise HTTPException(status_code=409, detail=f"enhancement already in progress for {change_id}")
+
+    source = ", ".join(p for p in (cr.business_source, cr.source_reference) if p)
+    background_tasks.add_task(
+        run_enhancement,
+        request_id=change_id,
+        story_id=change_id,
+        source=source,
+        raw_content=cr.raw_content,
+        repo_root=settings.repo_root,
+        run_service=run_service,
+        link_service=get_customer_link_service(),
+    )
+
+    change = get_change_service().get_for_customer(change_id, ctx.customer_id)
+    assert change is not None  # just confirmed cr exists above
     return change
 
 

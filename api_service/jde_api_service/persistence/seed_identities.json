@@ -9,6 +9,6 @@
     "id": "u-hendro",
     "display_name": "Hendro",
     "role": "ConsultIQ Consultant",
-    "customer_ids": ["vdb", "nhd", "mrv"]
+    "customer_ids": ["vdb", "nhd", "mrv", "bwm"]
   }
 ]
