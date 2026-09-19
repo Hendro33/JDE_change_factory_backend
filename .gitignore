@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+
+# Runtime data — these are per-engagement records, not source code.
+# Never commit them: they contain customer story content, approval
+# decisions and evidence trails.
+backlog/
+changes/
+evidence/
+
+# Per-customer scope. Contains the approved applications, versions and
+# options for a real engagement — treat as customer configuration, not
+# something to publish in a shared repo.
+scope.json
+scope.*.json
+!scope.example.json
+
+# Local secrets. The AIS service account must never reach git.
+.env
+.env.local
+
+.DS_Store
