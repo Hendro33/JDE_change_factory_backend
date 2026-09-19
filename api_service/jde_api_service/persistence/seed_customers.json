@@ -1,0 +1,5 @@
+[
+  { "id": "vdb", "name": "Van den Berg Logistiek", "short_name": "Van den Berg", "tools_release": "9.2.7", "environment": "DEV" },
+  { "id": "nhd", "name": "Noord-Holland Dairy", "short_name": "NH Dairy", "tools_release": "9.2.8", "environment": "DEV" },
+  { "id": "mrv", "name": "Maasrivier Industrials", "short_name": "Maasrivier", "tools_release": "9.2.5", "environment": "DEV" }
+]

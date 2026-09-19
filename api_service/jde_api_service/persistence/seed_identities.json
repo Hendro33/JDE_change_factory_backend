@@ -1,0 +1,14 @@
+[
+  {
+    "id": "u-ellen",
+    "display_name": "Ellen Vos",
+    "role": "Application Manager",
+    "customer_ids": ["vdb"]
+  },
+  {
+    "id": "u-hendro",
+    "display_name": "Hendro",
+    "role": "ConsultIQ Consultant",
+    "customer_ids": ["vdb", "nhd", "mrv"]
+  }
+]
