@@ -23,8 +23,10 @@ from jde_mcp_server import approval
 
 from ..config import settings
 from ..dependencies import AuthContext, require_customer_access
+from ..models.architecture_review import ArchitectureReviewRun, AskAboutSolutionInput
 from ..models.domain_review import GovernanceDecisionInput
 from ..services.architecture_driver import run_architecture_review
+from ..services.conversation_driver import ConversationError, ask_about_solution
 from ..services.registry import (
     get_architecture_review_service,
     get_change_service,
@@ -46,6 +48,65 @@ def _require_queued_change(change_id: str, customer_id: str):
             "the Application Manager has authorised it for delivery (Gate 1)",
         )
     return change
+
+
+@router.get("/changes/{change_id}/architecture-review", response_model=ArchitectureReviewRun)
+def get_architecture_review(
+    change_id: str, ctx: AuthContext = Depends(require_customer_access)
+) -> ArchitectureReviewRun:
+    """Exposes the raw ArchitectureReviewRun -- including history (every
+    completed analysis, never overwritten) and conversation ("Ask Jade
+    about this solution" turns) -- to the frontend. Read-only; nothing
+    here starts or changes a run."""
+    _require_queued_change(change_id, ctx.customer_id)
+    run = get_architecture_review_service().get(change_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail=f"no architecture review yet for {change_id}")
+    return run
+
+
+@router.post("/changes/{change_id}/architecture-review/ask", response_model=ArchitectureReviewRun)
+async def ask_about_solution_endpoint(
+    change_id: str, payload: AskAboutSolutionInput, ctx: AuthContext = Depends(require_customer_access)
+) -> ArchitectureReviewRun:
+    """"Ask Jade about this solution" -- Architect-backed, scoped to the
+    solution already analysed for this story, never a general chatbot.
+    Explanation never touches the analysis. A "recommend_reanalysis"
+    turn is also never applied here -- there is no draft payload to
+    apply, only a pointer back at the EXISTING manual retrigger
+    (POST .../architecture-review) for an actual re-run, which appends
+    its own new history entry rather than overwriting this one."""
+    _require_queued_change(change_id, ctx.customer_id)
+    run_service = get_architecture_review_service()
+    run = run_service.get(change_id)
+    if run is None or not run.history:
+        raise HTTPException(status_code=409, detail="no completed architecture review to discuss yet for this change")
+    if not payload.question.strip():
+        raise HTTPException(status_code=422, detail="a question is required")
+
+    try:
+        result = await ask_about_solution(
+            story_id=change_id,
+            latest_version=run.history[-1],
+            question=payload.question,
+            asked_by=payload.asked_by,
+            prior_turns=run.conversation,
+            repo_root=settings.repo_root,
+            customer_id=ctx.customer_id,
+        )
+    except ConversationError as exc:
+        raise HTTPException(status_code=502, detail=f"could not get an answer: {exc}") from exc
+
+    updated = run_service.append_conversation_turn(
+        change_id,
+        asked_by=payload.asked_by,
+        question=payload.question,
+        answer=result["answer"],
+        kind=result["kind"],
+        identity_id=ctx.identity.id,
+    )
+    assert updated is not None
+    return updated
 
 
 @router.post("/changes/{change_id}/architecture-review", status_code=202)

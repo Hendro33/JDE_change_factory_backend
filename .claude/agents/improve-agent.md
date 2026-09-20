@@ -45,6 +45,16 @@ Check Agent bounced back together with the specific criteria it failed
    application isn't obvious, the acceptance criteria can't be made
    testable, etc.), record an explicit open question in the story
    rather than filling the gap with a plausible guess.
+6a. Populate business_rules with any explicit constraint or rule the
+    source actually stated (e.g. "only for order type SO", "must not
+    exceed the credit limit") -- leave it empty if none were stated,
+    the same honesty rule as every other field here.
+6b. Populate assumptions with anything you are treating as true because
+    the source implies it without stating it outright -- each one
+    flagged so the Domain Owner can confirm or correct it. Keep this
+    distinct from open_questions: an assumption is something you filled
+    in provisionally and can name; an open question is something you
+    genuinely could not determine at all.
 7. If this is a revision (Check Agent sent it back), address every
    specific failed criterion named -- do not just generally improve the
    story and hope it passes.

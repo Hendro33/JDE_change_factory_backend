@@ -61,6 +61,8 @@ After the pipeline reaches a final outcome, respond with ONLY a single fenced js
     "business_context": "<specific business context>",
     "acceptance_criteria": [{"id": "AC1", "text": "...", "verified_by": "T1"}],
     "test_script": [{"id": "T1", "action": "...", "expected": "..."}],
+    "business_rules": ["<explicit constraints/rules the source actually stated, or empty>"],
+    "assumptions": ["<things you are treating as true because the source implies them, flagged for confirmation -- distinct from open_questions>"],
     "open_questions": ["<anything the agents could not resolve with confidence>"],
     "quality_status": "passed" | "needs_revision" | "needs_human_input",
     "revision_count": <integer, how many Improve/Check cycles actually happened>
@@ -72,7 +74,7 @@ After the pipeline reaches a final outcome, respond with ONLY a single fenced js
   "check_outcome": "proposed_to_backlog" | "needs_revision" | "needs_human_input",
   "failed_criteria": ["<only when check_outcome is not proposed_to_backlog>"]
 }
-Leave any business_impact field as an empty string if the source did not state it -- never invent a value, per each agent's own instructions.
+Leave any business_impact field as an empty string if the source did not state it -- never invent a value, per each agent's own instructions. Same rule for business_rules and assumptions: an empty list means none were stated/needed, never a guess dressed up as one.
 """.strip()
 
 
@@ -122,6 +124,8 @@ def _user_story_from_summary(raw: dict) -> UserStory:
             TestStep(id=t.get("id", ""), action=t.get("action", ""), expected=t.get("expected", ""))
             for t in (us.get("test_script") or [])
         ],
+        business_rules=list(us.get("business_rules") or []),
+        assumptions=list(us.get("assumptions") or []),
         open_questions=list(us.get("open_questions") or []),
         quality_status=_coerce_enum(
             us.get("quality_status"),

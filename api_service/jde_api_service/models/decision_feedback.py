@@ -33,6 +33,13 @@ DecisionFeedbackKind = Literal[
     "application_manager_rejection",
     "exact_change_approval",
     "exact_change_rejection",
+    # An Application Manager, asking Jade about an already-approved
+    # requirement (Architecture Review's "Ask Jade about this
+    # requirement"), surfaced something that may contradict or
+    # materially change it -- routed back to domain_owner_reviewing
+    # rather than silently amended. See domain_governance.py's
+    # request_requirement_reconsideration.
+    "requirement_reconsideration_requested",
 ]
 
 FeedbackReasonCode = Literal[

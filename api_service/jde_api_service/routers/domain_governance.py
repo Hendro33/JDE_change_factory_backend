@@ -31,12 +31,14 @@ from ..dependencies import AuthContext, require_customer_access
 from ..models.business_domain import BusinessDomain
 from ..models.delivery_queue import DeliveryQueueEntry
 from ..models.domain_review import (
+    AskAboutRequirementInput,
     AssignDomainInput,
     DomainOwnerEditInput,
     DomainReview,
     GovernanceDecisionInput,
 )
 from ..services.architecture_driver import run_architecture_review
+from ..services.conversation_driver import ConversationError, ask_about_requirement
 from ..services.registry import (
     get_architecture_review_service,
     get_business_domain_service,
@@ -46,6 +48,16 @@ from ..services.registry import (
     get_domain_review_service,
 )
 from ..services.review_driver import ReviewerAgentError, run_reviewer_agent
+
+# Stages past Domain Owner approval from which a human may explicitly
+# flag "this requirement may need reconsideration" (Architecture
+# Review's "Ask Jade about this requirement", typically) -- see
+# request_requirement_reconsideration below. A proposed_amendment
+# returned by /ask from ANY of these stages is display-only: the
+# existing /domain-review/edit endpoint that would apply it already
+# refuses outside domain_owner_reviewing, so it can never be applied
+# directly from here -- this set only gates the explicit reopen action.
+_RECONSIDERABLE_STAGES = {"domain_owner_approved", "ready_for_application_manager", "application_manager_approved"}
 
 router = APIRouter(tags=["domain-governance"])
 
@@ -180,6 +192,95 @@ async def submit_domain_owner_edit(
         note=payload.note,
     )
     return service.set_stage(change_id, "domain_owner_reviewing")
+
+
+@router.post("/changes/{change_id}/domain-review/ask", response_model=DomainReview)
+async def ask_about_requirement_endpoint(
+    change_id: str, payload: AskAboutRequirementInput, ctx: AuthContext = Depends(require_customer_access)
+) -> DomainReview:
+    """"Ask Jade about this requirement" -- requirement collaboration,
+    not a general chatbot; every turn is scoped to this one requirement
+    and answered by the same improve-agent-backed driver either a
+    Domain Owner (mid review) or an Application Manager (on an
+    already-approved requirement, from Architecture Review) asks.
+
+    Explanation never touches the requirement -- it is only ever
+    recorded as a conversation turn. A proposed amendment is recorded
+    the same way and returned for review; it is NEVER applied here.
+    Applying one is a separate, explicit human action through the
+    EXISTING /domain-review/edit endpoint, which already refuses
+    outside domain_owner_reviewing -- so a proposed_amendment surfaced
+    to an Application Manager on an already-approved requirement can be
+    seen, never silently applied. See request_requirement_reconsideration
+    below for what an Application Manager does with one instead."""
+    _change_with_story(change_id, ctx.customer_id)
+    service = get_domain_review_service()
+    review = service.get(change_id)
+    if review is None or not review.history:
+        raise HTTPException(status_code=409, detail="no requirement to discuss yet for this change")
+    if not payload.question.strip():
+        raise HTTPException(status_code=422, detail="a question is required")
+
+    current_story = review.history[-1].user_story
+    try:
+        result = await ask_about_requirement(
+            story_id=change_id,
+            current_story=current_story,
+            question=payload.question,
+            asked_by=payload.asked_by,
+            prior_turns=review.conversation,
+            repo_root=settings.repo_root,
+            customer_id=ctx.customer_id,
+        )
+    except ConversationError as exc:
+        raise HTTPException(status_code=502, detail=f"could not get an answer: {exc}") from exc
+
+    return service.append_conversation_turn(
+        change_id,
+        asked_by=payload.asked_by,
+        question=payload.question,
+        answer=result["answer"],
+        kind=result["kind"],
+        proposed_user_story=result["proposed_user_story"],
+        identity_id=ctx.identity.id,
+    )
+
+
+@router.post("/changes/{change_id}/domain-review/request-reconsideration", response_model=DomainReview)
+def request_requirement_reconsideration(
+    change_id: str, payload: GovernanceDecisionInput, ctx: AuthContext = Depends(require_customer_access)
+) -> DomainReview:
+    """The only way back from past Domain Owner approval: an
+    Application Manager, having asked Jade about the already-approved
+    requirement and received a proposed_amendment (or having their own
+    reason), explicitly flags that it may need to be reconsidered.
+    Reopens the SAME domain_owner_reviewing stage the original review
+    used -- no new lifecycle state -- so the Domain Owner's next
+    decision goes through exactly the existing governed/versioned flow
+    (approve again, edit, or reject). Never automatic: this is the
+    explicit human action the design requires instead of silently
+    amending a business-approved requirement."""
+    _change_with_story(change_id, ctx.customer_id)
+    service = get_domain_review_service()
+    review = service.get(change_id)
+    if review is None or review.stage not in _RECONSIDERABLE_STAGES:
+        raise HTTPException(
+            status_code=409,
+            detail=f"cannot request reconsideration from stage {review.stage if review else 'none'}",
+        )
+    if not payload.note:
+        raise HTTPException(status_code=422, detail="explain why this requirement needs reconsideration")
+
+    updated = service.request_reconsideration(change_id, requested_by=payload.decided_by, note=payload.note, identity_id=ctx.identity.id)
+    get_decision_feedback_service().record(
+        change_id=change_id,
+        customer_id=ctx.customer_id,
+        kind="requirement_reconsideration_requested",
+        decided_by=payload.decided_by,
+        identity_id=ctx.identity.id,
+        note=payload.note,
+    )
+    return updated
 
 
 @router.post("/changes/{change_id}/domain-review/approve", response_model=DomainReview)

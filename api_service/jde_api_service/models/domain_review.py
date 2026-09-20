@@ -62,6 +62,59 @@ class StoryVersion(ApiModel):
     captured_at: str
 
 
+# ---------------------------------------------------------------------
+# "Ask Jade about this requirement" (requirement collaboration -- not a
+# generic chatbot; every turn is scoped to this one requirement).
+# Reachable from User Story Review (Domain Owner, mid-review) and from
+# Architecture Review (Application Manager, on an already-approved
+# requirement). Answered by the SAME improve-agent-backed driver either
+# way (conversation_driver.py) -- there is no separate "agent" for this,
+# reusing Improve's own knowledge of the requirement.
+#
+# kind distinguishes the outcomes the design requires:
+#   "explanation"          -- answers the question, changes nothing.
+#   "proposed_amendment"   -- what was said looks like new information
+#                              that should change the requirement. The
+#                              draft is attached (proposed_user_story) but
+#                              NEVER auto-applied. It only ever reaches the
+#                              authoritative record if a human explicitly
+#                              submits it through the EXISTING
+#                              /domain-review/edit endpoint (which already
+#                              enforces "only while domain_owner_reviewing,
+#                              always through Improve, always versioned").
+#                              Asked from Architecture Review, past Domain
+#                              Owner approval, that endpoint is correctly
+#                              unreachable (wrong stage) -- see
+#                              request_requirement_reconsideration below
+#                              for the only way forward from there.
+#   "recommend_reanalysis" -- solution-side only ("Ask Jade about this
+#                              solution", architecture_review.py's own
+#                              ArchitectureReviewRun.conversation). The
+#                              Architect can't produce an inline draft the
+#                              way Improve does for a requirement -- a
+#                              real re-analysis is a full Architecture
+#                              Review run, so this kind only ever points
+#                              back at the EXISTING manual retrigger
+#                              endpoint (POST .../architecture-review),
+#                              never applies anything itself.
+# ---------------------------------------------------------------------
+ConversationTurnKind = Literal["explanation", "proposed_amendment", "recommend_reanalysis"]
+
+
+class ConversationTurn(ApiModel):
+    turn_id: str
+    asked_by: str
+    question: str
+    answer: str
+    kind: ConversationTurnKind
+    # Only present when kind == "proposed_amendment" -- a full draft
+    # UserStory, never a partial diff, so the review surface is always
+    # "here is the whole requirement as Jade would revise it."
+    proposed_user_story: Optional[UserStory] = None
+    asked_at: str
+    identity_id: Optional[str] = None
+
+
 class DomainReview(ApiModel):
     change_id: str
     business_domain_id: Optional[str] = None
@@ -72,6 +125,9 @@ class DomainReview(ApiModel):
     domain_classification_note: str = ""
     stage: DomainReviewStage = "ready_for_domain_owner"
     history: list[StoryVersion] = []
+    # Append-only, same evidence convention as history -- see
+    # ConversationTurn's own docstring above.
+    conversation: list[ConversationTurn] = []
     domain_owner_approval: Optional[ApprovalRecord] = None
     application_manager_approval: Optional[ApprovalRecord] = None
     updated_at: str
@@ -102,3 +158,8 @@ class DomainOwnerEditInput(ApiModel):
     edited_by: str
     note: str = ""
     user_story: UserStory
+
+
+class AskAboutRequirementInput(ApiModel):
+    asked_by: str
+    question: str

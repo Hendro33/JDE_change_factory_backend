@@ -54,6 +54,15 @@ class UserStory(ApiModel):
     business_context: str = ""
     acceptance_criteria: list[AcceptanceCriterion] = []
     test_script: list[TestStep] = []
+    # Explicit constraints/rules the source actually stated (e.g. "only
+    # for order type SO", "must not exceed the credit limit") -- never
+    # inferred or invented; empty means none were stated, not "none
+    # exist".
+    business_rules: list[str] = []
+    # Things Jade is treating as true because the source implies them,
+    # flagged for the Domain Owner to confirm -- distinct from
+    # open_questions, which are gaps Jade could not resolve at all.
+    assumptions: list[str] = []
     open_questions: list[str] = []
     quality_status: Literal["draft", "needs_revision", "passed", "needs_human_input"] = "passed"
     revision_count: int = 0

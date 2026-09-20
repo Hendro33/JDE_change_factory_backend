@@ -15,8 +15,10 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Optional
 
+import uuid
+
 from ..models.change import ApprovalRecord, UserStory
-from ..models.domain_review import DomainReview, DomainReviewStage, StoryVersion
+from ..models.domain_review import ConversationTurn, ConversationTurnKind, DomainReview, DomainReviewStage, StoryVersion
 from ..persistence.json_file_store import JsonFileStore
 
 
@@ -115,6 +117,34 @@ class DomainReviewService:
         self._save(review)
         return review
 
+    def append_conversation_turn(
+        self,
+        change_id: str,
+        *,
+        asked_by: str,
+        question: str,
+        answer: str,
+        kind: ConversationTurnKind,
+        proposed_user_story: Optional[UserStory] = None,
+        identity_id: Optional[str] = None,
+    ) -> DomainReview:
+        review = self._require(change_id)
+        review.conversation.append(
+            ConversationTurn(
+                turn_id=f"CONV-{uuid.uuid4().hex[:8]}",
+                asked_by=asked_by,
+                question=question,
+                answer=answer,
+                kind=kind,
+                proposed_user_story=proposed_user_story,
+                asked_at=_now(),
+                identity_id=identity_id,
+            )
+        )
+        review.updated_at = _now()
+        self._save(review)
+        return review
+
     def record_domain_owner_approval(
         self, change_id: str, approved_by: str, note: str = "", identity_id: Optional[str] = None
     ) -> DomainReview:
@@ -205,6 +235,31 @@ class DomainReviewService:
             identity_id=identity_id,
         )
         review.stage = "application_manager_rejected"
+        review.updated_at = _now()
+        self._save(review)
+        return review
+
+    def request_reconsideration(
+        self, change_id: str, *, requested_by: str, note: str, identity_id: Optional[str] = None
+    ) -> DomainReview:
+        """An Application Manager, asking Jade about an already-approved
+        requirement (Architecture Review's "Ask Jade about this
+        requirement"), surfaced something that may contradict or
+        materially change it. This is the only way back from past
+        Domain Owner approval: reopens the SAME domain_owner_reviewing
+        stage the original review used (no new stage value), so the
+        Domain Owner's next decision -- approve again, edit, or reject
+        -- goes through exactly the existing governed/versioned flow.
+        Never called automatically; the router requires an explicit
+        human action to reach this. Does not touch mcp_server/the
+        Delivery Queue -- same "Domain Owner side never implies Gate 2"
+        split every other Domain Owner action in this module already
+        keeps; a change already in the Delivery Queue stays there while
+        its requirement is reopened, an honest, documented limitation
+        rather than new cross-system machinery this increment doesn't
+        need."""
+        review = self._require(change_id)
+        review.stage = "domain_owner_reviewing"
         review.updated_at = _now()
         self._save(review)
         return review

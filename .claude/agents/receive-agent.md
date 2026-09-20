@@ -18,9 +18,10 @@ story_id (generate a new stable id), source, business_context,
 user_story, acceptance_criteria, test_script, business_value, status
 (set to "draft"), quality_status, revision_count (0), created_by,
 created_at. Also create empty placeholders for business_impact
-(Section 3.6's five criteria) and rough_complexity_signal -- you do not
-populate these, the Improve Agent does; you just make sure the fields
-exist so nothing downstream has to guess at the shape.
+(Section 3.6's five criteria), business_rules, assumptions and
+rough_complexity_signal -- you do not populate these, the Improve Agent
+does; you just make sure the fields exist so nothing downstream has to
+guess at the shape.
 
 If a field cannot be populated from the raw draft, leave it explicitly
 empty or null -- do not invent plausible-sounding content to fill a gap.

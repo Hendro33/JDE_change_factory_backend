@@ -23,8 +23,26 @@ from typing import Literal, Optional
 
 from .base import ApiModel
 from .change import ArchitectDecision, ImplementationSpecification
+from .domain_review import ConversationTurn
 
 ArchitectureRunStage = Literal["analyzing", "done", "failed"]
+
+
+class ArchitectAnalysisVersion(ApiModel):
+    """One completed Architecture Review run's reasoning, kept forever.
+
+    Same "evidence, not a status flag" convention as domain_review.py's
+    StoryVersion: complete() below appends here on every run instead of
+    overwriting architect_decision/implementation_spec in place, so a
+    re-analysis (whether from the manual retrigger or from a
+    recommend_reanalysis conversation turn) never silently discards the
+    Architect's prior reasoning.
+    """
+
+    architect_decision: ArchitectDecision
+    implementation_spec: ImplementationSpecification
+    note: str = ""
+    captured_at: str
 
 
 class ArchitectureReviewRun(ApiModel):
@@ -32,6 +50,21 @@ class ArchitectureReviewRun(ApiModel):
     stage: ArchitectureRunStage
     started_at: str
     updated_at: str
+    # "Current" reasoning -- kept for backward compatibility with every
+    # existing caller that reads these two fields directly. Always equal
+    # to history[-1]'s architect_decision/implementation_spec once
+    # history is non-empty.
     architect_decision: Optional[ArchitectDecision] = None
     implementation_spec: Optional[ImplementationSpecification] = None
     error: Optional[str] = None
+    history: list[ArchitectAnalysisVersion] = []
+    # "Ask Jade about this solution" -- same ConversationTurn model
+    # domain_review.py uses for "Ask Jade about this requirement", reused
+    # rather than duplicated. See conversation_driver.ask_about_solution
+    # for how the Architect-backed answers populate this.
+    conversation: list[ConversationTurn] = []
+
+
+class AskAboutSolutionInput(ApiModel):
+    asked_by: str
+    question: str
