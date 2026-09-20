@@ -44,7 +44,7 @@ async def _lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="JDE Change Factory API",
+    title="Jade API",
     description="Phase 1: read-only endpoints + direct-entry intake. "
     "See docs/ for the architecture analysis this implements.",
     version="0.1.0",
