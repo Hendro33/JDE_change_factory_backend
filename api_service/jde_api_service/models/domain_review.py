@@ -36,8 +36,19 @@ DomainReviewStage = Literal[
     "domain_owner_requested_revision",
     "reviewer_agent_refining",
     "domain_owner_approved",
+    # Terminal: the Domain Owner decided the requirement itself should
+    # not proceed -- distinct from a revision request, which stays in
+    # play. Recorded entirely in this sidecar, same as approval; never
+    # calls into mcp_server (Section 7's "Domain Owner never implies
+    # authorisation to proceed" applies symmetrically to a rejection).
+    "domain_owner_rejected",
     "ready_for_application_manager",
     "application_manager_approved",
+    # Terminal: Gate 1 rejection. The only rejection stage that also
+    # reaches mcp_server -- application_manager_reject() below calls
+    # backlog.reject() (unmodified), the same real Gate 2 control
+    # application_manager_approve() already calls backlog.approve() on.
+    "application_manager_rejected",
 ]
 
 StoryVersionLabel = Literal["ai_generated", "domain_owner_edit", "reviewer_agent_revision"]

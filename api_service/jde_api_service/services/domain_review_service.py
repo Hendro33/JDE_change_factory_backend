@@ -162,5 +162,52 @@ class DomainReviewService:
         self._save(review)
         return review
 
+    def record_domain_owner_rejection(
+        self, change_id: str, decided_by: str, note: str = "", identity_id: Optional[str] = None
+    ) -> DomainReview:
+        """Terminal: the Domain Owner decided this requirement should
+        not proceed at all -- distinct from record_domain_owner_approval
+        above and from an edit (which stays in play). Reuses the same
+        ApprovalRecord field the approval uses, just with status
+        "rejected" -- exactly how ApprovalRecord already models a
+        rejection everywhere else in this system (Section 6.5)."""
+        review = self._require(change_id)
+        review.domain_owner_approval = ApprovalRecord(
+            approval_id=f"AP-{change_id}-DO",
+            kind="domain_owner",
+            status="rejected",
+            approved_by=decided_by,
+            approved_at=_now(),
+            note=note,
+            identity_id=identity_id,
+        )
+        review.stage = "domain_owner_rejected"
+        review.updated_at = _now()
+        self._save(review)
+        return review
+
+    def record_application_manager_rejection(
+        self, change_id: str, decided_by: str, note: str = "", identity_id: Optional[str] = None
+    ) -> DomainReview:
+        """Terminal: Gate 1 rejection. The caller is responsible for
+        also calling backlog.reject() (mcp_server, unmodified) -- this
+        method only records the sidecar side, the same split
+        record_application_manager_approval already has with
+        backlog.approve()."""
+        review = self._require(change_id)
+        review.application_manager_approval = ApprovalRecord(
+            approval_id=f"AP-{change_id}-AM",
+            kind="application_manager",
+            status="rejected",
+            approved_by=decided_by,
+            approved_at=_now(),
+            note=note,
+            identity_id=identity_id,
+        )
+        review.stage = "application_manager_rejected"
+        review.updated_at = _now()
+        self._save(review)
+        return review
+
     def _save(self, review: DomainReview) -> None:
         self._store.put(review.change_id, review.model_dump(mode="json", by_alias=False))

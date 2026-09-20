@@ -355,6 +355,146 @@ def test_application_manager_approval_is_a_separate_step_that_clears_gate_2(clie
     assert r2.json()["state"] == "APPROVED"
 
 
+# ---------------------------------------------------------------------
+# Rejection -- terminal, distinct from a revision request, requires a
+# reason. Domain Owner rejection stays in the sidecar; Application
+# Manager rejection is the one that also reaches the real backlog.py.
+# ---------------------------------------------------------------------
+
+def test_cannot_reject_before_reviewing(client, monkeypatch):
+    change_id = _seed_and_enhance_t001(client, monkeypatch)
+    client.get(f"/changes/{change_id}/domain-review", headers=headers(customer="bwm"))
+    r = client.post(
+        f"/changes/{change_id}/domain-review/reject",
+        headers=headers(customer="bwm"),
+        json={"decidedBy": "Domain Owner", "note": "Not a real requirement."},
+    )
+    assert r.status_code == 409
+
+
+def test_domain_owner_reject_requires_a_reason(client, monkeypatch):
+    change_id = _seed_and_enhance_t001(client, monkeypatch)
+    client.get(f"/changes/{change_id}/domain-review", headers=headers(customer="bwm"))
+    client.post(f"/changes/{change_id}/domain-review/start", headers=headers(customer="bwm"), json={"decidedBy": "Domain Owner"})
+    r = client.post(
+        f"/changes/{change_id}/domain-review/reject",
+        headers=headers(customer="bwm"),
+        json={"decidedBy": "Ellen Vos"},
+    )
+    assert r.status_code == 422
+
+
+def test_domain_owner_reject_is_terminal_and_never_touches_backlog(client, monkeypatch):
+    change_id = _seed_and_enhance_t001(client, monkeypatch)
+    client.get(f"/changes/{change_id}/domain-review", headers=headers(customer="bwm"))
+    client.post(f"/changes/{change_id}/domain-review/start", headers=headers(customer="bwm"), json={"decidedBy": "Domain Owner"})
+
+    r = client.post(
+        f"/changes/{change_id}/domain-review/reject",
+        headers=headers(customer="bwm"),
+        json={"decidedBy": "Ellen Vos", "note": "This need no longer exists.", "rejectionReason": "duplicate_or_superseded"},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["stage"] == "domain_owner_rejected"
+    assert body["domainOwnerApproval"]["kind"] == "domain_owner"
+    assert body["domainOwnerApproval"]["status"] == "rejected"
+    assert body["domainOwnerApproval"]["approvedBy"] == "Ellen Vos"
+    assert body["applicationManagerApproval"] is None
+
+    # Never reached mcp_server -- Gate 2 has no record of this at all,
+    # and the Change's own state is untouched by a Domain Owner
+    # decision, same as an approval never jumping it to APPROVED.
+    with pytest.raises(backlog.StoryNotApproved):
+        backlog.require_approved(change_id)
+    r2 = client.get(f"/changes/{change_id}", headers=headers(customer="bwm"))
+    assert r2.json()["state"] == "BACKLOG_READY"
+    assert r2.json()["domainReviewStage"] == "domain_owner_rejected"
+
+    # Terminal: cannot then approve or edit from a rejected stage.
+    r3 = client.post(
+        f"/changes/{change_id}/domain-review/approve",
+        headers=headers(customer="bwm"),
+        json={"decidedBy": "Ellen Vos"},
+    )
+    assert r3.status_code == 409
+
+    # And it drops out of User Story Review's own queue definition
+    # (mirrors PRE_DOMAIN_OWNER_APPROVAL_STAGES in metrics_service.py).
+    r4 = client.get("/metrics", headers=headers(customer="bwm"))
+    # Nothing else in this fixture reaches BACKLOG_READY, so the
+    # "awaiting domain owner" count is back to zero once this one is
+    # no longer pending.
+    awaiting = next(t for t in r4.json()["totals"] if t["key"] == "awaiting_domain_owner")
+    assert awaiting["value"] == 0
+
+
+def test_domain_owner_rejection_is_captured_as_decision_feedback(client, monkeypatch):
+    change_id = _seed_and_enhance_t001(client, monkeypatch)
+    client.get(f"/changes/{change_id}/domain-review", headers=headers(customer="bwm"))
+    client.post(f"/changes/{change_id}/domain-review/start", headers=headers(customer="bwm"), json={"decidedBy": "Domain Owner"})
+    client.post(
+        f"/changes/{change_id}/domain-review/reject",
+        headers=headers(customer="bwm"),
+        json={"decidedBy": "Ellen Vos", "note": "Duplicate of another request.", "rejectionReason": "duplicate_or_superseded"},
+    )
+    r = client.get("/admin/agents/improve-agent/health", headers=headers(customer="bwm"))
+    assert r.status_code == 200
+    feedback = {f["kind"]: f for f in r.json()["feedback"]}
+    assert feedback["domain_owner_rejection"]["count"] == 1
+    assert feedback["domain_owner_rejection"]["reasons"]["duplicate_or_superseded"] == 1
+
+
+def test_application_manager_reject_requires_a_reason(client, monkeypatch):
+    change_id = _seed_and_enhance_t001(client, monkeypatch)
+    client.get(f"/changes/{change_id}/domain-review", headers=headers(customer="bwm"))
+    client.post(f"/changes/{change_id}/domain-review/start", headers=headers(customer="bwm"), json={"decidedBy": "Domain Owner"})
+    client.post(f"/changes/{change_id}/domain-review/approve", headers=headers(customer="bwm"), json={"decidedBy": "Ellen Vos"})
+    r = client.post(
+        f"/changes/{change_id}/domain-review/application-manager-reject",
+        headers=headers(customer="bwm"),
+        json={"decidedBy": "Hendro"},
+    )
+    assert r.status_code == 422
+
+
+def test_application_manager_reject_actually_rejects_gate_2_via_backlog(client, monkeypatch):
+    change_id = _seed_and_enhance_t001(client, monkeypatch)
+    client.get(f"/changes/{change_id}/domain-review", headers=headers(customer="bwm"))
+    client.post(f"/changes/{change_id}/domain-review/start", headers=headers(customer="bwm"), json={"decidedBy": "Domain Owner"})
+    client.post(f"/changes/{change_id}/domain-review/approve", headers=headers(customer="bwm"), json={"decidedBy": "Ellen Vos"})
+
+    r = client.post(
+        f"/changes/{change_id}/domain-review/application-manager-reject",
+        headers=headers(customer="bwm"),
+        json={"decidedBy": "Hendro", "note": "Conflicts with an in-flight upgrade.", "rejectionReason": "risk_or_compliance_concern"},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["stage"] == "application_manager_rejected"
+    assert body["applicationManagerApproval"]["status"] == "rejected"
+    assert body["applicationManagerApproval"]["approvedBy"] == "Hendro"
+
+    # Gate 2 (backlog.py, unmodified) genuinely reflects the rejection.
+    with pytest.raises(backlog.StoryNotApproved):
+        backlog.require_approved(change_id)
+
+    r2 = client.get(f"/changes/{change_id}", headers=headers(customer="bwm"))
+    assert r2.json()["state"] == "REJECTED"
+
+    # No Delivery Queue entry was ever created for a rejected story.
+    r3 = client.get("/delivery-queue", headers=headers(customer="bwm"))
+    assert all(e["changeId"] != change_id for e in r3.json())
+
+    # Terminal: cannot then approve for delivery either.
+    r4 = client.post(
+        f"/changes/{change_id}/domain-review/application-manager-approve",
+        headers=headers(customer="bwm"),
+        json={"decidedBy": "Hendro"},
+    )
+    assert r4.status_code == 409
+
+
 def test_domain_governance_is_customer_scoped(client, monkeypatch):
     change_id = _seed_and_enhance_t001(client, monkeypatch)
     r = client.get(f"/changes/{change_id}/domain-review", headers=headers(user="u-hendro", customer="vdb"))

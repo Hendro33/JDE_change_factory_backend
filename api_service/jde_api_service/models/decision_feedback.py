@@ -27,8 +27,10 @@ from .base import ApiModel
 
 DecisionFeedbackKind = Literal[
     "domain_owner_approval",
+    "domain_owner_rejection",
     "domain_owner_edit",
     "application_manager_approval",
+    "application_manager_rejection",
     "exact_change_approval",
     "exact_change_rejection",
 ]

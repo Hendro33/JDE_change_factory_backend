@@ -169,8 +169,8 @@ class Change(ApiModel):
     domain_review_stage: Optional[
         Literal[
             "ready_for_domain_owner", "domain_owner_reviewing", "domain_owner_requested_revision",
-            "reviewer_agent_refining", "domain_owner_approved", "ready_for_application_manager",
-            "application_manager_approved",
+            "reviewer_agent_refining", "domain_owner_approved", "domain_owner_rejected",
+            "ready_for_application_manager", "application_manager_approved", "application_manager_rejected",
         ]
     ] = None
 

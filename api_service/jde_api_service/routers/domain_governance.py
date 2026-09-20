@@ -203,6 +203,36 @@ def domain_owner_approve(
     return updated
 
 
+@router.post("/changes/{change_id}/domain-review/reject", response_model=DomainReview)
+def domain_owner_reject(
+    change_id: str, payload: GovernanceDecisionInput, ctx: AuthContext = Depends(require_customer_access)
+) -> DomainReview:
+    """The Domain Owner's other real decision alongside approve/edit: the
+    requirement itself should not proceed. Distinct from an edit
+    (which stays in play, routed through the Reviewer Agent) -- this
+    is terminal and, like every rejection in this system, requires a
+    reason. Recorded entirely in this sidecar; never calls into
+    mcp_server, the same as domain_owner_approve above."""
+    _change_with_story(change_id, ctx.customer_id)
+    service = get_domain_review_service()
+    review = service.get(change_id)
+    if review is None or review.stage != "domain_owner_reviewing":
+        raise HTTPException(status_code=409, detail=f"cannot reject from stage {review.stage if review else 'none'}")
+    if not payload.note:
+        raise HTTPException(status_code=422, detail="a rejection must include a reason")
+    updated = service.record_domain_owner_rejection(change_id, payload.decided_by, payload.note, identity_id=ctx.identity.id)
+    get_decision_feedback_service().record(
+        change_id=change_id,
+        customer_id=ctx.customer_id,
+        kind="domain_owner_rejection",
+        decided_by=payload.decided_by,
+        identity_id=ctx.identity.id,
+        reason_code=payload.rejection_reason,
+        note=payload.note,
+    )
+    return updated
+
+
 @router.post("/changes/{change_id}/domain-review/application-manager-approve", response_model=DomainReview)
 def application_manager_approve(
     change_id: str,
@@ -252,6 +282,41 @@ def application_manager_approve(
         repo_root=settings.repo_root,
         run_service=get_architecture_review_service(),
         customer_id=ctx.customer_id,
+    )
+    return updated
+
+
+@router.post("/changes/{change_id}/domain-review/application-manager-reject", response_model=DomainReview)
+def application_manager_reject(
+    change_id: str, payload: GovernanceDecisionInput, ctx: AuthContext = Depends(require_customer_access)
+) -> DomainReview:
+    """Gate 1 rejection -- "Jade is not authorised to work on this,"
+    the other real outcome alongside application_manager_approve
+    above. Calls backlog.reject() (mcp_server, unmodified) -- the same
+    real Gate 2 control approval calls backlog.approve() on, so the
+    Change's own state genuinely reflects the rejection (REJECTED),
+    not just this sidecar. No Delivery Queue entry is ever created for
+    a rejected story, and no Architecture Review is scheduled."""
+    _change_with_story(change_id, ctx.customer_id)
+    service = get_domain_review_service()
+    review = service.get(change_id)
+    if review is None or review.stage != "ready_for_application_manager":
+        raise HTTPException(status_code=409, detail=f"cannot reject from stage {review.stage if review else 'none'}")
+    if not payload.note:
+        raise HTTPException(status_code=422, detail="a rejection must include a reason")
+
+    updated = service.record_application_manager_rejection(
+        change_id, payload.decided_by, payload.note, identity_id=ctx.identity.id
+    )
+    backlog.reject(change_id, payload.decided_by, payload.note)
+    get_decision_feedback_service().record(
+        change_id=change_id,
+        customer_id=ctx.customer_id,
+        kind="application_manager_rejection",
+        decided_by=payload.decided_by,
+        identity_id=ctx.identity.id,
+        reason_code=payload.rejection_reason,
+        note=payload.note,
     )
     return updated
 

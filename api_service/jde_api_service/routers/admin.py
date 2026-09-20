@@ -141,7 +141,7 @@ def update_engagement_scope(
 # pages.
 _AGENT_FEEDBACK_KINDS: dict[str, list[str]] = {
     "architect": ["exact_change_approval", "exact_change_rejection"],
-    "improve-agent": ["domain_owner_edit"],
+    "improve-agent": ["domain_owner_edit", "domain_owner_rejection"],
 }
 
 
