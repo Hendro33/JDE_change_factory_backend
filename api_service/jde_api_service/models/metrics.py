@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Optional
+
 from .base import ApiModel
 from .change import ChangeType, LifecycleState
 
@@ -25,6 +27,13 @@ class BusinessImpactCount(ApiModel):
     count: int
 
 
+class BusinessDomainCount(ApiModel):
+    domain_id: Optional[str] = None
+    domain_name: str
+    apqc_code: str = ""
+    count: int
+
+
 class Performance(ApiModel):
     average_cycle_time_days: float = 0
     average_cycle_time_delta: float = 0
@@ -41,6 +50,7 @@ class FactoryMetrics(ApiModel):
     pipeline: list[PipelineStage]
     change_types: list[ChangeTypeCount]
     business_impact_breakdown: list[BusinessImpactCount]
+    business_domain_breakdown: list[BusinessDomainCount] = []
     performance: Performance
 
 

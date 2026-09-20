@@ -20,9 +20,9 @@ from fastapi.responses import JSONResponse
 from .config import settings
 
 logger = logging.getLogger("jde_api_service")
-from .routers import change_requests, changes, session
-from .services.registry import get_change_request_service
-from .services.seed_service import ensure_bicycleworks_pilot_dataset
+from .routers import change_requests, changes, domain_governance, session
+from .services.registry import get_business_domain_service, get_change_request_service
+from .services.seed_service import ensure_bicycleworks_business_domains, ensure_bicycleworks_pilot_dataset
 
 
 @asynccontextmanager
@@ -30,6 +30,7 @@ async def _lifespan(app: FastAPI):
     # Idempotent -- safe on every restart, never duplicates existing
     # records. See services/seed_service.py.
     ensure_bicycleworks_pilot_dataset(get_change_request_service())
+    ensure_bicycleworks_business_domains(get_business_domain_service())
     yield
 
 
@@ -52,6 +53,7 @@ app.add_middleware(
 app.include_router(session.router)
 app.include_router(changes.router)
 app.include_router(change_requests.router)
+app.include_router(domain_governance.router)
 
 
 @app.exception_handler(Exception)

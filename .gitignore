@@ -11,6 +11,7 @@ venv/
 backlog/
 changes/
 evidence/
+api_data/
 
 # Per-customer scope. Contains the approved applications, versions and
 # options for a real engagement — treat as customer configuration, not

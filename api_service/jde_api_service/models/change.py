@@ -90,7 +90,7 @@ class ExactChange(ApiModel):
 
 class ApprovalRecord(ApiModel):
     approval_id: str
-    kind: Literal["story", "change"]
+    kind: Literal["story", "change", "domain_owner", "application_manager"]
     status: Literal["pending", "approved", "rejected"]
     change_hash: Optional[str] = None
     approved_by: Optional[str] = None
@@ -153,6 +153,19 @@ class Change(ApiModel):
     # folded into user_story/state below.
     processing_stage: Optional[Literal["receiving", "improving", "checking", "done", "failed"]] = None
     processing_error: Optional[str] = None
+
+    # Business domain governance (Increment: domain ownership). Both are
+    # a read-only projection of the DomainReview sidecar (domain_review.py)
+    # for list/filter display -- the full record (history, notes,
+    # approvals) is fetched separately via GET /changes/{id}/domain-review.
+    business_domain_id: Optional[str] = None
+    domain_review_stage: Optional[
+        Literal[
+            "ready_for_domain_owner", "domain_owner_reviewing", "domain_owner_requested_revision",
+            "reviewer_agent_refining", "domain_owner_approved", "ready_for_application_manager",
+            "application_manager_approved",
+        ]
+    ] = None
 
     user_story: Optional[UserStory] = None
     story_approval: Optional[ApprovalRecord] = None

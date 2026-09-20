@@ -15,9 +15,11 @@ from __future__ import annotations
 import os
 
 from ..config import settings
+from .business_domain_service import BusinessDomainService
 from .change_request_service import ChangeRequestService
 from .change_service import ChangeService
 from .customer_link_service import CustomerLinkService
+from .domain_review_service import DomainReviewService
 from .enhancement_run_service import EnhancementRunService
 from .metrics_service import MetricsService
 
@@ -34,11 +36,22 @@ def get_enhancement_run_service() -> EnhancementRunService:
     return EnhancementRunService(os.path.join(settings.data_dir, "enhancement_runs"))
 
 
+def get_business_domain_service() -> BusinessDomainService:
+    return BusinessDomainService(os.path.join(settings.data_dir, "business_domains"))
+
+
+def get_domain_review_service() -> DomainReviewService:
+    return DomainReviewService(os.path.join(settings.data_dir, "domain_reviews"))
+
+
 def get_change_service() -> ChangeService:
     return ChangeService(
-        get_change_request_service(), get_customer_link_service(), get_enhancement_run_service()
+        get_change_request_service(),
+        get_customer_link_service(),
+        get_enhancement_run_service(),
+        get_domain_review_service(),
     )
 
 
 def get_metrics_service() -> MetricsService:
-    return MetricsService(get_change_service())
+    return MetricsService(get_change_service(), get_business_domain_service())

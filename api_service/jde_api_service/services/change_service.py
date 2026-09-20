@@ -47,6 +47,7 @@ from ..models.change_request import ChangeRequest
 from ..models.enhancement_run import EnhancementRun
 from .change_request_service import ChangeRequestService
 from .customer_link_service import CustomerLinkService
+from .domain_review_service import DomainReviewService
 from .enhancement_run_service import EnhancementRunService
 
 _VALID_SOURCES = {"Business", "Support / Topdesk", "Optimisation", "DevOps"}
@@ -147,6 +148,7 @@ def _change_from_story(
     customer_id: str,
     run: Optional[EnhancementRun],
     origin: Optional[ChangeRequest],
+    domain_review_service: Optional[DomainReviewService] = None,
 ) -> Change:
     story_id = record["story_id"]
     change_record = _latest_change_record_for(story_id)
@@ -225,6 +227,8 @@ def _change_from_story(
         source_reference = ""
         original_request = statement
 
+    domain_review = domain_review_service.get(story_id) if domain_review_service else None
+
     return Change(
         id=story_id,
         customer_id=customer_id,
@@ -240,6 +244,8 @@ def _change_from_story(
         updated_by=record.get("decided_by") or record.get("resolved_by") or "",
         processing_stage=run.stage if run else None,
         processing_error=run.error if run else None,
+        business_domain_id=domain_review.business_domain_id if domain_review else None,
+        domain_review_stage=domain_review.stage if domain_review else None,
         user_story=user_story,
         story_approval=story_approval,
         exact_change=exact_change,
@@ -302,10 +308,12 @@ class ChangeService:
         change_request_service: ChangeRequestService,
         customer_link_service: CustomerLinkService,
         enhancement_run_service: Optional[EnhancementRunService] = None,
+        domain_review_service: Optional[DomainReviewService] = None,
     ) -> None:
         self._change_requests = change_request_service
         self._links = customer_link_service
         self._runs = enhancement_run_service
+        self._domain_reviews = domain_review_service
 
     def _run_for(self, request_id: str) -> Optional[EnhancementRun]:
         return self._runs.get(request_id) if self._runs else None
@@ -317,7 +325,9 @@ class ChangeService:
             if self._links.customer_for(story_id) != customer_id:
                 continue
             origin = self._change_requests.get(story_id)
-            out.append(_change_from_story(record, customer_id, self._run_for(story_id), origin))
+            out.append(
+                _change_from_story(record, customer_id, self._run_for(story_id), origin, self._domain_reviews)
+            )
         return out
 
     def list_for_customer(self, customer_id: str) -> list[Change]:
@@ -338,7 +348,9 @@ class ChangeService:
                 if self._links.customer_for(change_id) != customer_id:
                     return None
                 origin = self._change_requests.get(change_id)
-                return _change_from_story(record, customer_id, self._run_for(change_id), origin)
+                return _change_from_story(
+                    record, customer_id, self._run_for(change_id), origin, self._domain_reviews
+                )
 
         if change_id.startswith("CR-"):
             cr = self._change_requests.get(change_id)

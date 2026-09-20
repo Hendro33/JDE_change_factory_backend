@@ -8,10 +8,12 @@ hard-coded, so this keeps behaving correctly as real data grows.
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Optional
 
 from ..models.change import Change
 from ..models.metrics import (
     ActivityEntry,
+    BusinessDomainCount,
     BusinessImpactCount,
     ChangeTypeCount,
     FactoryMetrics,
@@ -19,16 +21,59 @@ from ..models.metrics import (
     Performance,
     Total,
 )
+from .business_domain_service import BusinessDomainService
 from .change_service import ChangeService
 
 _IN_BUILD = {"APPROVED", "ARCHITECTING", "SPEC_READY", "CHANGE_APPROVED", "EXECUTING"}
 _COMPLETED = {"CLOSED", "VALIDATED", "CNC_HANDOFF", "RESOLVED_WITHOUT_CHANGE"}
 _REJECTED = {"REJECTED", "FAILED"}
+# "Reached the backlog and is still live demand" -- excludes RECEIVED/
+# REFINING (nothing to classify yet) and REJECTED/FAILED (no longer
+# current demand), matching item 6's "distribution of CURRENT Change
+# Requests/User Stories by Business Domain".
+_DOMAIN_GOVERNED_STATES = {"BACKLOG_READY"} | _IN_BUILD | {"TESTING"} | _COMPLETED
 
 
 class MetricsService:
-    def __init__(self, change_service: ChangeService) -> None:
+    def __init__(self, change_service: ChangeService, business_domain_service: Optional[BusinessDomainService] = None) -> None:
         self._changes = change_service
+        self._domains = business_domain_service
+
+    def _domain_breakdown(self, all_changes: list[Change], customer_id: str) -> list[BusinessDomainCount]:
+        # Only changes that have actually reached the backlog are
+        # counted at all: a request still in Receive/Improve/Check has
+        # no business domain decision to report yet, honest-absence
+        # rather than lumped into "Unclassified". Deliberately gated on
+        # STATE, not on the DomainReview sidecar existing yet -- the
+        # sidecar is created lazily on first Domain Owner view
+        # (routers/domain_governance.py), and a story nobody has opened
+        # yet must still show up here as unclassified, not vanish from
+        # the dashboard until someone happens to look at it.
+        governed = [c for c in all_changes if c.state in _DOMAIN_GOVERNED_STATES]
+        if not governed:
+            return []
+
+        domains_by_id = {d.id: d for d in self._domains.list_for_customer(customer_id)} if self._domains else {}
+        counts: dict[Optional[str], int] = {}
+        for c in governed:
+            counts[c.business_domain_id] = counts.get(c.business_domain_id, 0) + 1
+
+        out = []
+        for domain_id, count in counts.items():
+            if domain_id is None:
+                out.append(BusinessDomainCount(domain_id=None, domain_name="Unclassified / needs review", count=count))
+            else:
+                domain = domains_by_id.get(domain_id)
+                out.append(
+                    BusinessDomainCount(
+                        domain_id=domain_id,
+                        domain_name=domain.name if domain else domain_id,
+                        apqc_code=domain.apqc_code if domain else "",
+                        count=count,
+                    )
+                )
+        out.sort(key=lambda x: x.count, reverse=True)
+        return out
 
     def metrics_for_customer(self, customer_id: str) -> FactoryMetrics:
         all_changes = self._changes.list_for_customer(customer_id)
@@ -87,6 +132,7 @@ class MetricsService:
                 key=lambda x: x.count, reverse=True,
             ),
             business_impact_breakdown=impact,
+            business_domain_breakdown=self._domain_breakdown(all_changes, customer_id),
             performance=Performance(
                 first_time_success_rate=round((first_time_pass / with_story) * 100) if with_story else 0,
                 human_approvals=approvals,
