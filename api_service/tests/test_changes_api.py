@@ -113,15 +113,19 @@ def test_malformed_complexity_signal_falls_back_to_unknown_instead_of_crashing(c
     assert r.json()["complexitySignal"] == "Unknown"
 
 
+def _total(metrics: dict, key: str) -> int:
+    return next(t["value"] for t in metrics["totals"] if t["key"] == key)
+
+
 def test_metrics_and_activity_are_derived_not_hardcoded(client):
     r = client.get("/metrics", headers=headers())
-    assert r.json()["totals"][0]["value"] == 0
+    assert _total(r.json(), "backlog_ready") == 0
 
     _make_backlog_story("S-METRICS")
     _link(client, "S-METRICS", "vdb")
 
     r = client.get("/metrics", headers=headers())
-    assert r.json()["totals"][0]["value"] == 1
+    assert _total(r.json(), "backlog_ready") == 1
     assert r.json()["pipeline"][2]["stage"] == "Awaiting approval"
     assert r.json()["pipeline"][2]["count"] == 1
 

@@ -7,6 +7,11 @@ from .change import ChangeType, LifecycleState
 
 
 class Total(ApiModel):
+    # Stable identifier the frontend maps to a work queue + filter --
+    # e.g. "awaiting_domain_owner" -> User Story Review, filtered to
+    # stories not yet Domain-Owner-approved. Labels are for display
+    # only and can be reworded without breaking that navigation.
+    key: str
     label: str
     value: int
     delta: int = 0

@@ -6,13 +6,18 @@ Two human decisions, deliberately kept separate (never merged into one
 generic "approve" the way Section 6.5 already keeps story approval and
 exact-change approval separate):
 
-  - Domain Owner approval: the business requirement / User Story is
-    approved. Recorded here only -- never calls into mcp_server.
-  - Application Manager approval: the application backlog / sprint is
-    approved to proceed toward build. This is the ONLY action in this
-    router that calls backlog.approve() (mcp_server, unmodified) --
-    exactly the existing Gate 2 control, now reached through a richer
-    upstream process instead of directly from BACKLOG_READY.
+  - Domain Owner approval: "Is the business requirement and User Story
+    correct?" Recorded here only -- never calls into mcp_server, and
+    never implies the work is authorised to proceed.
+  - Application Manager approval: "Is this approved work that Jade is
+    authorised to deliver?" This is the ONLY action in this router
+    that calls backlog.approve() (mcp_server, unmodified) -- exactly
+    the existing Gate 2 control, now reached through a richer upstream
+    process instead of directly from BACKLOG_READY -- and it is also
+    the action that adds the change to the Delivery Queue
+    (delivery_queue_service.py). Jade has no Sprint concept: there is
+    no planning ceremony, capacity or start/end date here, just an
+    ordered queue of work a human has authorised.
 """
 
 from __future__ import annotations
@@ -24,6 +29,7 @@ from jde_mcp_server import backlog
 from ..config import settings
 from ..dependencies import AuthContext, require_customer_access
 from ..models.business_domain import BusinessDomain
+from ..models.delivery_queue import DeliveryQueueEntry
 from ..models.domain_review import (
     AssignDomainInput,
     DomainOwnerEditInput,
@@ -33,6 +39,7 @@ from ..models.domain_review import (
 from ..services.registry import (
     get_business_domain_service,
     get_change_service,
+    get_delivery_queue_service,
     get_domain_review_service,
 )
 from ..services.review_driver import ReviewerAgentError, run_reviewer_agent
@@ -172,4 +179,14 @@ def application_manager_approve(
 
     updated = service.record_application_manager_approval(change_id, payload.decided_by, payload.note)
     backlog.approve(change_id, payload.decided_by, payload.note)
+    get_delivery_queue_service().add(change_id, ctx.customer_id, payload.decided_by, payload.note)
     return updated
+
+
+@router.get("/delivery-queue", response_model=list[DeliveryQueueEntry])
+def list_delivery_queue(ctx: AuthContext = Depends(require_customer_access)) -> list[DeliveryQueueEntry]:
+    """The set of approved changes Jade is authorised to work on,
+    in queue order. Not a Sprint: no capacity, no start/end date --
+    just an ordered list a human (the Application Manager) put entries
+    into, one at a time, via application_manager_approve above."""
+    return get_delivery_queue_service().list_for_customer(ctx.customer_id)

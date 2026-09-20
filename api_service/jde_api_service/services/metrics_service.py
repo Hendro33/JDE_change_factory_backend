@@ -23,6 +23,7 @@ from ..models.metrics import (
 )
 from .business_domain_service import BusinessDomainService
 from .change_service import ChangeService
+from .delivery_queue_service import DeliveryQueueService
 
 _IN_BUILD = {"APPROVED", "ARCHITECTING", "SPEC_READY", "CHANGE_APPROVED", "EXECUTING"}
 _COMPLETED = {"CLOSED", "VALIDATED", "CNC_HANDOFF", "RESOLVED_WITHOUT_CHANGE"}
@@ -32,12 +33,26 @@ _REJECTED = {"REJECTED", "FAILED"}
 # current demand), matching item 6's "distribution of CURRENT Change
 # Requests/User Stories by Business Domain".
 _DOMAIN_GOVERNED_STATES = {"BACKLOG_READY"} | _IN_BUILD | {"TESTING"} | _COMPLETED
+# A story counts as "awaiting Domain Owner approval" until the Domain
+# Owner has actually approved it -- None means the DomainReview sidecar
+# hasn't even been opened yet (lazily created on first view), which is
+# still, honestly, awaiting.
+_PRE_DOMAIN_OWNER_APPROVAL_STAGES = {
+    None, "ready_for_domain_owner", "domain_owner_reviewing",
+    "domain_owner_requested_revision", "reviewer_agent_refining",
+}
 
 
 class MetricsService:
-    def __init__(self, change_service: ChangeService, business_domain_service: Optional[BusinessDomainService] = None) -> None:
+    def __init__(
+        self,
+        change_service: ChangeService,
+        business_domain_service: Optional[BusinessDomainService] = None,
+        delivery_queue_service: Optional[DeliveryQueueService] = None,
+    ) -> None:
         self._changes = change_service
         self._domains = business_domain_service
+        self._delivery_queue = delivery_queue_service
 
     def _domain_breakdown(self, all_changes: list[Change], customer_id: str) -> list[BusinessDomainCount]:
         # Only changes that have actually reached the backlog are
@@ -81,7 +96,13 @@ class MetricsService:
         def in_state(*states: str) -> int:
             return sum(1 for c in all_changes if c.state in states)
 
+        incoming_requests = in_state("RECEIVED")
         awaiting_approval = in_state("BACKLOG_READY")
+        awaiting_domain_owner = sum(
+            1 for c in all_changes
+            if c.state == "BACKLOG_READY" and c.domain_review_stage in _PRE_DOMAIN_OWNER_APPROVAL_STAGES
+        )
+        in_delivery = len(self._delivery_queue.list_for_customer(customer_id)) if self._delivery_queue else 0
         in_build = sum(1 for c in all_changes if c.state in _IN_BUILD)
         in_testing = in_state("TESTING")
         completed = sum(1 for c in all_changes if c.state in _COMPLETED)
@@ -112,12 +133,12 @@ class MetricsService:
 
         return FactoryMetrics(
             totals=[
-                Total(label="Total requests", value=len(all_changes)),
-                Total(label="Awaiting approval", value=awaiting_approval),
-                Total(label="In build", value=in_build),
-                Total(label="In testing", value=in_testing),
-                Total(label="Completed", value=completed),
-                Total(label="Rejected / on hold", value=rejected),
+                Total(key="incoming_requests", label="Incoming Requests", value=incoming_requests),
+                Total(key="awaiting_domain_owner", label="User Stories awaiting Domain Owner approval", value=awaiting_domain_owner),
+                Total(key="backlog_ready", label="Backlog-ready User Stories", value=awaiting_approval),
+                Total(key="in_delivery", label="Changes in Delivery", value=in_delivery),
+                Total(key="awaiting_business_validation", label="Awaiting Business Validation", value=in_testing),
+                Total(key="completed", label="Completed", value=completed),
             ],
             pipeline=[
                 PipelineStage(stage="New", count=in_state("RECEIVED")),

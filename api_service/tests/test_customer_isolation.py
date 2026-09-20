@@ -51,7 +51,7 @@ def test_metrics_activity_and_backlog_are_all_customer_scoped(client):
     _seed_story_for(client, "S-NHD-M", "nhd")
 
     r = client.get("/metrics", headers=headers(customer="vdb"))
-    assert r.json()["totals"][0]["value"] == 1
+    assert next(t["value"] for t in r.json()["totals"] if t["key"] == "backlog_ready") == 1
 
     r = client.get("/activity", headers=headers(customer="mrv"))
     assert r.json() == []

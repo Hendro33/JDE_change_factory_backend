@@ -19,6 +19,7 @@ from .business_domain_service import BusinessDomainService
 from .change_request_service import ChangeRequestService
 from .change_service import ChangeService
 from .customer_link_service import CustomerLinkService
+from .delivery_queue_service import DeliveryQueueService
 from .domain_review_service import DomainReviewService
 from .enhancement_run_service import EnhancementRunService
 from .metrics_service import MetricsService
@@ -44,6 +45,10 @@ def get_domain_review_service() -> DomainReviewService:
     return DomainReviewService(os.path.join(settings.data_dir, "domain_reviews"))
 
 
+def get_delivery_queue_service() -> DeliveryQueueService:
+    return DeliveryQueueService(os.path.join(settings.data_dir, "delivery_queue"))
+
+
 def get_change_service() -> ChangeService:
     return ChangeService(
         get_change_request_service(),
@@ -54,4 +59,4 @@ def get_change_service() -> ChangeService:
 
 
 def get_metrics_service() -> MetricsService:
-    return MetricsService(get_change_service(), get_business_domain_service())
+    return MetricsService(get_change_service(), get_business_domain_service(), get_delivery_queue_service())
