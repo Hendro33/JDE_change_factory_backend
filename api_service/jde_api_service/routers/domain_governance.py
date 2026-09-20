@@ -22,7 +22,7 @@ exact-change approval separate):
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 
 from jde_mcp_server import backlog
 
@@ -36,9 +36,12 @@ from ..models.domain_review import (
     DomainReview,
     GovernanceDecisionInput,
 )
+from ..services.architecture_driver import run_architecture_review
 from ..services.registry import (
+    get_architecture_review_service,
     get_business_domain_service,
     get_change_service,
+    get_decision_feedback_service,
     get_delivery_queue_service,
     get_domain_review_service,
 )
@@ -124,6 +127,11 @@ async def submit_domain_owner_edit(
             status_code=409,
             detail="can only submit an edit while the Domain Owner review is in progress -- call .../start first",
         )
+    # The count carried by the version just before this edit cycle --
+    # the honest "how many revisions has this story actually been
+    # through" reference point, captured before any of this call's own
+    # appends change what history[-1] points to.
+    prior_revision_count = review.history[-1].user_story.revision_count if review.history else 0
 
     service.append_version(
         change_id, label="domain_owner_edit", user_story=payload.user_story, actor=payload.edited_by, note=payload.note
@@ -137,6 +145,7 @@ async def submit_domain_owner_edit(
             edited_story=payload.user_story,
             domain_owner_note=payload.note,
             repo_root=settings.repo_root,
+            customer_id=ctx.customer_id,
         )
     except ReviewerAgentError as exc:
         # Fails visibly, not silently: the stage stays at
@@ -145,7 +154,31 @@ async def submit_domain_owner_edit(
         service.set_stage(change_id, "domain_owner_requested_revision")
         raise HTTPException(status_code=502, detail=f"reviewer agent failed: {exc}") from exc
 
+    # Set deterministically here rather than trusted from the reviewer
+    # agent's own summary: run_reviewer_agent's prompt never tells it
+    # the prior count, so its self-reported revision_count has no real
+    # continuity across a Domain Owner edit cycle (unlike the initial
+    # Receive/Improve/Check loop, where the same agent run tracks its
+    # own attempts). NOTE (honest limitation, not fixed here): this
+    # updates the count on THIS DomainReview.history entry only --
+    # Change.user_story is still assembled from EnhancementRun
+    # (change_service.py), which this governance-stage revision never
+    # touches, so this count is not yet reflected in FactoryMetrics'
+    # first_time_success_rate for a story that has been through a
+    # Domain Owner edit. Folding DomainReview history back into the
+    # canonical Change.user_story is a larger assembly-logic change,
+    # out of scope for this increment.
+    revised.revision_count = prior_revision_count + 1
+
     service.append_version(change_id, label="reviewer_agent_revision", user_story=revised, actor="Reviewer Agent")
+    get_decision_feedback_service().record(
+        change_id=change_id,
+        customer_id=ctx.customer_id,
+        kind="domain_owner_edit",
+        decided_by=payload.edited_by,
+        identity_id=ctx.identity.id,
+        note=payload.note,
+    )
     return service.set_stage(change_id, "domain_owner_reviewing")
 
 
@@ -158,28 +191,68 @@ def domain_owner_approve(
     review = service.get(change_id)
     if review is None or review.stage != "domain_owner_reviewing":
         raise HTTPException(status_code=409, detail=f"cannot approve from stage {review.stage if review else 'none'}")
-    return service.record_domain_owner_approval(change_id, payload.decided_by, payload.note)
+    updated = service.record_domain_owner_approval(change_id, payload.decided_by, payload.note, identity_id=ctx.identity.id)
+    get_decision_feedback_service().record(
+        change_id=change_id,
+        customer_id=ctx.customer_id,
+        kind="domain_owner_approval",
+        decided_by=payload.decided_by,
+        identity_id=ctx.identity.id,
+        note=payload.note,
+    )
+    return updated
 
 
 @router.post("/changes/{change_id}/domain-review/application-manager-approve", response_model=DomainReview)
 def application_manager_approve(
-    change_id: str, payload: GovernanceDecisionInput, ctx: AuthContext = Depends(require_customer_access)
+    change_id: str,
+    payload: GovernanceDecisionInput,
+    background_tasks: BackgroundTasks,
+    ctx: AuthContext = Depends(require_customer_access),
 ) -> DomainReview:
-    """The one action that actually clears Gate 2 (backlog.py,
-    unmodified) -- Domain Owner approval never does this. Reaching this
-    endpoint's success path means: a human explicitly approved the
-    business requirement (Domain Owner) AND a human explicitly approved
-    it for the sprint/build (Application Manager here) -- two named
-    people, two timestamps, two reasons, exactly Section 6.5's model."""
+    """Gate 1 -- "Jade may start working on this requirement." The one
+    action that actually clears backlog.py's Gate 2 (unmodified) --
+    Domain Owner approval never does this. Reaching this endpoint's
+    success path means: a human explicitly approved the business
+    requirement (Domain Owner) AND a human explicitly authorised it
+    for delivery (Application Manager here) -- two named people, two
+    timestamps, two reasons, exactly Section 6.5's model.
+
+    Also starts Architecture Review as a background task, the same
+    BackgroundTasks mechanism /changes/{id}/enhance already uses --
+    once Gate 1 has authorised the work, Jade begins architecture
+    analysis on its own rather than waiting for a second, separate
+    button press. This is presentational scheduling only: it never
+    calls propose_change or approve_change itself, and Gate 2 (exact
+    change approval) still requires its own explicit human decision
+    below, same as before."""
     _change_with_story(change_id, ctx.customer_id)
     service = get_domain_review_service()
     review = service.get(change_id)
     if review is None or review.stage != "ready_for_application_manager":
         raise HTTPException(status_code=409, detail=f"cannot approve from stage {review.stage if review else 'none'}")
 
-    updated = service.record_application_manager_approval(change_id, payload.decided_by, payload.note)
+    updated = service.record_application_manager_approval(
+        change_id, payload.decided_by, payload.note, identity_id=ctx.identity.id
+    )
     backlog.approve(change_id, payload.decided_by, payload.note)
     get_delivery_queue_service().add(change_id, ctx.customer_id, payload.decided_by, payload.note)
+    get_decision_feedback_service().record(
+        change_id=change_id,
+        customer_id=ctx.customer_id,
+        kind="application_manager_approval",
+        decided_by=payload.decided_by,
+        identity_id=ctx.identity.id,
+        note=payload.note,
+    )
+
+    background_tasks.add_task(
+        run_architecture_review,
+        story_id=change_id,
+        repo_root=settings.repo_root,
+        run_service=get_architecture_review_service(),
+        customer_id=ctx.customer_id,
+    )
     return updated
 
 

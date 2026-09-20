@@ -24,7 +24,7 @@ Priority = Literal["High", "Medium", "Low"]
 Complexity = Literal["Low", "Medium", "High", "Unknown"]
 
 ImplementationRoute = Literal[
-    "Functional Agent", "Technical Agent", "Human Implementation", "Resolve without Change"
+    "Functional Agent", "Technical Agent", "Mixed", "Human Implementation", "Resolve without Change"
 ]
 ChangeType = Literal["Configuration", "Functional Change", "Technical Change", "Investigation", "Other"]
 
@@ -97,6 +97,13 @@ class ApprovalRecord(ApiModel):
     approved_at: Optional[str] = None
     expires_at: Optional[str] = None
     note: Optional[str] = None
+    # The resolved Identity id behind approved_by, where the endpoint
+    # that recorded this had one (every domain-governance endpoint
+    # does, via AuthContext). approved_by stays the free-text name of
+    # record -- this is additive attribution, not a replacement, and is
+    # never itself trusted as an access-control decision (Section
+    # 15.10: full RBAC is still a target-architecture NFR).
+    identity_id: Optional[str] = None
 
 
 class TestSpecification(ApiModel):
@@ -166,6 +173,12 @@ class Change(ApiModel):
             "application_manager_approved",
         ]
     ] = None
+
+    # Live status of an in-flight/completed Architecture Review run
+    # (architecture_driver.py), presentational only -- same relationship
+    # as processing_stage above has to Receive/Improve/Check.
+    architecture_review_stage: Optional[Literal["analyzing", "done", "failed"]] = None
+    architecture_review_error: Optional[str] = None
 
     user_story: Optional[UserStory] = None
     story_approval: Optional[ApprovalRecord] = None

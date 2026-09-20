@@ -28,6 +28,7 @@ from typing import Literal, Optional
 
 from .base import ApiModel
 from .change import ApprovalRecord, UserStory
+from .decision_feedback import FeedbackReasonCode
 
 DomainReviewStage = Literal[
     "ready_for_domain_owner",
@@ -79,6 +80,11 @@ class AssignDomainInput(ApiModel):
 class GovernanceDecisionInput(ApiModel):
     decided_by: str
     note: str = ""
+    # Only meaningful on a rejection (approve-change ignores it).
+    # Optional and additive to the existing free-text note -- a
+    # structured signal future agent-improvement analysis (design doc
+    # Section 14.2) can aggregate without parsing natural language.
+    rejection_reason: Optional[FeedbackReasonCode] = None
 
 
 class DomainOwnerEditInput(ApiModel):

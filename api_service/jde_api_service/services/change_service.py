@@ -48,6 +48,7 @@ from ..models.change import (
 )
 from ..models.change_request import ChangeRequest
 from ..models.enhancement_run import EnhancementRun
+from .architecture_review_service import ArchitectureReviewService
 from .change_request_service import ChangeRequestService
 from .customer_link_service import CustomerLinkService
 from .domain_review_service import DomainReviewService
@@ -217,6 +218,7 @@ def _change_from_story(
     run: Optional[EnhancementRun],
     origin: Optional[ChangeRequest],
     domain_review_service: Optional[DomainReviewService] = None,
+    architecture_review_service: Optional[ArchitectureReviewService] = None,
 ) -> Change:
     story_id = record["story_id"]
     change_record = _latest_change_record_for(story_id)
@@ -296,6 +298,7 @@ def _change_from_story(
         original_request = statement
 
     domain_review = domain_review_service.get(story_id) if domain_review_service else None
+    architecture_run = architecture_review_service.get(story_id) if architecture_review_service else None
 
     return Change(
         id=story_id,
@@ -314,8 +317,16 @@ def _change_from_story(
         processing_error=run.error if run else None,
         business_domain_id=domain_review.business_domain_id if domain_review else None,
         domain_review_stage=domain_review.stage if domain_review else None,
+        architecture_review_stage=architecture_run.stage if architecture_run else None,
+        architecture_review_error=architecture_run.error if architecture_run else None,
         user_story=user_story,
         story_approval=story_approval,
+        # architect_decision/implementation_spec are this sidecar's own
+        # reasoning capture (architecture_review.py's own docstring on
+        # why) -- exact_change/change_approval below stay sourced ONLY
+        # from approval.py's authoritative record, never duplicated here.
+        architect_decision=architecture_run.architect_decision if architecture_run else None,
+        implementation_spec=architecture_run.implementation_spec if architecture_run else None,
         exact_change=exact_change,
         change_approval=change_approval,
         evidence=_evidence_records(_evidence_for(story_id)),
@@ -377,11 +388,13 @@ class ChangeService:
         customer_link_service: CustomerLinkService,
         enhancement_run_service: Optional[EnhancementRunService] = None,
         domain_review_service: Optional[DomainReviewService] = None,
+        architecture_review_service: Optional[ArchitectureReviewService] = None,
     ) -> None:
         self._change_requests = change_request_service
         self._links = customer_link_service
         self._runs = enhancement_run_service
         self._domain_reviews = domain_review_service
+        self._architecture_reviews = architecture_review_service
 
     def _run_for(self, request_id: str) -> Optional[EnhancementRun]:
         return self._runs.get(request_id) if self._runs else None
@@ -394,7 +407,10 @@ class ChangeService:
                 continue
             origin = self._change_requests.get(story_id)
             out.append(
-                _change_from_story(record, customer_id, self._run_for(story_id), origin, self._domain_reviews)
+                _change_from_story(
+                    record, customer_id, self._run_for(story_id), origin,
+                    self._domain_reviews, self._architecture_reviews,
+                )
             )
         return out
 
@@ -417,7 +433,8 @@ class ChangeService:
                     return None
                 origin = self._change_requests.get(change_id)
                 return _change_from_story(
-                    record, customer_id, self._run_for(change_id), origin, self._domain_reviews
+                    record, customer_id, self._run_for(change_id), origin,
+                    self._domain_reviews, self._architecture_reviews,
                 )
 
         if change_id.startswith("CR-"):

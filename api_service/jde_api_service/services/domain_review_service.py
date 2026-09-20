@@ -115,7 +115,9 @@ class DomainReviewService:
         self._save(review)
         return review
 
-    def record_domain_owner_approval(self, change_id: str, approved_by: str, note: str = "") -> DomainReview:
+    def record_domain_owner_approval(
+        self, change_id: str, approved_by: str, note: str = "", identity_id: Optional[str] = None
+    ) -> DomainReview:
         review = self._require(change_id)
         review.domain_owner_approval = ApprovalRecord(
             approval_id=f"AP-{change_id}-DO",
@@ -124,6 +126,7 @@ class DomainReviewService:
             approved_by=approved_by,
             approved_at=_now(),
             note=note,
+            identity_id=identity_id,
         )
         # Both stages are recorded (not just the second): "Domain Owner
         # approved" is what actually happened here, and "Ready for
@@ -141,7 +144,9 @@ class DomainReviewService:
         self._save(review)
         return review
 
-    def record_application_manager_approval(self, change_id: str, approved_by: str, note: str = "") -> DomainReview:
+    def record_application_manager_approval(
+        self, change_id: str, approved_by: str, note: str = "", identity_id: Optional[str] = None
+    ) -> DomainReview:
         review = self._require(change_id)
         review.application_manager_approval = ApprovalRecord(
             approval_id=f"AP-{change_id}-AM",
@@ -150,6 +155,7 @@ class DomainReviewService:
             approved_by=approved_by,
             approved_at=_now(),
             note=note,
+            identity_id=identity_id,
         )
         review.stage = "application_manager_approved"
         review.updated_at = _now()

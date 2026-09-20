@@ -20,7 +20,7 @@ from fastapi.responses import JSONResponse
 from .config import settings
 
 logger = logging.getLogger("jde_api_service")
-from .routers import change_requests, changes, domain_governance, session
+from .routers import admin, architecture_review, change_requests, changes, domain_governance, session
 from .services.registry import (
     get_business_domain_service,
     get_change_request_service,
@@ -55,7 +55,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.allowed_origins,
     allow_credentials=False,
-    allow_methods=["GET", "POST"],
+    allow_methods=["GET", "POST", "PUT"],
     allow_headers=["X-Customer-Id", "X-Demo-User-Id", "Content-Type"],
 )
 
@@ -63,6 +63,8 @@ app.include_router(session.router)
 app.include_router(changes.router)
 app.include_router(change_requests.router)
 app.include_router(domain_governance.router)
+app.include_router(architecture_review.router)
+app.include_router(admin.router)
 
 
 @app.exception_handler(Exception)

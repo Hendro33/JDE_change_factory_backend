@@ -25,6 +25,11 @@ from typing import Optional
 from ..models.change import UserStory
 from .orchestration_driver import _ALLOWED_TOOLS, _extract_json, _user_story_from_summary
 
+# Named so Admin > Agents can read the same values this driver actually
+# runs with, rather than a second, independently-maintained copy.
+PERMISSION_MODE = "dontAsk"
+MAX_TURNS = 20
+
 _REVIEW_SCHEMA_INSTRUCTIONS = """
 Respond with ONLY a single fenced json code block (nothing before or after it) with EXACTLY this shape -- no extra top-level keys, no commentary outside the block:
 {
@@ -69,6 +74,7 @@ async def run_reviewer_agent(
     edited_story: UserStory,
     domain_owner_note: str,
     repo_root: str,
+    customer_id: Optional[str] = None,
 ) -> UserStory:
     """Runs one improve-agent pass over a Domain-Owner-edited story and
     returns the revised UserStory. Raises ReviewerAgentError on any
@@ -76,25 +82,43 @@ async def run_reviewer_agent(
     that means for the DomainReview's stage; this function never
     silently returns the Domain Owner's own edit as if it were a
     reviewed version."""
+    from .agent_registry_service import compute_agent_version
+    from .registry import get_agent_run_service
+
+    agent_run_service = get_agent_run_service()
+    run = agent_run_service.start(
+        agent_name="improve-agent",
+        driver="review_driver",
+        story_id=story_id,
+        customer_id=customer_id,
+        agent_version=compute_agent_version("improve-agent", repo_root),
+    )
+
     import claude_agent_sdk as sdk
 
     options = sdk.ClaudeAgentOptions(
         cwd=repo_root,
-        permission_mode="dontAsk",
+        permission_mode=PERMISSION_MODE,
         allowed_tools=_ALLOWED_TOOLS,
-        max_turns=20,
+        max_turns=MAX_TURNS,
     )
     prompt = _build_review_prompt(story_id, edited_story, domain_owner_note)
 
-    final_text: Optional[str] = None
-    async for message in sdk.query(prompt=prompt, options=options):
-        if isinstance(message, sdk.ResultMessage):
-            if message.is_error:
-                raise ReviewerAgentError(f"reviewer agent ended in error: {getattr(message, 'result', None)}")
-            final_text = getattr(message, "result", None)
+    try:
+        final_text: Optional[str] = None
+        async for message in sdk.query(prompt=prompt, options=options):
+            if isinstance(message, sdk.ResultMessage):
+                if message.is_error:
+                    raise ReviewerAgentError(f"reviewer agent ended in error: {getattr(message, 'result', None)}")
+                final_text = getattr(message, "result", None)
 
-    if final_text is None:
-        raise ReviewerAgentError("reviewer agent produced no final result")
+        if final_text is None:
+            raise ReviewerAgentError("reviewer agent produced no final result")
 
-    summary = _extract_json(final_text)
-    return _user_story_from_summary(summary)
+        summary = _extract_json(final_text)
+        revised = _user_story_from_summary(summary)
+    except Exception as exc:
+        agent_run_service.fail(run.run_id, str(exc))
+        raise
+    agent_run_service.complete(run.run_id)
+    return revised

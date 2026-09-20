@@ -46,6 +46,12 @@ _ALLOWED_TOOLS = [
     "mcp__jde-change-factory__propose_to_backlog",
 ]
 
+# Named so Admin > Agents (agent_registry_service.py) can read the same
+# values this driver actually runs with, rather than a second,
+# independently-maintained copy that could drift.
+PERMISSION_MODE = "dontAsk"
+MAX_TURNS = 40
+
 _SCHEMA_INSTRUCTIONS = """
 After the pipeline reaches a final outcome, respond with ONLY a single fenced json code block (nothing before or after it) with EXACTLY this shape -- no extra top-level keys, no commentary outside the block:
 {
@@ -146,6 +152,7 @@ async def run_enhancement(
     repo_root: str,
     run_service: EnhancementRunService,
     link_service: CustomerLinkService,
+    customer_id: Optional[str] = None,
 ) -> None:
     """The whole pipeline for one ChangeRequest. Intended to run as a
     background task -- updates run_service as it progresses so
@@ -153,15 +160,26 @@ async def run_enhancement(
     failure paths are recorded via run_service.fail())."""
     run_service.start(request_id)
 
+    # Deliberately local imports (same lazy-import convention this
+    # module already uses for claude_agent_sdk below): keeps this
+    # module importable without the agent-run/registry services, and
+    # avoids a module-load-time cycle with agent_registry_service's own
+    # lazy import of this module.
+    from .agent_registry_service import compute_agent_version
+    from .registry import get_agent_run_service
+
+    agent_run_service = get_agent_run_service()
+    started_run_ids: list[str] = []
+
     final_text: Optional[str] = None
     try:
         import claude_agent_sdk as sdk
 
         options = sdk.ClaudeAgentOptions(
             cwd=repo_root,
-            permission_mode="dontAsk",
+            permission_mode=PERMISSION_MODE,
             allowed_tools=_ALLOWED_TOOLS,
-            max_turns=40,
+            max_turns=MAX_TURNS,
         )
         prompt = _build_prompt(story_id, source, raw_content)
 
@@ -171,6 +189,23 @@ async def run_enhancement(
                 stage = _SUBAGENT_TO_STAGE.get(subagent_type)
                 if stage:
                     run_service.set_stage(request_id, stage)
+                if subagent_type in _SUBAGENT_TO_STAGE:
+                    # The message stream gives a clean per-subagent
+                    # START event but no clean per-subagent COMPLETION
+                    # event -- only one ResultMessage for the whole
+                    # orchestration at the end. Every subagent that
+                    # started during this run is therefore marked with
+                    # the run's overall outcome below, which is coarser
+                    # than true per-step success/failure but never
+                    # fabricates a distinction the SDK doesn't give us.
+                    run = agent_run_service.start(
+                        agent_name=subagent_type,
+                        driver="orchestration_driver",
+                        story_id=story_id,
+                        customer_id=customer_id,
+                        agent_version=compute_agent_version(subagent_type, repo_root),
+                    )
+                    started_run_ids.append(run.run_id)
             elif isinstance(message, sdk.ResultMessage):
                 if message.is_error:
                     raise RuntimeError(f"orchestration ended in error: {getattr(message, 'result', None)}")
@@ -207,5 +242,9 @@ async def run_enhancement(
             failed_criteria=list(summary.get("failed_criteria") or []),
             backlog_story_id=backlog_story_id,
         )
+        for run_id in started_run_ids:
+            agent_run_service.complete(run_id)
     except Exception as exc:  # noqa: BLE001 -- always recorded, never raised into the background task runner
         run_service.fail(request_id, str(exc))
+        for run_id in started_run_ids:
+            agent_run_service.fail(run_id, str(exc))

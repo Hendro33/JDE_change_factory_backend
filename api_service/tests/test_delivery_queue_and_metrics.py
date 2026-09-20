@@ -128,14 +128,14 @@ def test_dashboard_totals_are_unambiguous_and_derived(client, monkeypatch):
     metrics = r.json()
     keys = {t["key"] for t in metrics["totals"]}
     assert keys == {
-        "incoming_requests", "awaiting_domain_owner", "backlog_ready",
-        "in_delivery", "awaiting_business_validation", "completed",
+        "incoming_requests", "awaiting_domain_owner", "awaiting_application_manager",
+        "awaiting_exact_change_approval", "in_delivery", "awaiting_business_validation", "completed",
     }
     # BicycleWorks pilot seed: 11 requests, none enhanced yet in this
     # isolated test run.
     assert _total(metrics, "incoming_requests") == 11
     assert _total(metrics, "awaiting_domain_owner") == 0
-    assert _total(metrics, "backlog_ready") == 0
+    assert _total(metrics, "awaiting_application_manager") == 0
     assert _total(metrics, "in_delivery") == 0
 
     # _seed_and_enhance creates a NEW ChangeRequest (a 12th record,
@@ -147,15 +147,15 @@ def test_dashboard_totals_are_unambiguous_and_derived(client, monkeypatch):
     r = client.get("/metrics", headers=headers(customer="bwm"))
     metrics = r.json()
     assert _total(metrics, "incoming_requests") == 11
-    assert _total(metrics, "backlog_ready") == 1
     # Nobody has opened the Domain Owner review yet -- still honestly "awaiting".
     assert _total(metrics, "awaiting_domain_owner") == 1
+    assert _total(metrics, "awaiting_application_manager") == 0
 
     _through_domain_owner_approval(client, change_id)
     r = client.get("/metrics", headers=headers(customer="bwm"))
     metrics = r.json()
     assert _total(metrics, "awaiting_domain_owner") == 0  # Domain Owner acted
-    assert _total(metrics, "backlog_ready") == 1  # still true -- state hasn't changed yet
+    assert _total(metrics, "awaiting_application_manager") == 1  # Gate 1 now open
     assert _total(metrics, "in_delivery") == 0  # Application Manager hasn't acted
 
     client.post(
@@ -165,5 +165,5 @@ def test_dashboard_totals_are_unambiguous_and_derived(client, monkeypatch):
     )
     r = client.get("/metrics", headers=headers(customer="bwm"))
     metrics = r.json()
-    assert _total(metrics, "backlog_ready") == 0  # state is now APPROVED
+    assert _total(metrics, "awaiting_application_manager") == 0  # state is now APPROVED
     assert _total(metrics, "in_delivery") == 1

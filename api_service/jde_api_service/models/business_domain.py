@@ -49,3 +49,7 @@ class BusinessDomainCreate(ApiModel):
     level: str
     description: str = ""
     domain_owner: str = ""
+
+
+class BusinessDomainStatusUpdate(ApiModel):
+    status: BusinessDomainStatus
