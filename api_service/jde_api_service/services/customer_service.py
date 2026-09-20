@@ -80,6 +80,13 @@ class CustomerRegistry:
     def get_customer(self, customer_id: str) -> Customer | None:
         return self._customers.get(customer_id)
 
+    def identities_for_customer(self, customer_id: str) -> list[Identity]:
+        """The inverse of customers_for -- who is entitled to this
+        customer. Admin > Customer Setup's only use of this: pure
+        display, never an access-control decision itself (that stays
+        is_entitled(), checked per-request in dependencies.py)."""
+        return [i for i in self._identities.values() if customer_id in i.customer_ids]
+
     def is_entitled(self, identity: Identity, customer_id: str) -> bool:
         return customer_id in identity.customer_ids
 

@@ -65,6 +65,7 @@ async def enhance_change(
         repo_root=settings.repo_root,
         run_service=run_service,
         link_service=get_customer_link_service(),
+        customer_id=ctx.customer_id,
     )
 
     change = get_change_service().get_for_customer(change_id, ctx.customer_id)

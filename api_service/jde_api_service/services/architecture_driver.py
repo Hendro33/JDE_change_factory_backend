@@ -41,6 +41,11 @@ _ALLOWED_TOOLS = [
 
 _ROUTES = {"Functional Agent", "Technical Agent", "Mixed", "Human Implementation", "Resolve without Change"}
 
+# Named so Admin > Agents can read the same values this driver actually
+# runs with, rather than a second, independently-maintained copy.
+PERMISSION_MODE = "dontAsk"
+MAX_TURNS = 40
+
 _SCHEMA_INSTRUCTIONS = """
 After you have called either resolve_without_change or propose_change (exactly one of them, as your own instructions describe), respond with ONLY a single fenced json code block (nothing before or after it) with EXACTLY this shape -- no extra top-level keys, no commentary outside the block:
 {
@@ -107,12 +112,26 @@ def _implementation_spec_from_summary(raw: dict) -> ImplementationSpecification:
     )
 
 
-async def run_architecture_review(*, story_id: str, repo_root: str, run_service: ArchitectureReviewService) -> None:
+async def run_architecture_review(
+    *, story_id: str, repo_root: str, run_service: ArchitectureReviewService, customer_id: Optional[str] = None
+) -> None:
     """The whole Architecture Review step for one approved story.
     Intended to run as a background task -- never raises; all failure
     paths are recorded via run_service.fail(), same convention as
     run_enhancement (orchestration_driver.py)."""
     run_service.start(story_id)
+
+    from .agent_registry_service import compute_agent_version
+    from .registry import get_agent_run_service
+
+    agent_run_service = get_agent_run_service()
+    agent_run = agent_run_service.start(
+        agent_name="architect",
+        driver="architecture_driver",
+        story_id=story_id,
+        customer_id=customer_id,
+        agent_version=compute_agent_version("architect", repo_root),
+    )
 
     final_text: Optional[str] = None
     try:
@@ -120,9 +139,9 @@ async def run_architecture_review(*, story_id: str, repo_root: str, run_service:
 
         options = sdk.ClaudeAgentOptions(
             cwd=repo_root,
-            permission_mode="dontAsk",
+            permission_mode=PERMISSION_MODE,
             allowed_tools=_ALLOWED_TOOLS,
-            max_turns=40,
+            max_turns=MAX_TURNS,
         )
         prompt = _build_prompt(story_id)
 
@@ -141,5 +160,7 @@ async def run_architecture_review(*, story_id: str, repo_root: str, run_service:
             architect_decision=_architect_decision_from_summary(summary),
             implementation_spec=_implementation_spec_from_summary(summary),
         )
+        agent_run_service.complete(agent_run.run_id)
     except Exception as exc:  # noqa: BLE001 -- always recorded, never raised into the background task runner
         run_service.fail(story_id, str(exc))
+        agent_run_service.fail(agent_run.run_id, str(exc))

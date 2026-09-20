@@ -28,6 +28,7 @@ from ..services.architecture_driver import run_architecture_review
 from ..services.registry import (
     get_architecture_review_service,
     get_change_service,
+    get_decision_feedback_service,
     get_delivery_queue_service,
 )
 
@@ -62,7 +63,11 @@ def start_architecture_review(
         raise HTTPException(status_code=409, detail=f"architecture review already in progress for {change_id}")
 
     background_tasks.add_task(
-        run_architecture_review, story_id=change_id, repo_root=settings.repo_root, run_service=run_service,
+        run_architecture_review,
+        story_id=change_id,
+        repo_root=settings.repo_root,
+        run_service=run_service,
+        customer_id=ctx.customer_id,
     )
     return {"status": "started"}
 
@@ -88,6 +93,14 @@ def approve_exact_change(
     _require_queued_change(change_id, ctx.customer_id)
     record = _pending_change_record(change_id)
     approval.approve_change(record["change_id"], payload.decided_by, note=payload.note)
+    get_decision_feedback_service().record(
+        change_id=change_id,
+        customer_id=ctx.customer_id,
+        kind="exact_change_approval",
+        decided_by=payload.decided_by,
+        identity_id=ctx.identity.id,
+        note=payload.note,
+    )
     change = get_change_service().get_for_customer(change_id, ctx.customer_id)
     assert change is not None
     return change.model_dump(mode="json", by_alias=True)
@@ -102,6 +115,15 @@ def reject_exact_change(
         raise HTTPException(status_code=422, detail="a rejection must include a reason")
     record = _pending_change_record(change_id)
     approval.reject_change(record["change_id"], payload.decided_by, payload.note)
+    get_decision_feedback_service().record(
+        change_id=change_id,
+        customer_id=ctx.customer_id,
+        kind="exact_change_rejection",
+        decided_by=payload.decided_by,
+        identity_id=ctx.identity.id,
+        reason_code=payload.rejection_reason,
+        note=payload.note,
+    )
     change = get_change_service().get_for_customer(change_id, ctx.customer_id)
     assert change is not None
     return change.model_dump(mode="json", by_alias=True)

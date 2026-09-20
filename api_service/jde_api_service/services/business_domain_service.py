@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import uuid
 
-from ..models.business_domain import BusinessDomain, BusinessDomainCreate
+from ..models.business_domain import BusinessDomain, BusinessDomainCreate, BusinessDomainStatus
 from ..persistence.json_file_store import JsonFileStore
 
 
@@ -53,3 +53,15 @@ class BusinessDomainService:
             # another customer must look identical to a missing one.
             return None
         return BusinessDomain.model_validate(doc)
+
+    def update_status(self, domain_id: str, status: BusinessDomainStatus) -> BusinessDomain:
+        """Caller (the router) must have already confirmed the domain
+        belongs to the caller's customer via get_for_customer -- this
+        method itself trusts domain_id, same convention append_version
+        etc. use elsewhere once existence/ownership is already checked."""
+        doc = self._store.get(domain_id)
+        assert doc is not None
+        domain = BusinessDomain.model_validate(doc)
+        domain.status = status
+        self._store.put(domain.id, domain.model_dump(mode="json", by_alias=False))
+        return domain
