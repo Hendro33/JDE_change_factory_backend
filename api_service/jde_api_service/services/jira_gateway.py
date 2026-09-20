@@ -28,12 +28,41 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Optional, Protocol
+from urllib.parse import urlparse
 
 import httpx
 
 
 class JiraGatewayError(RuntimeError):
     pass
+
+
+class InvalidJiraBaseUrl(ValueError):
+    pass
+
+
+def normalize_jira_base_url(raw: str) -> str:
+    """The configured value must be the Jira SITE's base URL (e.g.
+    https://yourcompany.atlassian.net), never a project, queue, board or
+    issue link -- every REST call in this module builds its own path
+    onto whatever is stored here (search_issues_in_status,
+    test_live_connection, ...), so a URL that already has a path would
+    silently produce a wrong or doubled path on every request. Raises
+    InvalidJiraBaseUrl with a message safe to show a user directly."""
+    candidate = (raw or "").strip().rstrip("/")
+    if not candidate:
+        raise InvalidJiraBaseUrl("Jira site URL is required.")
+    parsed = urlparse(candidate)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        raise InvalidJiraBaseUrl(
+            "Jira site URL must be a full URL, e.g. https://yourcompany.atlassian.net."
+        )
+    if parsed.path or parsed.query or parsed.fragment:
+        raise InvalidJiraBaseUrl(
+            "Jira site URL should be the site's base URL only (e.g. https://yourcompany.atlassian.net) -- "
+            "not a project, queue, board or issue link."
+        )
+    return f"{parsed.scheme}://{parsed.netloc}"
 
 
 @dataclass(frozen=True)
@@ -213,11 +242,12 @@ def test_live_connection(
     key was given) additionally proves this account can see that
     specific project -- the same permission the sync handshake itself
     needs."""
-    if not base_url:
-        return False, "Jira site URL is required."
     if not email or not api_token:
         return False, "Email and API token are both required."
-    base_url = base_url.rstrip("/")
+    try:
+        base_url = normalize_jira_base_url(base_url)
+    except InvalidJiraBaseUrl as exc:
+        return False, str(exc)
 
     with httpx.Client(timeout=15.0, transport=transport) as http:
         try:

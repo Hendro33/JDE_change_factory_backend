@@ -14,6 +14,7 @@ from typing import Optional
 
 from ..models.jira_integration import JiraIntegrationConfig, JiraIntegrationConfigUpdate
 from ..persistence.json_file_store import JsonFileStore
+from .jira_gateway import normalize_jira_base_url
 
 
 def _now() -> str:
@@ -29,9 +30,12 @@ class JiraIntegrationService:
         return JiraIntegrationConfig.model_validate(doc) if doc else None
 
     def upsert(self, customer_id: str, payload: JiraIntegrationConfigUpdate) -> JiraIntegrationConfig:
+        """Raises jira_gateway.InvalidJiraBaseUrl (a ValueError) if
+        base_url isn't a bare site URL -- e.g. a project/queue/issue
+        link pasted in by mistake. The router turns that into a 422."""
         config = JiraIntegrationConfig(
             customer_id=customer_id,
-            base_url=payload.base_url.rstrip("/"),
+            base_url=normalize_jira_base_url(payload.base_url),
             project_key=payload.project_key,
             pickup_status=payload.pickup_status,
             post_pickup_status=payload.post_pickup_status,

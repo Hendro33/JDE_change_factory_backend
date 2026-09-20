@@ -17,14 +17,12 @@ things the design explicitly requires:
 
 from __future__ import annotations
 
-import pytest
-
 from jde_api_service import config as api_config
 from jde_api_service.models.jira_integration import JiraIntegrationConfigUpdate
 from jde_api_service.services.change_request_service import ChangeRequestService
 from jde_api_service.services.jira_gateway import JiraHttpGateway, JiraMockGateway, _MockIssueState
 from jde_api_service.services.jira_integration_service import JiraIntegrationService
-from jde_api_service.services.jira_sync_service import JiraNotConfigured, JiraSyncService
+from jde_api_service.services.jira_sync_service import JiraSyncService
 from jde_api_service.services.registry import get_jira_gateway
 
 from .conftest import headers
@@ -70,6 +68,30 @@ def test_jira_integration_config_is_customer_scoped_and_editable(client):
     assert r.json()["baseUrl"] == ""
 
 
+def test_jira_integration_normalizes_a_trailing_slash(client):
+    r = client.put("/admin/jira-integration", headers=headers(customer="vdb"), json=_config_payload(baseUrl="https://bicycleworks.atlassian.net/"))
+    assert r.status_code == 200
+    assert r.json()["baseUrl"] == "https://bicycleworks.atlassian.net"
+
+
+def test_jira_integration_rejects_a_project_or_queue_url(client):
+    r = client.put(
+        "/admin/jira-integration", headers=headers(customer="vdb"),
+        json=_config_payload(baseUrl="https://bicycleworks.atlassian.net/jira/software/projects/CON/issues"),
+    )
+    assert r.status_code == 422
+    assert "site url" in r.json()["detail"].lower()
+
+    # Nothing was saved -- a rejected save must not leave a half-written config.
+    r2 = client.get("/admin/jira-integration", headers=headers(customer="vdb"))
+    assert r2.json()["baseUrl"] == ""
+
+
+def test_jira_integration_rejects_a_non_http_url(client):
+    r = client.put("/admin/jira-integration", headers=headers(customer="vdb"), json=_config_payload(baseUrl="ftp://bicycleworks.atlassian.net"))
+    assert r.status_code == 422
+
+
 def test_jira_status_never_exposes_credentials(client):
     r = client.get("/admin/jira-integration/status", headers=headers(customer="vdb"))
     assert r.status_code == 200
@@ -88,10 +110,12 @@ def test_sync_refuses_when_not_configured(client):
 
 
 def test_integrations_list_reflects_jira_configuration_state(client):
+    # No credentials configured for this customer -- stays mock, honestly
+    # reported as "no credential yet" rather than a deployment-wide claim.
     r = client.get("/admin/integrations", headers=headers(customer="vdb"))
     jira_row = next(i for i in r.json() if i["name"] == "Jira Service Management")
     assert jira_row["connected"] is False
-    assert "mock mode" in jira_row["detail"].lower()
+    assert "no jira credential" in jira_row["detail"].lower()
 
 
 # ---------------------------------------------------------------------
@@ -294,7 +318,9 @@ def test_update_jira_credentials_never_echoes_the_token(client):
     r = client.put("/admin/jira-credentials", headers=headers(customer="vdb"), json=_credentials_payload())
     assert r.status_code == 200
     body = r.json()
-    assert body == {"mockMode": True, "credentialsConfigured": True, "configConfigured": False}
+    # Saving a valid credential is, by itself, enough to go live -- no
+    # JDE_JIRA_MOCK_MODE or other backend file edit involved.
+    assert body == {"mockMode": False, "credentialsConfigured": True, "configConfigured": False}
     dumped = str(body).lower()
     for forbidden in ("super-secret-token", "apitoken", "email"):
         assert forbidden not in dumped
@@ -316,6 +342,18 @@ def test_jira_credentials_are_customer_scoped(client):
 
     nhd_status = client.get("/admin/jira-integration/status", headers=headers(customer="nhd")).json()
     assert nhd_status["credentialsConfigured"] is False
+
+
+def test_deployment_force_mock_overrides_a_configured_credential(client, monkeypatch):
+    """JDE_JIRA_MOCK_MODE=true is the one remaining deployment-level
+    switch -- it still wins even once a customer has saved real
+    credentials, e.g. for a shared demo/staging environment."""
+    monkeypatch.setattr(api_config.settings, "jira_mock_mode", True)
+    client.put("/admin/jira-credentials", headers=headers(customer="vdb"), json=_credentials_payload())
+
+    status = client.get("/admin/jira-integration/status", headers=headers(customer="vdb")).json()
+    assert status["credentialsConfigured"] is True
+    assert status["mockMode"] is True
 
 
 # ---------------------------------------------------------------------
@@ -365,24 +403,28 @@ def test_test_connection_reports_failure_without_a_500(client, monkeypatch):
 
 
 # ---------------------------------------------------------------------
-# get_jira_gateway wiring -- mock mode always wins; live mode uses
-# THIS customer's own saved credentials, never any other customer's.
+# get_jira_gateway wiring -- a customer with no saved credentials stays
+# mock (no error: the connector must stay exercisable before real
+# credentials exist); a customer with saved credentials goes live from
+# that alone, with no JDE_JIRA_MOCK_MODE or other env var involved;
+# JDE_JIRA_MOCK_MODE=true still force-overrides everyone to mock.
 # ---------------------------------------------------------------------
 def test_get_jira_gateway_is_mock_by_default(isolated_dirs):
     assert isinstance(get_jira_gateway("cust1"), JiraMockGateway)
 
 
-def test_get_jira_gateway_refuses_live_mode_without_credentials(isolated_dirs, monkeypatch):
+def test_get_jira_gateway_stays_mock_without_credentials_even_when_not_force_mocked(isolated_dirs, monkeypatch):
     monkeypatch.setattr(api_config.settings, "jira_mock_mode", False)
-    with pytest.raises(JiraNotConfigured):
-        get_jira_gateway("cust1")
+    assert isinstance(get_jira_gateway("cust1"), JiraMockGateway)
 
 
-def test_get_jira_gateway_uses_this_customers_saved_credentials(isolated_dirs, monkeypatch):
+def test_get_jira_gateway_goes_live_purely_from_saved_credentials(isolated_dirs):
     from jde_api_service.models.jira_integration import JiraCredentialsUpdate
     from jde_api_service.services.registry import get_jira_credentials_service
 
-    monkeypatch.setattr(api_config.settings, "jira_mock_mode", False)
+    # No monkeypatching of settings at all -- this is the out-of-the-box
+    # default (jira_mock_mode defaults false) plus an Admin-saved
+    # credential, exactly the "no .env or backend file edit" flow.
     get_jira_credentials_service().upsert(
         "cust1", JiraCredentialsUpdate(email="bot@example.com", api_token="secret-token", updated_by="Hendro")
     )
@@ -391,7 +433,17 @@ def test_get_jira_gateway_uses_this_customers_saved_credentials(isolated_dirs, m
     assert isinstance(gateway, JiraHttpGateway)
     assert gateway._auth() == ("bot@example.com", "secret-token")
 
-    # A different, unconfigured customer is still refused -- credentials
-    # are never shared across customers.
-    with pytest.raises(JiraNotConfigured):
-        get_jira_gateway("cust2")
+    # A different, unconfigured customer is unaffected -- credentials
+    # are never shared across customers, and there's no error, just mock.
+    assert isinstance(get_jira_gateway("cust2"), JiraMockGateway)
+
+
+def test_get_jira_gateway_force_mock_overrides_a_configured_credential(isolated_dirs, monkeypatch):
+    from jde_api_service.models.jira_integration import JiraCredentialsUpdate
+    from jde_api_service.services.registry import get_jira_credentials_service
+
+    get_jira_credentials_service().upsert(
+        "cust1", JiraCredentialsUpdate(email="bot@example.com", api_token="secret-token", updated_by="Hendro")
+    )
+    monkeypatch.setattr(api_config.settings, "jira_mock_mode", True)
+    assert isinstance(get_jira_gateway("cust1"), JiraMockGateway)

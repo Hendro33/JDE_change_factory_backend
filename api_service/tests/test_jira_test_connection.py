@@ -12,12 +12,50 @@ project" vs. "can't reach the site at all".
 from __future__ import annotations
 
 import httpx
+import pytest
 
+from jde_api_service.services.jira_gateway import InvalidJiraBaseUrl, normalize_jira_base_url
 from jde_api_service.services.jira_gateway import test_live_connection as check_live_connection
 
 # pytest would otherwise try to collect the imported test_live_connection
 # itself as a test function (its name matches pytest's own naming
 # convention) -- the alias above avoids that; every call site below uses it.
+
+
+def test_normalize_jira_base_url_strips_trailing_slash():
+    assert normalize_jira_base_url("https://x.atlassian.net/") == "https://x.atlassian.net"
+
+
+def test_normalize_jira_base_url_rejects_empty():
+    with pytest.raises(InvalidJiraBaseUrl, match="required"):
+        normalize_jira_base_url("")
+
+
+def test_normalize_jira_base_url_rejects_a_project_or_queue_link():
+    with pytest.raises(InvalidJiraBaseUrl, match="project, queue, board or issue link"):
+        normalize_jira_base_url("https://x.atlassian.net/jira/software/projects/CON/issues")
+
+
+def test_normalize_jira_base_url_rejects_non_http_scheme():
+    with pytest.raises(InvalidJiraBaseUrl):
+        normalize_jira_base_url("ftp://x.atlassian.net")
+
+
+def test_normalize_jira_base_url_rejects_a_bare_host_with_no_scheme():
+    with pytest.raises(InvalidJiraBaseUrl):
+        normalize_jira_base_url("x.atlassian.net")
+
+
+def test_bad_site_url_is_refused_before_any_network_call():
+    def handler(request: httpx.Request) -> httpx.Response:  # pragma: no cover
+        raise AssertionError("no request should be sent")
+
+    ok, message = check_live_connection(
+        base_url="https://x.atlassian.net/browse/CON-1", email="bot@example.com", api_token="secret",
+        transport=httpx.MockTransport(handler),
+    )
+    assert ok is False
+    assert "project, queue, board or issue link" in message
 
 
 def test_missing_fields_are_refused_before_any_network_call():

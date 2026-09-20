@@ -30,7 +30,7 @@ from .enhancement_run_service import EnhancementRunService
 from .jira_credentials_service import JiraCredentialsService
 from .jira_gateway import JiraGateway, JiraHttpGateway, JiraMockGateway
 from .jira_integration_service import JiraIntegrationService
-from .jira_sync_service import JiraNotConfigured, JiraSyncService
+from .jira_sync_service import JiraSyncService
 from .metrics_service import MetricsService
 
 
@@ -100,15 +100,24 @@ def get_jira_credentials_service() -> JiraCredentialsService:
     return JiraCredentialsService(os.path.join(settings.data_dir, "jira_credentials"))
 
 
-def get_jira_gateway(customer_id: str) -> JiraGateway:
+def jira_is_live_for_customer(customer_id: str) -> bool:
+    """The actual live/mock decision for one customer's Jira connector:
+    live only when the deployment hasn't force-disabled it AND this
+    customer has their own email + API token saved (Admin >
+    Integrations > Jira) -- no other switch. See config.py's own
+    comment on jira_mock_mode for why that flag is a force-mock
+    override now, not something that has to be flipped for a normal
+    customer to go live."""
     if settings.jira_mock_mode:
+        return False
+    return get_jira_credentials_service().is_configured(customer_id)
+
+
+def get_jira_gateway(customer_id: str) -> JiraGateway:
+    if not jira_is_live_for_customer(customer_id):
         return JiraMockGateway()
     creds = get_jira_credentials_service().get_for_customer(customer_id)
-    if creds is None or not creds.email or not creds.api_token:
-        raise JiraNotConfigured(
-            f"JDE_JIRA_MOCK_MODE is false but no Jira credentials are configured for customer {customer_id}. "
-            "Enter them under Admin > Integrations > Jira first."
-        )
+    assert creds is not None  # jira_is_live_for_customer already confirmed this
     return JiraHttpGateway(email=creds.email, api_token=creds.api_token)
 
 

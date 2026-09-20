@@ -59,7 +59,7 @@ from ..models.jira_integration import (
 )
 from ..models.session import Customer as CustomerOut
 from ..services.customer_service import get_registry
-from ..services.jira_gateway import test_live_connection
+from ..services.jira_gateway import InvalidJiraBaseUrl, test_live_connection
 from ..services.jira_sync_service import JiraNotConfigured
 from ..services.registry import (
     get_agent_registry_service,
@@ -70,6 +70,7 @@ from ..services.registry import (
     get_jira_credentials_service,
     get_jira_integration_service,
     get_jira_sync_service,
+    jira_is_live_for_customer,
 )
 
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -256,13 +257,13 @@ def list_integrations(ctx: AuthContext = Depends(require_customer_access)) -> li
 
     jira_config = get_jira_integration_service().get_for_customer(ctx.customer_id)
     jira_credentials_ok = get_jira_credentials_service().is_configured(ctx.customer_id)
-    jira_live = (not api_settings.jira_mock_mode) and jira_credentials_ok and bool(jira_config and jira_config.is_configured())
+    jira_live = jira_is_live_for_customer(ctx.customer_id) and bool(jira_config and jira_config.is_configured())
     if api_settings.jira_mock_mode:
-        jira_detail = "Running in mock mode -- see Jira below to configure and try a sync"
-    elif not jira_config or not jira_config.is_configured():
-        jira_detail = "Not configured for this customer -- see Jira below"
+        jira_detail = "This deployment is force-mocked (JDE_JIRA_MOCK_MODE) -- see Jira below to configure and try a sync"
     elif not jira_credentials_ok:
-        jira_detail = "Customer configuration is set, but no Jira credential is configured for this customer -- see Jira below"
+        jira_detail = "No Jira credential configured for this customer yet -- see Jira below"
+    elif not jira_config or not jira_config.is_configured():
+        jira_detail = "Credential is set, but the site/project/status configuration is not complete -- see Jira below"
     else:
         jira_detail = f"Connected to project {jira_config.project_key}"
 
@@ -306,14 +307,17 @@ def get_jira_integration(ctx: AuthContext = Depends(require_customer_access)) ->
 def update_jira_integration(
     payload: JiraIntegrationConfigUpdate, ctx: AuthContext = Depends(require_customer_access)
 ) -> JiraIntegrationConfig:
-    return get_jira_integration_service().upsert(ctx.customer_id, payload)
+    try:
+        return get_jira_integration_service().upsert(ctx.customer_id, payload)
+    except InvalidJiraBaseUrl as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
 
 
 @router.get("/jira-integration/status", response_model=JiraConnectionStatus)
 def get_jira_integration_status(ctx: AuthContext = Depends(require_customer_access)) -> JiraConnectionStatus:
     config = get_jira_integration_service().get_for_customer(ctx.customer_id)
     return JiraConnectionStatus(
-        mock_mode=api_settings.jira_mock_mode,
+        mock_mode=not jira_is_live_for_customer(ctx.customer_id),
         credentials_configured=get_jira_credentials_service().is_configured(ctx.customer_id),
         config_configured=bool(config and config.is_configured()),
     )
@@ -327,11 +331,14 @@ def update_jira_credentials(
     the one deliberate exception to "no credential through the Admin
     API" (see this router's own docstring). The token is accepted here
     and never echoed back by this or any other endpoint: the response
-    is status only, exactly like get_jira_integration_status above."""
+    is status only, exactly like get_jira_integration_status above.
+    Saving a valid credential here is, by itself, enough to make this
+    customer's connector live (jira_is_live_for_customer) -- no
+    JDE_JIRA_MOCK_MODE or other backend file edit required."""
     get_jira_credentials_service().upsert(ctx.customer_id, payload)
     config = get_jira_integration_service().get_for_customer(ctx.customer_id)
     return JiraConnectionStatus(
-        mock_mode=api_settings.jira_mock_mode,
+        mock_mode=not jira_is_live_for_customer(ctx.customer_id),
         credentials_configured=True,
         config_configured=bool(config and config.is_configured()),
     )

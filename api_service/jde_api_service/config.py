@@ -76,17 +76,22 @@ class Settings:
 
     # Jira Service Management hand-off connector (jira_gateway.py /
     # jira_sync_service.py). This is the only deployment-level Jira
-    # setting left -- a hard, operator-controlled safety switch that
-    # stays true (mock) by default so the connector is fully
-    # exercisable (Admin UI, sync, tests) against JiraMockGateway before
-    # anyone has entered a real credential. Credentials themselves
-    # (email + API token) and the rest of the connection (site URL,
-    # project key, status names, field ids) are customer-scoped
-    # configuration entered through Admin > Integrations > Jira and
-    # stored via JiraCredentialsService / JiraIntegrationService, not
-    # here -- see models/jira_integration.py's own docstring for the
-    # explicit pilot/production distinction this follows.
-    jira_mock_mode: bool = _env_bool("JDE_JIRA_MOCK_MODE", default=True)
+    # setting left, and it is now a FORCE-MOCK override only -- default
+    # false, so a customer whose email + API token are configured under
+    # Admin > Integrations > Jira goes live purely from that Admin
+    # action, with no .env or backend file edit required
+    # (registry.get_jira_gateway is what actually applies this: a
+    # customer with no credentials configured still gets JiraMockGateway
+    # regardless of this flag, so the connector stays fully exercisable
+    # before real credentials exist). Set JDE_JIRA_MOCK_MODE=true only
+    # to force the whole deployment to mock regardless of what any
+    # customer has configured -- e.g. a shared demo/staging environment.
+    # Credentials/config themselves are customer-scoped, entered through
+    # Admin > Integrations > Jira and stored via JiraCredentialsService /
+    # JiraIntegrationService -- see models/jira_integration.py's own
+    # docstring for the explicit pilot/production distinction this
+    # follows.
+    jira_mock_mode: bool = _env_bool("JDE_JIRA_MOCK_MODE", default=False)
 
 
 settings = Settings()
