@@ -6,10 +6,10 @@ the one genuinely new per-customer write surface this increment adds
 service layer already supported but had no route for.
 
 Deliberately NOT here, on purpose: any endpoint that would accept or
-return an AIS/JDE credential (see AisConnectionStatus -- status only,
-never a value); any endpoint that edits a .claude/agents/*.md file;
-and any endpoint that widens what an agent's tool access is beyond
-what its own .md file already declares.
+return an AIS/JDE or Jira credential (see AisConnectionStatus /
+JiraConnectionStatus -- status only, never a value); any endpoint that
+edits a .claude/agents/*.md file; and any endpoint that widens what an
+agent's tool access is beyond what its own .md file already declares.
 """
 
 from __future__ import annotations
@@ -29,17 +29,27 @@ from ..models.admin import (
     IdentitySummary,
     IntegrationStatus,
 )
+from ..config import settings as api_settings
 from ..models.agent_registry import AgentDefinition
 from ..models.business_domain import BusinessDomain, BusinessDomainCreate, BusinessDomainStatusUpdate
 from ..models.engagement_scope import EngagementScope, EngagementScopeUpdate
+from ..models.jira_integration import (
+    JiraConnectionStatus,
+    JiraIntegrationConfig,
+    JiraIntegrationConfigUpdate,
+    JiraSyncResult,
+)
 from ..models.session import Customer as CustomerOut
 from ..services.customer_service import get_registry
+from ..services.jira_sync_service import JiraNotConfigured
 from ..services.registry import (
     get_agent_registry_service,
     get_agent_run_service,
     get_business_domain_service,
     get_decision_feedback_service,
     get_engagement_scope_service,
+    get_jira_integration_service,
+    get_jira_sync_service,
 )
 
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -223,6 +233,19 @@ def update_business_domain_status(
 def list_integrations(ctx: AuthContext = Depends(require_customer_access)) -> list[IntegrationStatus]:
     ais = mcp_config.settings
     ais_live = (not ais.mock_mode) and bool(ais.ais_base_url)
+
+    jira_config = get_jira_integration_service().get_for_customer(ctx.customer_id)
+    jira_credentials_ok = bool(api_settings.jira_email and api_settings.jira_api_token)
+    jira_live = (not api_settings.jira_mock_mode) and jira_credentials_ok and bool(jira_config and jira_config.is_configured())
+    if api_settings.jira_mock_mode:
+        jira_detail = "Running in mock mode -- see Jira below to configure and try a sync"
+    elif not jira_config or not jira_config.is_configured():
+        jira_detail = "Not configured for this customer -- see Jira below"
+    elif not jira_credentials_ok:
+        jira_detail = "Customer configuration is set, but no deployment-level Jira credential is configured"
+    else:
+        jira_detail = f"Connected to project {jira_config.project_key}"
+
     return [
         IntegrationStatus(
             name="JD Edwards (AIS)",
@@ -232,6 +255,7 @@ def list_integrations(ctx: AuthContext = Depends(require_customer_access)) -> li
                 else "Running in mock mode -- see ERP / JDE Landscape for connection status"
             ),
         ),
+        IntegrationStatus(name="Jira Service Management", connected=jira_live, detail=jira_detail),
         IntegrationStatus(
             name="Topdesk",
             connected=False,
@@ -243,3 +267,41 @@ def list_integrations(ctx: AuthContext = Depends(require_customer_access)) -> li
             detail="Not connected -- approvals happen in-app today",
         ),
     ]
+
+
+# ---------------------------------------------------------------------
+# Jira Service Management hand-off (jira_gateway.py / jira_sync_service.py)
+# ---------------------------------------------------------------------
+@router.get("/jira-integration", response_model=JiraIntegrationConfig)
+def get_jira_integration(ctx: AuthContext = Depends(require_customer_access)) -> JiraIntegrationConfig:
+    config = get_jira_integration_service().get_for_customer(ctx.customer_id)
+    if config is None:
+        # Same "no configuration means not configured" honesty as
+        # get_engagement_scope -- never a silently defaulted value.
+        return JiraIntegrationConfig(customer_id=ctx.customer_id)
+    return config
+
+
+@router.put("/jira-integration", response_model=JiraIntegrationConfig)
+def update_jira_integration(
+    payload: JiraIntegrationConfigUpdate, ctx: AuthContext = Depends(require_customer_access)
+) -> JiraIntegrationConfig:
+    return get_jira_integration_service().upsert(ctx.customer_id, payload)
+
+
+@router.get("/jira-integration/status", response_model=JiraConnectionStatus)
+def get_jira_integration_status(ctx: AuthContext = Depends(require_customer_access)) -> JiraConnectionStatus:
+    config = get_jira_integration_service().get_for_customer(ctx.customer_id)
+    return JiraConnectionStatus(
+        mock_mode=api_settings.jira_mock_mode,
+        credentials_configured=bool(api_settings.jira_email and api_settings.jira_api_token),
+        config_configured=bool(config and config.is_configured()),
+    )
+
+
+@router.post("/jira-integration/sync", response_model=JiraSyncResult)
+def sync_jira_integration(ctx: AuthContext = Depends(require_customer_access)) -> JiraSyncResult:
+    try:
+        return get_jira_sync_service().sync_for_customer(ctx.customer_id)
+    except JiraNotConfigured as exc:
+        raise HTTPException(status_code=409, detail=str(exc))

@@ -54,7 +54,7 @@ from .customer_link_service import CustomerLinkService
 from .domain_review_service import DomainReviewService
 from .enhancement_run_service import EnhancementRunService
 
-_VALID_SOURCES = {"Business", "Support / Topdesk", "Optimisation", "DevOps"}
+_VALID_SOURCES = {"Business", "Support / Topdesk", "Optimisation", "DevOps", "Jira"}
 
 
 def _iso(ts: Optional[float]) -> Optional[str]:
@@ -376,6 +376,7 @@ def _change_from_request(cr: ChangeRequest, run: Optional[EnhancementRun]) -> Ch
         updated_by=cr.requester,
         processing_stage=processing_stage,
         processing_error=processing_error,
+        source_metadata=cr.source_metadata,
         user_story=user_story,
         evidence=[],
     )

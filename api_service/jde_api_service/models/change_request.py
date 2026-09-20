@@ -4,8 +4,9 @@ ChangeRequest -- the common intake model (approved analysis, Section 6).
 Every source connector's only job is producing one of these; the
 downstream Change Factory workflow (Receive/Improve/Check onward)
 operates on this common shape regardless of where it came from.
-Phase 1 only implements the DIRECT source -- Topdesk and file-upload
-connectors are future work that will populate the same model.
+Phase 1 implements the DIRECT source and the Jira connector
+(services/jira_sync_service.py) -- Topdesk and file-upload connectors
+remain future work that will populate the same model.
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ from .change import ChangeSource
 class ChangeRequestSourceType(str, Enum):
     DIRECT = "DIRECT"
     TOPDESK = "TOPDESK"
+    JIRA = "JIRA"
     FILE_UPLOAD = "FILE_UPLOAD"
 
 
@@ -46,6 +48,12 @@ class ChangeRequest(ApiModel):
     attachments: list[Attachment] = []
     requester: str
     status: Literal["received", "handed_off", "duplicate", "rejected_at_intake"] = "received"
+    # Free-form context carried verbatim from the source connector (e.g.
+    # Jira's Request Type / Work Type / Priority) -- imported for display
+    # only. Nothing in this service reads these values to decide routing
+    # or classification; that stays ITSM's/Jira's decision, made before
+    # a ticket ever reaches the configured pickup status.
+    source_metadata: dict[str, str] = {}
 
 
 class ChangeRequestCreate(ApiModel):

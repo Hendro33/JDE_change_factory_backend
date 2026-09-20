@@ -12,7 +12,7 @@ from typing import Literal, Optional
 
 from .base import ApiModel
 
-ChangeSource = Literal["Business", "Support / Topdesk", "Optimisation", "DevOps"]
+ChangeSource = Literal["Business", "Support / Topdesk", "Optimisation", "DevOps", "Jira"]
 
 LifecycleState = Literal[
     "RECEIVED", "REFINING", "BACKLOG_READY", "APPROVED", "REJECTED",
@@ -165,6 +165,12 @@ class Change(ApiModel):
     # a read-only projection of the DomainReview sidecar (domain_review.py)
     # for list/filter display -- the full record (history, notes,
     # approvals) is fetched separately via GET /changes/{id}/domain-review.
+    # Source-connector context (e.g. Jira Request Type / Work Type /
+    # Priority) carried through verbatim for display -- never read by
+    # any routing/classification logic. See ChangeRequest.source_metadata
+    # for where this originates.
+    source_metadata: dict[str, str] = {}
+
     business_domain_id: Optional[str] = None
     domain_review_stage: Optional[
         Literal[
