@@ -20,7 +20,7 @@ from fastapi.responses import JSONResponse
 from .config import settings
 
 logger = logging.getLogger("jde_api_service")
-from .routers import change_requests, changes, domain_governance, session
+from .routers import architecture_review, change_requests, changes, domain_governance, session
 from .services.registry import (
     get_business_domain_service,
     get_change_request_service,
@@ -63,6 +63,7 @@ app.include_router(session.router)
 app.include_router(changes.router)
 app.include_router(change_requests.router)
 app.include_router(domain_governance.router)
+app.include_router(architecture_review.router)
 
 
 @app.exception_handler(Exception)

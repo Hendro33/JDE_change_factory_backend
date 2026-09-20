@@ -15,6 +15,7 @@ from __future__ import annotations
 import os
 
 from ..config import settings
+from .architecture_review_service import ArchitectureReviewService
 from .business_domain_service import BusinessDomainService
 from .change_request_service import ChangeRequestService
 from .change_service import ChangeService
@@ -49,12 +50,17 @@ def get_delivery_queue_service() -> DeliveryQueueService:
     return DeliveryQueueService(os.path.join(settings.data_dir, "delivery_queue"))
 
 
+def get_architecture_review_service() -> ArchitectureReviewService:
+    return ArchitectureReviewService(os.path.join(settings.data_dir, "architecture_reviews"))
+
+
 def get_change_service() -> ChangeService:
     return ChangeService(
         get_change_request_service(),
         get_customer_link_service(),
         get_enhancement_run_service(),
         get_domain_review_service(),
+        get_architecture_review_service(),
     )
 
 

@@ -102,6 +102,20 @@ class MetricsService:
             1 for c in all_changes
             if c.state == "BACKLOG_READY" and c.domain_review_stage in _PRE_DOMAIN_OWNER_APPROVAL_STAGES
         )
+        # Gate 1 -- Domain Owner already approved, Application Manager
+        # hasn't authorised it for delivery yet.
+        awaiting_application_manager = sum(
+            1 for c in all_changes
+            if c.state == "BACKLOG_READY" and c.domain_review_stage == "ready_for_application_manager"
+        )
+        # Gate 2 -- the Architect has proposed an exact change (or a
+        # human did, via the CLI) and nobody has approved or rejected
+        # it yet. change_approval only exists once a decision has been
+        # made (change_service.py), so its absence alongside a real
+        # exact_change is exactly "still pending".
+        awaiting_exact_change_approval = sum(
+            1 for c in all_changes if c.exact_change is not None and c.change_approval is None
+        )
         in_delivery = len(self._delivery_queue.list_for_customer(customer_id)) if self._delivery_queue else 0
         in_build = sum(1 for c in all_changes if c.state in _IN_BUILD)
         in_testing = in_state("TESTING")
@@ -135,7 +149,8 @@ class MetricsService:
             totals=[
                 Total(key="incoming_requests", label="Incoming Requests", value=incoming_requests),
                 Total(key="awaiting_domain_owner", label="User Stories awaiting Domain Owner approval", value=awaiting_domain_owner),
-                Total(key="backlog_ready", label="Backlog-ready User Stories", value=awaiting_approval),
+                Total(key="awaiting_application_manager", label="User Stories awaiting Application Manager decision", value=awaiting_application_manager),
+                Total(key="awaiting_exact_change_approval", label="Changes awaiting Exact Change Approval", value=awaiting_exact_change_approval),
                 Total(key="in_delivery", label="Changes in Delivery", value=in_delivery),
                 Total(key="awaiting_business_validation", label="Awaiting Business Validation", value=in_testing),
                 Total(key="completed", label="Completed", value=completed),

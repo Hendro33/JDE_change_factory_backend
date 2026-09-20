@@ -22,7 +22,7 @@ exact-change approval separate):
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 
 from jde_mcp_server import backlog
 
@@ -36,7 +36,9 @@ from ..models.domain_review import (
     DomainReview,
     GovernanceDecisionInput,
 )
+from ..services.architecture_driver import run_architecture_review
 from ..services.registry import (
+    get_architecture_review_service,
     get_business_domain_service,
     get_change_service,
     get_delivery_queue_service,
@@ -163,14 +165,27 @@ def domain_owner_approve(
 
 @router.post("/changes/{change_id}/domain-review/application-manager-approve", response_model=DomainReview)
 def application_manager_approve(
-    change_id: str, payload: GovernanceDecisionInput, ctx: AuthContext = Depends(require_customer_access)
+    change_id: str,
+    payload: GovernanceDecisionInput,
+    background_tasks: BackgroundTasks,
+    ctx: AuthContext = Depends(require_customer_access),
 ) -> DomainReview:
-    """The one action that actually clears Gate 2 (backlog.py,
-    unmodified) -- Domain Owner approval never does this. Reaching this
-    endpoint's success path means: a human explicitly approved the
-    business requirement (Domain Owner) AND a human explicitly approved
-    it for the sprint/build (Application Manager here) -- two named
-    people, two timestamps, two reasons, exactly Section 6.5's model."""
+    """Gate 1 -- "Jade may start working on this requirement." The one
+    action that actually clears backlog.py's Gate 2 (unmodified) --
+    Domain Owner approval never does this. Reaching this endpoint's
+    success path means: a human explicitly approved the business
+    requirement (Domain Owner) AND a human explicitly authorised it
+    for delivery (Application Manager here) -- two named people, two
+    timestamps, two reasons, exactly Section 6.5's model.
+
+    Also starts Architecture Review as a background task, the same
+    BackgroundTasks mechanism /changes/{id}/enhance already uses --
+    once Gate 1 has authorised the work, Jade begins architecture
+    analysis on its own rather than waiting for a second, separate
+    button press. This is presentational scheduling only: it never
+    calls propose_change or approve_change itself, and Gate 2 (exact
+    change approval) still requires its own explicit human decision
+    below, same as before."""
     _change_with_story(change_id, ctx.customer_id)
     service = get_domain_review_service()
     review = service.get(change_id)
@@ -180,6 +195,13 @@ def application_manager_approve(
     updated = service.record_application_manager_approval(change_id, payload.decided_by, payload.note)
     backlog.approve(change_id, payload.decided_by, payload.note)
     get_delivery_queue_service().add(change_id, ctx.customer_id, payload.decided_by, payload.note)
+
+    background_tasks.add_task(
+        run_architecture_review,
+        story_id=change_id,
+        repo_root=settings.repo_root,
+        run_service=get_architecture_review_service(),
+    )
     return updated
 
 
