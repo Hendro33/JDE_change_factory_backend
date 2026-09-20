@@ -31,8 +31,6 @@ from typing import Optional, Protocol
 
 import httpx
 
-from .. import config as api_config
-
 
 class JiraGatewayError(RuntimeError):
     pass
@@ -96,18 +94,31 @@ def _adf_paragraph(text: str) -> dict:
 class JiraHttpGateway:
     """The real connector -- talks to a live Jira Cloud site via Basic
     Auth (API token), the auth shape Atlassian itself recommends for
-    exactly this kind of single-site service-to-service integration
-    (see config.py). Only exercised when JIRA_MOCK_MODE is false."""
+    exactly this kind of single-site service-to-service integration.
+    Only exercised when JDE_JIRA_MOCK_MODE is false. Credentials are
+    supplied by the caller (registry.py's get_jira_gateway, reading
+    this customer's own JiraCredentials via jira_credentials_service.py)
+    rather than read from settings here -- see models/jira_integration.py's
+    own docstring for why credentials are per-customer and Admin-entered
+    in this pilot, not a deployment-level environment variable."""
 
-    def __init__(self, transport: Optional[httpx.BaseTransport] = None) -> None:
+    def __init__(
+        self, *, email: str = "", api_token: str = "", transport: Optional[httpx.BaseTransport] = None
+    ) -> None:
+        self._email = email
+        self._api_token = api_token
         # transport is a test-only seam (httpx.MockTransport) -- normal
         # construction (registry.py) always leaves it None, giving a
         # real network-backed client.
         self._http = httpx.Client(timeout=30.0, transport=transport)
 
     def _auth(self) -> tuple[str, str]:
-        api_config.settings.require_jira_live_config()
-        return (api_config.settings.jira_email, api_config.settings.jira_api_token)
+        if not self._email or not self._api_token:
+            raise JiraGatewayError(
+                "This customer has no Jira credentials configured -- enter them under "
+                "Admin > Integrations > Jira first."
+            )
+        return (self._email, self._api_token)
 
     def _get(self, base_url: str, path: str, **kwargs) -> httpx.Response:
         resp = self._http.get(f"{base_url}{path}", auth=self._auth(), **kwargs)
@@ -176,6 +187,68 @@ class JiraHttpGateway:
                 if name and name not in names:
                     names.append(name)
         return names
+
+
+def test_live_connection(
+    *,
+    base_url: str,
+    email: str,
+    api_token: str,
+    project_key: str = "",
+    transport: Optional[httpx.BaseTransport] = None,
+) -> tuple[bool, str]:
+    """Admin > Integrations > Jira's "Test Connection" button -- a
+    deliberately stateless, ad-hoc connectivity check against
+    whatever's currently typed in the form. Never persists anything
+    (the Save action does that separately) and ALWAYS makes a real
+    call to Jira regardless of JDE_JIRA_MOCK_MODE (that flag governs
+    the sync pipeline, not this check -- the whole point of this
+    button is to verify the real connection). The returned message is
+    always safe to render as-is: it never contains the token, only the
+    account's own display name (from Jira's own /myself response) and
+    plain diagnostic text.
+
+    GET /rest/api/3/myself proves the credential authenticates; a
+    second GET /rest/api/3/project/{project_key} (only when a project
+    key was given) additionally proves this account can see that
+    specific project -- the same permission the sync handshake itself
+    needs."""
+    if not base_url:
+        return False, "Jira site URL is required."
+    if not email or not api_token:
+        return False, "Email and API token are both required."
+    base_url = base_url.rstrip("/")
+
+    with httpx.Client(timeout=15.0, transport=transport) as http:
+        try:
+            resp = http.get(f"{base_url}/rest/api/3/myself", auth=(email, api_token))
+        except httpx.RequestError as exc:
+            return False, f"Could not reach {base_url}: {exc.__class__.__name__}"
+
+        if resp.status_code == 401:
+            return False, "Authentication failed -- check the email and API token."
+        if resp.status_code == 403:
+            return False, "Authenticated, but this account does not have permission to use the Jira API."
+        if resp.status_code >= 400:
+            return False, f"Jira returned HTTP {resp.status_code} for {base_url} -- check the site URL."
+
+        display_name = (resp.json() or {}).get("displayName") or email
+
+        if not project_key:
+            return True, f"Connected to {base_url} as {display_name}. No project key given, so project access was not checked."
+
+        try:
+            proj_resp = http.get(f"{base_url}/rest/api/3/project/{project_key}", auth=(email, api_token))
+        except httpx.RequestError as exc:
+            return True, f"Connected as {display_name}, but could not verify project '{project_key}': {exc.__class__.__name__}"
+
+        if proj_resp.status_code == 404:
+            return False, f"Connected as {display_name}, but project '{project_key}' was not found or is not accessible to this account."
+        if proj_resp.status_code >= 400:
+            return False, f"Connected as {display_name}, but checking project '{project_key}' returned HTTP {proj_resp.status_code}."
+
+        project_name = (proj_resp.json() or {}).get("name") or project_key
+        return True, f"Connected to {base_url} as {display_name}. Project '{project_key}' ({project_name}) is accessible."
 
 
 def _issue_from_jira_json(raw: dict, jade_id_field: str, request_type_field: str) -> JiraIssueSummary:

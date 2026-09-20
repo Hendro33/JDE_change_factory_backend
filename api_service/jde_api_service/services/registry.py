@@ -27,9 +27,10 @@ from .delivery_queue_service import DeliveryQueueService
 from .domain_review_service import DomainReviewService
 from .engagement_scope_service import EngagementScopeService
 from .enhancement_run_service import EnhancementRunService
+from .jira_credentials_service import JiraCredentialsService
 from .jira_gateway import JiraGateway, JiraHttpGateway, JiraMockGateway
 from .jira_integration_service import JiraIntegrationService
-from .jira_sync_service import JiraSyncService
+from .jira_sync_service import JiraNotConfigured, JiraSyncService
 from .metrics_service import MetricsService
 
 
@@ -95,9 +96,21 @@ def get_jira_integration_service() -> JiraIntegrationService:
     return JiraIntegrationService(os.path.join(settings.data_dir, "jira_integrations"))
 
 
-def get_jira_gateway() -> JiraGateway:
-    return JiraMockGateway() if settings.jira_mock_mode else JiraHttpGateway()
+def get_jira_credentials_service() -> JiraCredentialsService:
+    return JiraCredentialsService(os.path.join(settings.data_dir, "jira_credentials"))
 
 
-def get_jira_sync_service() -> JiraSyncService:
-    return JiraSyncService(get_jira_integration_service(), get_change_request_service(), get_jira_gateway())
+def get_jira_gateway(customer_id: str) -> JiraGateway:
+    if settings.jira_mock_mode:
+        return JiraMockGateway()
+    creds = get_jira_credentials_service().get_for_customer(customer_id)
+    if creds is None or not creds.email or not creds.api_token:
+        raise JiraNotConfigured(
+            f"JDE_JIRA_MOCK_MODE is false but no Jira credentials are configured for customer {customer_id}. "
+            "Enter them under Admin > Integrations > Jira first."
+        )
+    return JiraHttpGateway(email=creds.email, api_token=creds.api_token)
+
+
+def get_jira_sync_service(customer_id: str) -> JiraSyncService:
+    return JiraSyncService(get_jira_integration_service(), get_change_request_service(), get_jira_gateway(customer_id))

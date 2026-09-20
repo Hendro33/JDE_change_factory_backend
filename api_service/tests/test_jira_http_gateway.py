@@ -14,17 +14,14 @@ import json
 import httpx
 import pytest
 
-from jde_api_service import config as api_config
 from jde_api_service.services.jira_gateway import JiraHttpGateway
 
 
-@pytest.fixture()
-def live_jira_credentials(monkeypatch):
-    monkeypatch.setattr(api_config.settings, "jira_email", "bot@example.com")
-    monkeypatch.setattr(api_config.settings, "jira_api_token", "secret-token")
+def _gateway(transport: httpx.MockTransport) -> JiraHttpGateway:
+    return JiraHttpGateway(email="bot@example.com", api_token="secret-token", transport=transport)
 
 
-def test_search_issues_sends_configured_jql_and_parses_response(live_jira_credentials):
+def test_search_issues_sends_configured_jql_and_parses_response():
     captured = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -52,7 +49,7 @@ def test_search_issues_sends_configured_jql_and_parses_response(live_jira_creden
             ],
         })
 
-    gateway = JiraHttpGateway(transport=httpx.MockTransport(handler))
+    gateway = _gateway(httpx.MockTransport(handler))
     issues = gateway.search_issues_in_status(
         base_url="https://bicycleworks.atlassian.net", project_key="CON",
         status_name="Ready for Jade", jade_id_field="customfield_10057",
@@ -73,7 +70,7 @@ def test_search_issues_sends_configured_jql_and_parses_response(live_jira_creden
     assert issue.jade_id_field_value is None
 
 
-def test_search_issues_paginates_using_next_page_token(live_jira_credentials):
+def test_search_issues_paginates_using_next_page_token():
     pages = [
         {"issues": [{"key": "CON-1", "id": "1", "fields": {}}], "nextPageToken": "page-2"},
         {"issues": [{"key": "CON-2", "id": "2", "fields": {}}]},
@@ -84,7 +81,7 @@ def test_search_issues_paginates_using_next_page_token(live_jira_credentials):
         calls.append(json.loads(request.content))
         return httpx.Response(200, json=pages[len(calls) - 1])
 
-    gateway = JiraHttpGateway(transport=httpx.MockTransport(handler))
+    gateway = _gateway(httpx.MockTransport(handler))
     issues = gateway.search_issues_in_status(
         base_url="https://x.atlassian.net", project_key="CON",
         status_name="Ready for Jade", jade_id_field="customfield_1",
@@ -95,7 +92,7 @@ def test_search_issues_paginates_using_next_page_token(live_jira_credentials):
     assert calls[1]["nextPageToken"] == "page-2"
 
 
-def test_find_transition_id_matches_target_status_name_not_action_name(live_jira_credentials):
+def test_find_transition_id_matches_target_status_name_not_action_name():
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={
             "transitions": [
@@ -104,24 +101,24 @@ def test_find_transition_id_matches_target_status_name_not_action_name(live_jira
             ]
         })
 
-    gateway = JiraHttpGateway(transport=httpx.MockTransport(handler))
+    gateway = _gateway(httpx.MockTransport(handler))
     transition_id = gateway.find_transition_id(
         base_url="https://x.atlassian.net", issue_key="CON-42", target_status_name="Jade - In Progress",
     )
     assert transition_id == "31"
 
 
-def test_find_transition_id_returns_none_when_target_not_reachable(live_jira_credentials):
+def test_find_transition_id_returns_none_when_target_not_reachable():
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={"transitions": [{"id": "11", "name": "Close", "to": {"name": "Closed"}}]})
 
-    gateway = JiraHttpGateway(transport=httpx.MockTransport(handler))
+    gateway = _gateway(httpx.MockTransport(handler))
     assert gateway.find_transition_id(
         base_url="https://x.atlassian.net", issue_key="CON-42", target_status_name="Jade - In Progress",
     ) is None
 
 
-def test_add_comment_sends_atlassian_document_format(live_jira_credentials):
+def test_add_comment_sends_atlassian_document_format():
     captured = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -129,7 +126,7 @@ def test_add_comment_sends_atlassian_document_format(live_jira_credentials):
         captured["url"] = str(request.url)
         return httpx.Response(201, json={})
 
-    gateway = JiraHttpGateway(transport=httpx.MockTransport(handler))
+    gateway = _gateway(httpx.MockTransport(handler))
     gateway.add_comment(base_url="https://x.atlassian.net", issue_key="CON-42", body="Jade has accepted this request.")
 
     assert captured["url"].endswith("/rest/api/3/issue/CON-42/comment")
@@ -138,7 +135,7 @@ def test_add_comment_sends_atlassian_document_format(live_jira_credentials):
     assert adf["content"][0]["content"][0]["text"] == "Jade has accepted this request."
 
 
-def test_set_field_puts_only_the_configured_field(live_jira_credentials):
+def test_set_field_puts_only_the_configured_field():
     captured = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -146,20 +143,17 @@ def test_set_field_puts_only_the_configured_field(live_jira_credentials):
         captured["body"] = json.loads(request.content)
         return httpx.Response(204)
 
-    gateway = JiraHttpGateway(transport=httpx.MockTransport(handler))
+    gateway = _gateway(httpx.MockTransport(handler))
     gateway.set_field(base_url="https://x.atlassian.net", issue_key="CON-42", field_id="customfield_10057", value="CR-JIRA-CON-42")
 
     assert captured["method"] == "PUT"
     assert captured["body"] == {"fields": {"customfield_10057": "CR-JIRA-CON-42"}}
 
 
-def test_live_gateway_refuses_without_credentials(monkeypatch):
-    monkeypatch.setattr(api_config.settings, "jira_email", "")
-    monkeypatch.setattr(api_config.settings, "jira_api_token", "")
-
+def test_live_gateway_refuses_without_credentials():
     def handler(request: httpx.Request) -> httpx.Response:  # pragma: no cover - must never be reached
         raise AssertionError("no request should be sent without credentials")
 
     gateway = JiraHttpGateway(transport=httpx.MockTransport(handler))
-    with pytest.raises(RuntimeError, match="JIRA_EMAIL"):
+    with pytest.raises(RuntimeError, match="no Jira credentials"):
         gateway.set_field(base_url="https://x.atlassian.net", issue_key="CON-1", field_id="customfield_1", value="x")

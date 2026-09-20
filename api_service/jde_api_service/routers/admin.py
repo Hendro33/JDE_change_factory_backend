@@ -6,10 +6,25 @@ the one genuinely new per-customer write surface this increment adds
 service layer already supported but had no route for.
 
 Deliberately NOT here, on purpose: any endpoint that would accept or
-return an AIS/JDE or Jira credential (see AisConnectionStatus /
-JiraConnectionStatus -- status only, never a value); any endpoint that
-edits a .claude/agents/*.md file; and any endpoint that widens what an
-agent's tool access is beyond what its own .md file already declares.
+return an AIS/JDE credential (see AisConnectionStatus -- status only,
+never a value); any endpoint that edits a .claude/agents/*.md file; and
+any endpoint that widens what an agent's tool access is beyond what its
+own .md file already declares.
+
+The Jira credential is the one deliberate, explicitly pilot-scoped
+exception to "no credential through the Admin API": update_jira_credentials
+below accepts an email + API token so an admin can configure and test a
+real Jira connection without editing backend files, and test_jira_connection
+makes an ad-hoc live check of whatever is currently typed. Both are
+write-only from the API's own point of view -- the token is never
+echoed back by any endpoint (JiraConnectionStatus/JiraTestConnectionResult
+report status/outcome only), never logged, and is persisted through
+plain JsonFileStore under the git-ignored data directory -- not a
+secrets manager. See models/jira_integration.py's own docstring and
+docs/JDE_AI_Driven_Change_Factory_Design_Document_v11.docx Section 19.7
+for the explicit pilot/production distinction this follows: production
+credential entry belongs behind a real secrets provider, which this
+pilot deliberately does not build.
 """
 
 from __future__ import annotations
@@ -35,12 +50,16 @@ from ..models.business_domain import BusinessDomain, BusinessDomainCreate, Busin
 from ..models.engagement_scope import EngagementScope, EngagementScopeUpdate
 from ..models.jira_integration import (
     JiraConnectionStatus,
+    JiraCredentialsUpdate,
     JiraIntegrationConfig,
     JiraIntegrationConfigUpdate,
     JiraSyncResult,
+    JiraTestConnectionInput,
+    JiraTestConnectionResult,
 )
 from ..models.session import Customer as CustomerOut
 from ..services.customer_service import get_registry
+from ..services.jira_gateway import test_live_connection
 from ..services.jira_sync_service import JiraNotConfigured
 from ..services.registry import (
     get_agent_registry_service,
@@ -48,6 +67,7 @@ from ..services.registry import (
     get_business_domain_service,
     get_decision_feedback_service,
     get_engagement_scope_service,
+    get_jira_credentials_service,
     get_jira_integration_service,
     get_jira_sync_service,
 )
@@ -235,14 +255,14 @@ def list_integrations(ctx: AuthContext = Depends(require_customer_access)) -> li
     ais_live = (not ais.mock_mode) and bool(ais.ais_base_url)
 
     jira_config = get_jira_integration_service().get_for_customer(ctx.customer_id)
-    jira_credentials_ok = bool(api_settings.jira_email and api_settings.jira_api_token)
+    jira_credentials_ok = get_jira_credentials_service().is_configured(ctx.customer_id)
     jira_live = (not api_settings.jira_mock_mode) and jira_credentials_ok and bool(jira_config and jira_config.is_configured())
     if api_settings.jira_mock_mode:
         jira_detail = "Running in mock mode -- see Jira below to configure and try a sync"
     elif not jira_config or not jira_config.is_configured():
         jira_detail = "Not configured for this customer -- see Jira below"
     elif not jira_credentials_ok:
-        jira_detail = "Customer configuration is set, but no deployment-level Jira credential is configured"
+        jira_detail = "Customer configuration is set, but no Jira credential is configured for this customer -- see Jira below"
     else:
         jira_detail = f"Connected to project {jira_config.project_key}"
 
@@ -294,14 +314,47 @@ def get_jira_integration_status(ctx: AuthContext = Depends(require_customer_acce
     config = get_jira_integration_service().get_for_customer(ctx.customer_id)
     return JiraConnectionStatus(
         mock_mode=api_settings.jira_mock_mode,
-        credentials_configured=bool(api_settings.jira_email and api_settings.jira_api_token),
+        credentials_configured=get_jira_credentials_service().is_configured(ctx.customer_id),
         config_configured=bool(config and config.is_configured()),
     )
+
+
+@router.put("/jira-credentials", response_model=JiraConnectionStatus)
+def update_jira_credentials(
+    payload: JiraCredentialsUpdate, ctx: AuthContext = Depends(require_customer_access)
+) -> JiraConnectionStatus:
+    """Enters or replaces this customer's Jira email + API token --
+    the one deliberate exception to "no credential through the Admin
+    API" (see this router's own docstring). The token is accepted here
+    and never echoed back by this or any other endpoint: the response
+    is status only, exactly like get_jira_integration_status above."""
+    get_jira_credentials_service().upsert(ctx.customer_id, payload)
+    config = get_jira_integration_service().get_for_customer(ctx.customer_id)
+    return JiraConnectionStatus(
+        mock_mode=api_settings.jira_mock_mode,
+        credentials_configured=True,
+        config_configured=bool(config and config.is_configured()),
+    )
+
+
+@router.post("/jira-integration/test-connection", response_model=JiraTestConnectionResult)
+def test_jira_connection(
+    payload: JiraTestConnectionInput, ctx: AuthContext = Depends(require_customer_access)
+) -> JiraTestConnectionResult:
+    """"Test Connection" -- checks whatever is currently typed in the
+    Jira form, whether or not it has been saved yet, and never
+    persists it. Always makes a real call to Jira regardless of
+    JDE_JIRA_MOCK_MODE: that flag governs the sync pipeline, not this
+    button, whose entire purpose is verifying the real connection."""
+    ok, message = test_live_connection(
+        base_url=payload.base_url, email=payload.email, api_token=payload.api_token, project_key=payload.project_key,
+    )
+    return JiraTestConnectionResult(ok=ok, message=message)
 
 
 @router.post("/jira-integration/sync", response_model=JiraSyncResult)
 def sync_jira_integration(ctx: AuthContext = Depends(require_customer_access)) -> JiraSyncResult:
     try:
-        return get_jira_sync_service().sync_for_customer(ctx.customer_id)
+        return get_jira_sync_service(ctx.customer_id).sync_for_customer(ctx.customer_id)
     except JiraNotConfigured as exc:
         raise HTTPException(status_code=409, detail=str(exc))

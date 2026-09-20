@@ -17,11 +17,15 @@ things the design explicitly requires:
 
 from __future__ import annotations
 
+import pytest
+
+from jde_api_service import config as api_config
 from jde_api_service.models.jira_integration import JiraIntegrationConfigUpdate
 from jde_api_service.services.change_request_service import ChangeRequestService
-from jde_api_service.services.jira_gateway import JiraMockGateway, _MockIssueState
+from jde_api_service.services.jira_gateway import JiraHttpGateway, JiraMockGateway, _MockIssueState
 from jde_api_service.services.jira_integration_service import JiraIntegrationService
-from jde_api_service.services.jira_sync_service import JiraSyncService
+from jde_api_service.services.jira_sync_service import JiraNotConfigured, JiraSyncService
+from jde_api_service.services.registry import get_jira_gateway
 
 from .conftest import headers
 
@@ -271,3 +275,123 @@ def test_source_metadata_is_imported_but_never_used_for_routing(isolated_dirs):
     incident_cr = change_requests.get("CR-JIRA-XX-4")
     assert incident_cr.source_metadata["workType"] == "Incident"
     assert incident_cr.status == "received"  # not classified/rejected here
+
+
+# ---------------------------------------------------------------------
+# Credentials -- Admin > Integrations > Jira (email + API token), the
+# one deliberate pilot-scoped exception to "no credential through the
+# Admin API" (see routers/admin.py's own docstring). Every assertion
+# here is about what must NEVER be exposed, exactly like the existing
+# "token not in body" checks above for JiraIntegrationConfig.
+# ---------------------------------------------------------------------
+def _credentials_payload(**overrides) -> dict:
+    payload = {"email": "bot@example.com", "apiToken": "super-secret-token", "updatedBy": "Hendro"}
+    payload.update(overrides)
+    return payload
+
+
+def test_update_jira_credentials_never_echoes_the_token(client):
+    r = client.put("/admin/jira-credentials", headers=headers(customer="vdb"), json=_credentials_payload())
+    assert r.status_code == 200
+    body = r.json()
+    assert body == {"mockMode": True, "credentialsConfigured": True, "configConfigured": False}
+    dumped = str(body).lower()
+    for forbidden in ("super-secret-token", "apitoken", "email"):
+        assert forbidden not in dumped
+
+
+def test_jira_status_reflects_saved_credentials(client):
+    before = client.get("/admin/jira-integration/status", headers=headers(customer="vdb")).json()
+    assert before["credentialsConfigured"] is False
+
+    client.put("/admin/jira-credentials", headers=headers(customer="vdb"), json=_credentials_payload())
+
+    after = client.get("/admin/jira-integration/status", headers=headers(customer="vdb")).json()
+    assert after["credentialsConfigured"] is True
+    assert "super-secret-token" not in str(after)
+
+
+def test_jira_credentials_are_customer_scoped(client):
+    client.put("/admin/jira-credentials", headers=headers(customer="vdb"), json=_credentials_payload())
+
+    nhd_status = client.get("/admin/jira-integration/status", headers=headers(customer="nhd")).json()
+    assert nhd_status["credentialsConfigured"] is False
+
+
+# ---------------------------------------------------------------------
+# Test Connection -- stateless, checks whatever is currently typed,
+# always a real call regardless of mock mode. The router wiring is
+# tested here with test_live_connection monkeypatched (its own HTTP
+# behaviour is covered directly in test_jira_test_connection.py).
+# ---------------------------------------------------------------------
+def test_test_connection_endpoint_wires_the_form_values_through(client, monkeypatch):
+    captured = {}
+
+    def fake_test_live_connection(*, base_url, email, api_token, project_key=""):
+        captured.update(base_url=base_url, email=email, api_token=api_token, project_key=project_key)
+        return True, f"Connected to {base_url} as Jade Bot."
+
+    monkeypatch.setattr("jde_api_service.routers.admin.test_live_connection", fake_test_live_connection)
+
+    r = client.post(
+        "/admin/jira-integration/test-connection",
+        headers=headers(customer="vdb"),
+        json={"baseUrl": "https://bicycleworks.atlassian.net", "projectKey": "CON", "email": "bot@example.com", "apiToken": "secret"},
+    )
+    assert r.status_code == 200
+    assert r.json() == {"ok": True, "message": "Connected to https://bicycleworks.atlassian.net as Jade Bot."}
+    assert captured == {
+        "base_url": "https://bicycleworks.atlassian.net", "email": "bot@example.com",
+        "api_token": "secret", "project_key": "CON",
+    }
+    # Purely stateless -- nothing was saved by testing.
+    status = client.get("/admin/jira-integration/status", headers=headers(customer="vdb")).json()
+    assert status["credentialsConfigured"] is False
+
+
+def test_test_connection_reports_failure_without_a_500(client, monkeypatch):
+    monkeypatch.setattr(
+        "jde_api_service.routers.admin.test_live_connection",
+        lambda **kwargs: (False, "Authentication failed -- check the email and API token."),
+    )
+    r = client.post(
+        "/admin/jira-integration/test-connection",
+        headers=headers(customer="vdb"),
+        json={"baseUrl": "https://x.atlassian.net", "email": "bot@example.com", "apiToken": "wrong"},
+    )
+    assert r.status_code == 200
+    assert r.json()["ok"] is False
+    assert "wrong" not in str(r.json())
+
+
+# ---------------------------------------------------------------------
+# get_jira_gateway wiring -- mock mode always wins; live mode uses
+# THIS customer's own saved credentials, never any other customer's.
+# ---------------------------------------------------------------------
+def test_get_jira_gateway_is_mock_by_default(isolated_dirs):
+    assert isinstance(get_jira_gateway("cust1"), JiraMockGateway)
+
+
+def test_get_jira_gateway_refuses_live_mode_without_credentials(isolated_dirs, monkeypatch):
+    monkeypatch.setattr(api_config.settings, "jira_mock_mode", False)
+    with pytest.raises(JiraNotConfigured):
+        get_jira_gateway("cust1")
+
+
+def test_get_jira_gateway_uses_this_customers_saved_credentials(isolated_dirs, monkeypatch):
+    from jde_api_service.models.jira_integration import JiraCredentialsUpdate
+    from jde_api_service.services.registry import get_jira_credentials_service
+
+    monkeypatch.setattr(api_config.settings, "jira_mock_mode", False)
+    get_jira_credentials_service().upsert(
+        "cust1", JiraCredentialsUpdate(email="bot@example.com", api_token="secret-token", updated_by="Hendro")
+    )
+
+    gateway = get_jira_gateway("cust1")
+    assert isinstance(gateway, JiraHttpGateway)
+    assert gateway._auth() == ("bot@example.com", "secret-token")
+
+    # A different, unconfigured customer is still refused -- credentials
+    # are never shared across customers.
+    with pytest.raises(JiraNotConfigured):
+        get_jira_gateway("cust2")

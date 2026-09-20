@@ -1,6 +1,6 @@
 """
-Jira Service Management hand-off -- per-customer connector configuration
-and sync results.
+Jira Service Management hand-off -- per-customer connector configuration,
+credentials and sync results.
 
 Design summary (see the architecture assessment this implements):
   - Jira/ITSM remains responsible for intake and triage. Jade only ever
@@ -9,14 +9,21 @@ Design summary (see the architecture assessment this implements):
   - This configuration is customer-scoped, mirroring EngagementScope --
     different customers can point at different Jira sites, projects and
     status names without any code change.
-  - The API token itself is NOT part of this model and is never
-    persisted in this JSON store -- see config.py's jira_email/
-    jira_api_token (deployment-level environment variables, the same
-    limitation EngagementScope's own docstring already documents for
-    the AIS connection: one credential for the whole deployment today,
-    not yet truly per-customer). JiraConnectionStatus below reports
-    whether that deployment-level credential is present, never its
-    value.
+  - Credentials (JiraCredentials below) are ALSO customer-scoped and
+    entered through Admin > Integrations > Jira, not environment
+    variables -- a deliberate, explicitly pilot-scoped exception to
+    this codebase's usual "no secrets through the Admin API" rule (see
+    routers/admin.py's own docstring). Persistence is plain
+    JsonFileStore, same as every other api_service-owned collection --
+    NOT a secrets manager, NOT encrypted at rest, on purpose: this is
+    the simplest reasonable mechanism for a short-lived pilot with a
+    single operator, not a production posture. The docs (Section 19.7)
+    now say so explicitly, flagging a real secrets provider and
+    Admin-restricted write access as future hardening before this
+    reaches production. JiraCredentials is NEVER used as a router
+    response_model anywhere -- JiraConnectionStatus reports only
+    whether a credential is present, never its value, and
+    JiraTestConnectionResult reports only a safe, token-free message.
   - Status names are configured as plain strings for this increment
     (pickup_status / post_pickup_status), not looked up from a fixed
     enum -- see jira_gateway.py's JiraGateway.list_project_statuses,
@@ -70,11 +77,48 @@ class JiraIntegrationConfigUpdate(ApiModel):
     updated_by: str
 
 
+class JiraCredentials(ApiModel):
+    """Persisted, per-customer Jira email + API token. See this
+    module's own docstring for the pilot-scoped storage decision.
+    NEVER declare this as a FastAPI response_model -- every endpoint
+    that touches it returns JiraConnectionStatus instead."""
+
+    customer_id: str
+    email: str = ""
+    api_token: str = ""
+    updated_at: Optional[str] = None
+    updated_by: Optional[str] = None
+
+
+class JiraCredentialsUpdate(ApiModel):
+    email: str
+    api_token: str
+    updated_by: str
+
+
+class JiraTestConnectionInput(ApiModel):
+    """Deliberately stateless and separate from JiraCredentialsUpdate:
+    "Test Connection" checks whatever is currently typed in the form,
+    whether or not it has been saved yet, and never persists it."""
+
+    base_url: str
+    project_key: str = ""
+    email: str
+    api_token: str
+
+
+class JiraTestConnectionResult(ApiModel):
+    ok: bool
+    # Always safe to render as-is -- never contains the token (see
+    # jira_gateway.test_live_connection, which builds this message).
+    message: str
+
+
 class JiraConnectionStatus(ApiModel):
     """Status only -- NEVER a credential, same rule AisConnectionStatus
-    already follows. The credential itself is deployment-level (see
-    this module's own docstring); this reports only whether one is
-    present, not per-customer."""
+    already follows. credentials_configured now reflects THIS customer's
+    own JiraCredentials record (see this module's own docstring) --
+    still never the value itself."""
 
     mock_mode: bool
     credentials_configured: bool

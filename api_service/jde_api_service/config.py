@@ -75,30 +75,18 @@ class Settings:
     repo_root: str = os.environ.get("JDE_API_REPO_ROOT", _REPO_ROOT_DEFAULT)
 
     # Jira Service Management hand-off connector (jira_gateway.py /
-    # jira_sync_service.py). The CREDENTIAL is deployment-level, exactly
-    # like JDE_AIS_USERNAME/PASSWORD already are -- one Jira service
-    # account for the whole deployment today, not yet per-customer (see
-    # models/jira_integration.py's own docstring for that explicit
-    # limitation). Everything else about the connection (site URL,
-    # project key, status names, field ids) is customer-scoped
-    # configuration, stored via JiraIntegrationService, not here.
-    #
-    # Mirrors JDE_MCP_MOCK_MODE: defaults on, so the connector is fully
+    # jira_sync_service.py). This is the only deployment-level Jira
+    # setting left -- a hard, operator-controlled safety switch that
+    # stays true (mock) by default so the connector is fully
     # exercisable (Admin UI, sync, tests) against JiraMockGateway before
-    # any real Jira credential exists.
+    # anyone has entered a real credential. Credentials themselves
+    # (email + API token) and the rest of the connection (site URL,
+    # project key, status names, field ids) are customer-scoped
+    # configuration entered through Admin > Integrations > Jira and
+    # stored via JiraCredentialsService / JiraIntegrationService, not
+    # here -- see models/jira_integration.py's own docstring for the
+    # explicit pilot/production distinction this follows.
     jira_mock_mode: bool = _env_bool("JDE_JIRA_MOCK_MODE", default=True)
-    jira_email: str = os.environ.get("JIRA_EMAIL", "")
-    jira_api_token: str = os.environ.get("JIRA_API_TOKEN", "")
-
-    def require_jira_live_config(self) -> None:
-        """Same shape as mcp_server's Settings.require_live_config --
-        fail clearly here rather than deep inside an httpx call."""
-        missing = [name for name, val in [("JIRA_EMAIL", self.jira_email), ("JIRA_API_TOKEN", self.jira_api_token)] if not val]
-        if missing:
-            raise RuntimeError(
-                "JDE_JIRA_MOCK_MODE is false but these Jira credential variables are not set: "
-                f"{', '.join(missing)}. Either set them, or leave mock mode on."
-            )
 
 
 settings = Settings()
