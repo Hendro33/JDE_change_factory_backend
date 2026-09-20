@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -36,11 +37,13 @@ from jde_mcp_server import backlog, approval
 from jde_mcp_server import config as mcp_config
 
 from ..models.change import (
+    AcceptanceCriterion,
     ApprovalRecord,
     BusinessImpact,
     Change,
     EvidenceRecord,
     ExactChange,
+    TestStep,
     UserStory,
 )
 from ..models.change_request import ChangeRequest
@@ -143,6 +146,71 @@ def _latest_change_record_for(story_id: str) -> Optional[dict[str, Any]]:
     return max(pool, key=lambda c: c.get("created_at", 0))
 
 
+_LEGACY_SECTION_RE = re.compile(
+    r"\n\n(business_context|acceptance_criteria|test_script|open_questions):\s*", re.MULTILINE
+)
+_LEGACY_AC_LINE_RE = re.compile(r"^-\s*(AC\d+):\s*(.+?)(?:\s+verified_by:\s*(\S.*))?$")
+_LEGACY_OPEN_Q_LINE_RE = re.compile(r"^\d+\.\s*(.+)$")
+
+
+def _parse_legacy_backlog_story(raw: str) -> Optional[UserStory]:
+    """Best-effort parser for stories entered directly as a backlog.py
+    record (propose_to_backlog's user_story parameter is a plain string,
+    Section: "not ours to change") using the same
+    "statement / business_context: / acceptance_criteria: / test_script: /
+    open_questions:" convention this pilot's human-authored backlog
+    entries already use (see e.g. CR-BW-T001's real record). This is
+    read-only presentation, exactly like the rest of this assembler --
+    it never rewrites the stored record, and it degrades gracefully
+    (returns None) for any text that doesn't follow the convention, in
+    which case the caller falls back to showing the whole text as the
+    statement, same as before this parser existed."""
+    parts = _LEGACY_SECTION_RE.split(raw)
+    if len(parts) < 3:
+        return None  # doesn't follow the convention -- nothing to gain by guessing
+
+    statement = parts[0].strip()
+    sections: dict[str, str] = {}
+    for label, body in zip(parts[1::2], parts[2::2]):
+        sections[label] = body.strip()
+    if "acceptance_criteria" not in sections:
+        return None
+
+    acceptance_criteria = []
+    for line in sections.get("acceptance_criteria", "").splitlines():
+        m = _LEGACY_AC_LINE_RE.match(line.strip())
+        if m:
+            acceptance_criteria.append(AcceptanceCriterion(id=m.group(1), text=m.group(2).strip(), verified_by=m.group(3)))
+
+    test_script: list[TestStep] = []
+    raw_test_script = sections.get("test_script", "")
+    try:
+        parsed = json.loads(raw_test_script)
+        for step in parsed.get("steps", []):
+            expected = step.get("expected_output", {})
+            expected_text = ", ".join(f"{k}: {v}" for k, v in expected.items()) if isinstance(expected, dict) else str(expected)
+            test_script.append(
+                TestStep(id=f"T{step.get('step', len(test_script) + 1)}", action=step.get("action", ""), expected=expected_text)
+            )
+    except (json.JSONDecodeError, AttributeError):
+        pass  # not JSON, or not the expected shape -- honestly show no test script rather than a mangled one
+
+    open_questions = []
+    for line in sections.get("open_questions", "").splitlines():
+        m = _LEGACY_OPEN_Q_LINE_RE.match(line.strip())
+        if m:
+            open_questions.append(m.group(1).strip())
+
+    return UserStory(
+        statement=statement,
+        business_context=sections.get("business_context", ""),
+        acceptance_criteria=acceptance_criteria,
+        test_script=test_script,
+        open_questions=open_questions,
+        quality_status="passed",
+    )
+
+
 def _change_from_story(
     record: dict[str, Any],
     customer_id: str,
@@ -207,7 +275,7 @@ def _change_from_story(
     if run and run.user_story and run.check_outcome == "proposed_to_backlog":
         user_story = run.user_story
     else:
-        user_story = UserStory(statement=statement, quality_status="passed")
+        user_story = _parse_legacy_backlog_story(statement) or UserStory(statement=statement, quality_status="passed")
 
     # backlog.py's own record only ever carries the AI-generated
     # statement (propose_to_backlog's user_story parameter is a plain

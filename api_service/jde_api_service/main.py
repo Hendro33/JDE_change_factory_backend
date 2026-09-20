@@ -21,8 +21,16 @@ from .config import settings
 
 logger = logging.getLogger("jde_api_service")
 from .routers import change_requests, changes, domain_governance, session
-from .services.registry import get_business_domain_service, get_change_request_service
-from .services.seed_service import ensure_bicycleworks_business_domains, ensure_bicycleworks_pilot_dataset
+from .services.registry import (
+    get_business_domain_service,
+    get_change_request_service,
+    get_customer_link_service,
+)
+from .services.seed_service import (
+    ensure_bicycleworks_business_domains,
+    ensure_bicycleworks_pilot_dataset,
+    ensure_t001_backlog_link,
+)
 
 
 @asynccontextmanager
@@ -31,6 +39,7 @@ async def _lifespan(app: FastAPI):
     # records. See services/seed_service.py.
     ensure_bicycleworks_pilot_dataset(get_change_request_service())
     ensure_bicycleworks_business_domains(get_business_domain_service())
+    ensure_t001_backlog_link(get_customer_link_service())
     yield
 
 

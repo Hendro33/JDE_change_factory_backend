@@ -21,6 +21,7 @@ from ..persistence.pilot_business_domains_bicycleworks import CUSTOMER_ID as DOM
 from ..persistence.pilot_data_bicycleworks import CUSTOMER_ID, DIRECT_INPUTS, TOPDESK_TICKETS
 from .business_domain_service import BusinessDomainService
 from .change_request_service import ChangeRequestService
+from .customer_link_service import CustomerLinkService
 
 
 def ensure_bicycleworks_pilot_dataset(change_request_service: ChangeRequestService) -> list[str]:
@@ -77,3 +78,17 @@ def ensure_bicycleworks_business_domains(business_domain_service: BusinessDomain
         )
         created.append(seed.domain_id)
     return created
+
+
+def ensure_t001_backlog_link(customer_link_service: CustomerLinkService) -> None:
+    """CR-BW-T001 was proposed directly to the mcp_server backlog (a
+    proving exercise run before this api_service's customer-link
+    sidecar existed -- see customer_link_service.py's own docstring on
+    why an unlinked story is invisible by design) rather than through
+    orchestration_driver.py, which is the only place that normally
+    calls link(). Without this, the real, pre-existing T001 result
+    would be permanently invisible through the API -- not because it
+    doesn't belong to BicycleWorks, but because nothing ever recorded
+    that it does. link() is idempotent (a plain overwrite with the same
+    value), so this is safe to call on every startup."""
+    customer_link_service.link("CR-BW-T001", CUSTOMER_ID)
