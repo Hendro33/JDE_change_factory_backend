@@ -27,6 +27,7 @@ except ImportError:  # mcp<2
     from mcp.server.fastmcp import FastMCP as _MCPServerClass
 
 from .ais_client import client
+from .capability_catalog import get_capability as _get_capability, CapabilityError
 from .evidence import capture_evidence as _capture_evidence, verify_chain as _verify_chain
 from .backlog import (
     propose_to_backlog as _propose_to_backlog,
@@ -83,15 +84,44 @@ def resolve_without_change(story_id: str, resolution_note: str, resolved_by: str
 
 
 @mcp.tool()
-def propose_change(story_id: str, operation: dict, environment: str = "DEV") -> dict:
+def propose_change(story_id: str, operation: dict, capability_id: str, environment: str = "DEV") -> dict:
     """Register the exact operation (e.g. {"tool": "set_processing_option",
     "application": ..., "version": ..., "option": ..., "value": ...})
     the Functional Agent intends to execute against an already-approved
-    story (Section 15.3). Returns a pending change record with a
-    change_id -- this does NOT approve anything. A human approves it
-    separately via backlog_review.py before set_processing_option will
-    accept the matching change_id."""
-    return _propose_change(story_id, operation, environment)
+    story (Section 15.3), and the catalogue capability it is exercising
+    (capability_catalog.json's capability_id -- Functional Agent design
+    update Section 5.2). Fails closed if capability_id is unknown, or if
+    'environment' isn't a confirmed-isolated DEV (scope.json). Returns a
+    pending change record with a change_id -- this does NOT approve
+    anything. A human approves it separately via backlog_review.py
+    before set_processing_option will accept the matching change_id."""
+    return _propose_change(story_id, operation, capability_id, environment)
+
+
+# ---------------------------------------------------------------------
+# Capability catalogue (Functional Agent design update, Section 2/5.3).
+# Read-only, like discovery below -- an agent checks this BEFORE
+# proposing anything, to distinguish what it can analyse/propose from
+# what it is actually authorised and technically able to execute. This
+# is advisory for the agent's own reasoning; propose_change/
+# require_exact_change enforce the real gate independently, so a stale
+# or ignored read here can never let an unauthorised write through.
+# ---------------------------------------------------------------------
+
+@mcp.tool()
+def get_capability_status(capability_id: str) -> dict:
+    """Look up one capability's current status (validated / needs_spike
+    / restricted / human_implementation / suspended), its separate
+    technical_validation and policy_restriction notes, and its current
+    revision. Call this before propose_change -- if status isn't
+    'validated', the write will not execute as an ordinary operation
+    (see capability_catalog.require_executable), and a Restricted or
+    Human Implementation capability should be routed there instead,
+    not proposed at all."""
+    cap = _get_capability(capability_id)
+    if cap is None:
+        raise CapabilityError(f"'{capability_id}' is not a registered capability -- see capability_catalog.json")
+    return cap
 
 
 # ---------------------------------------------------------------------

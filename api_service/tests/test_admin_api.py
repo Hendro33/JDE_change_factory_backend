@@ -175,7 +175,9 @@ def test_reject_exact_change_captures_structured_reason(client):
     get_customer_link_service().link(story_id, "vdb")
     get_delivery_queue_service().add(story_id, "vdb", "Hendro", "queued")
     record = approval_module.propose_change(
-        story_id, {"tool": "set_processing_option", "application": "P4210", "version": "CIQ0001", "option": "PDOCTYPE", "value": "SO"}
+        story_id,
+        {"tool": "set_processing_option", "application": "P4210", "version": "CIQ0001", "option": "PDOCTYPE", "value": "SO"},
+        "processing_option_update",
     )
 
     r = client.post(

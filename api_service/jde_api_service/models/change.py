@@ -95,6 +95,14 @@ class ExactChange(ApiModel):
     proposed_value: str = ""
     environment: str = "DEV"
     test_orchestration: str = ""
+    # Functional Agent design update Section 4: what capability this
+    # operation executes under, and whether it's currently ALLOWED to
+    # execute at all -- independent of whether a human has approved
+    # this specific operation (change_approval below). None means this
+    # change was proposed before the capability catalogue existed.
+    capability_id: Optional[str] = None
+    capability_status: Optional[Literal["validated", "needs_spike", "restricted", "human_implementation", "suspended"]] = None
+    capability_executable: Optional[bool] = None
 
 
 class ApprovalRecord(ApiModel):

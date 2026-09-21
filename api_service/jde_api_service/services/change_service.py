@@ -33,8 +33,9 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 from .. import config as _config  # noqa: F401  (forces the mcp_server sys.path bootstrap)
-from jde_mcp_server import backlog, approval
+from jde_mcp_server import backlog, approval, capability_catalog
 from jde_mcp_server import config as mcp_config
+from jde_mcp_server import scope as mcp_scope
 
 from ..models.change import (
     AcceptanceCriterion,
@@ -227,6 +228,26 @@ def _change_from_story(
     change_approval = None
     if change_record:
         op = change_record.get("operation", {})
+        capability_id = change_record.get("capability_id")
+        capability_status = None
+        capability_executable = None
+        if capability_id:
+            cap = capability_catalog.get_capability(capability_id)
+            if cap is not None:
+                capability_status = cap.get("validation", {}).get("status")
+                try:
+                    spike = mcp_scope.find_spike_experiment(
+                        capability_id,
+                        op.get("application", ""),
+                        op.get("version", ""),
+                        op.get("option", ""),
+                        change_record.get("environment", "DEV"),
+                    )
+                except mcp_scope.ScopeViolation:
+                    spike = None  # no scope.json for this engagement yet -- can't be spike-approved
+                capability_executable = capability_status == "validated" or (
+                    capability_status == "needs_spike" and spike is not None
+                )
         exact_change = ExactChange(
             tool=op.get("tool", ""),
             application=op.get("application", ""),
@@ -235,6 +256,9 @@ def _change_from_story(
             proposed_value=str(op.get("value", "")),
             environment=change_record.get("environment", "DEV"),
             test_orchestration=op.get("test_orchestration") or "",
+            capability_id=capability_id,
+            capability_status=capability_status,
+            capability_executable=capability_executable,
         )
         if change_record.get("status") in ("approved", "rejected"):
             change_approval = ApprovalRecord(

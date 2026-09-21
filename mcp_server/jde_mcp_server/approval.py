@@ -24,6 +24,8 @@ import time
 from typing import Optional
 
 from .backlog import require_approved, BacklogError
+from . import capability_catalog
+from .scope import check_environment_binding, find_spike_experiment, scope_revision
 
 CHANGE_DIR = os.environ.get("JDE_CHANGE_DIR", "./changes")
 DEFAULT_EXPIRY_SECONDS = int(os.environ.get("JDE_CHANGE_APPROVAL_EXPIRY_SECONDS", str(24 * 3600)))
@@ -69,8 +71,39 @@ def _save(change_id: str, record: dict) -> None:
 # operation it intends to execute against an already-approved story.
 # This does NOT approve anything; it is the thing a human approves.
 # ---------------------------------------------------------------------
-def propose_change(story_id: str, operation: dict, environment: str = "DEV") -> dict:
+def propose_change(story_id: str, operation: dict, capability_id: str, environment: str = "DEV") -> dict:
+    """Design update Section 5.2: bind the proposal to its capability
+    (and the catalogue/scope revisions in force right now), its exact
+    targets, and a DEV-only environment -- BEFORE a human is even asked
+    to approve it, not just at execution time. Fails fast on a
+    structurally invalid proposal rather than letting a human approve
+    something that could never pass require_exact_change anyway.
+
+    capability_id is deliberately a separate parameter, not a key
+    inside 'operation': 'operation' is exactly the write payload that
+    gets hashed and byte-for-byte compared at execution time (unchanged
+    from before this design update, so existing write tools like
+    set_processing_option don't need to know about capabilities at all)
+    -- capability binding is metadata ABOUT the change, not part of
+    what gets written.
+
+    Only the catalogue-only, engagement-independent checks run here
+    (capability_id is real; environment is literally "DEV") -- the full
+    scope.json-backed environment isolation check and the capability's
+    CURRENT executability both belong at require_exact_change instead
+    (immediately before the write itself), not here: a change can sit
+    pending for a while, and re-approving it against a scope.json that
+    hasn't even been written yet for a brand-new engagement shouldn't be
+    impossible, only executing against JDE without one should be."""
     require_approved(story_id)  # can't propose a change against a story nobody approved
+    cap = capability_catalog.require_capability(capability_id)  # raises CapabilityError if unknown
+    if environment != "DEV":
+        raise ChangeApprovalError(
+            f"'{environment}' is not DEV. All JDE access and execution use "
+            "approved DEV endpoints only -- this is a universal rule, not "
+            "engagement-configurable."
+        )
+
     change_id = f"{story_id}-CH{int(time.time() * 1000)}"
     record = {
         "change_id": change_id,
@@ -78,12 +111,20 @@ def propose_change(story_id: str, operation: dict, environment: str = "DEV") -> 
         "operation": operation,
         "change_hash": _hash(operation),
         "environment": environment,
+        "capability_id": capability_id,
+        "capability_revision": cap["revision"],
         "status": "pending",
         "created_at": time.time(),
         "approved_by": None,
         "approved_at": None,
         "expires_at": None,
         "decision_note": None,
+        # "Record the versions used for each run" (design update Section
+        # 1) -- stamped at propose time so an approver sees exactly which
+        # catalogue/scope revisions this proposal was checked against,
+        # not whatever happens to be current when someone looks later.
+        "catalog_revision": capability_catalog.catalog_revision(),
+        "scope_revision": scope_revision(),
     }
     _save(change_id, record)
     return record
@@ -154,6 +195,36 @@ def require_exact_change(change_id: str, operation: dict) -> dict:
     # Defense in depth: re-check the underlying story is still approved too,
     # not just that the change record says so.
     require_approved(record["story_id"])
+
+    # Design update Section 3/5.2: re-check the capability's CURRENT
+    # status and the environment's CURRENT isolation binding
+    # immediately before writing -- both can have changed since this
+    # change was proposed or even since it was approved (a capability
+    # can be Suspended, or DEV isolation un-confirmed, after approval
+    # but before execution). Sourced from the APPROVED RECORD's own
+    # capability_id/capability_revision (set once, at propose_change
+    # time), never from the caller-supplied 'operation' -- the write
+    # tool passing 'operation' (e.g. set_processing_option) has no
+    # reason to know or restate which capability governs it.
+    capability_id = record.get("capability_id")
+    capability_revision = record.get("capability_revision")
+    if not capability_id or not capability_revision:
+        raise ChangeApprovalError(
+            "approved change record has no capability_id/capability_revision -- "
+            "this can only happen to a change proposed before the capability "
+            "catalogue existed; re-propose it so it binds to a capability."
+        )
+    check_environment_binding(record["environment"])
+    spike = find_spike_experiment(
+        capability_id,
+        operation.get("application", ""),
+        operation.get("version", ""),
+        operation.get("option", ""),
+        record["environment"],
+    )
+    capability_catalog.require_executable(
+        capability_id, capability_revision, record["environment"], spike_experiment_approved=spike is not None
+    )
     return record
 
 

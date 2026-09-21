@@ -62,6 +62,7 @@ from ..models.admin import (
 )
 from ..config import settings as api_settings
 from ..models.agent_registry import AgentDefinition
+from ..models.capability import Capability, CapabilityCatalog
 from ..models.business_domain import BusinessDomain, BusinessDomainCreate, BusinessDomainStatusUpdate
 from ..models.engagement_scope import EngagementScope, EngagementScopeUpdate
 from ..models.jira_integration import (
@@ -82,6 +83,7 @@ from ..services.registry import (
     get_agent_registry_service,
     get_agent_run_service,
     get_business_domain_service,
+    get_capability_service,
     get_decision_feedback_service,
     get_engagement_scope_service,
     get_jira_credentials_service,
@@ -242,6 +244,26 @@ def get_agent_health(agent_name: str, ctx: AuthContext = Depends(require_custome
         run_counts=run_counts,
         feedback=feedback_summaries,
     )
+
+
+# ---------------------------------------------------------------------
+# Functional Agent Capability Catalogue (design update Section 2/4) --
+# read-only, same relationship to capability_catalog.json that /agents
+# above has to .claude/agents/*.md: nothing here writes to the
+# catalogue. Promotion is a human editing that file and getting it
+# reviewed, not an API call.
+# ---------------------------------------------------------------------
+@router.get("/capabilities", response_model=CapabilityCatalog)
+def list_capabilities(ctx: AuthContext = Depends(require_customer_access)) -> CapabilityCatalog:
+    return get_capability_service().list_catalog()
+
+
+@router.get("/capabilities/{capability_id}", response_model=Capability)
+def get_capability(capability_id: str, ctx: AuthContext = Depends(require_customer_access)) -> Capability:
+    cap = get_capability_service().get(capability_id)
+    if cap is None:
+        raise HTTPException(status_code=404, detail=f"no such capability: {capability_id}")
+    return cap
 
 
 # ---------------------------------------------------------------------

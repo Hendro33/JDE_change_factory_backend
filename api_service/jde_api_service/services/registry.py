@@ -19,6 +19,7 @@ from .agent_registry_service import AgentRegistryService
 from .agent_run_service import AgentRunService
 from .architecture_review_service import ArchitectureReviewService
 from .business_domain_service import BusinessDomainService
+from .capability_service import CapabilityService
 from .change_request_service import ChangeRequestService
 from .change_service import ChangeService
 from .customer_link_service import CustomerLinkService
@@ -76,6 +77,10 @@ def get_agent_run_service() -> AgentRunService:
 
 def get_agent_registry_service() -> AgentRegistryService:
     return AgentRegistryService(settings.repo_root)
+
+
+def get_capability_service() -> CapabilityService:
+    return CapabilityService()
 
 
 def get_change_service() -> ChangeService:
