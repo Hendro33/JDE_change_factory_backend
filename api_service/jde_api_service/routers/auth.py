@@ -11,10 +11,10 @@ never reachable over HTTP).
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Cookie, Depends, HTTPException, Response
+from fastapi import APIRouter, Cookie, Depends, Header, HTTPException, Request, Response
 
 from ..config import settings
-from ..dependencies import Identity, resolve_identity
+from ..dependencies import Identity, resolve_identity, verify_csrf_if_unsafe
 from ..models.auth import (
     AcceptInvitationInput,
     ForgotPasswordInput,
@@ -45,16 +45,33 @@ def _frontend_origin() -> str:
     return settings.allowed_origins[0] if settings.allowed_origins else ""
 
 
-def _set_session_cookie(response: Response, raw_token: str) -> None:
+def _cookie_kwargs() -> dict:
+    kwargs: dict = dict(secure=settings.cookie_secure, samesite=settings.cookie_samesite, path="/")
+    if settings.cookie_domain:
+        kwargs["domain"] = settings.cookie_domain
+    return kwargs
+
+
+def _set_auth_cookies(response: Response, raw_session_token: str) -> None:
+    """Sets both the httponly session cookie AND the JS-readable CSRF
+    cookie (see dependencies.verify_csrf_if_unsafe's own docstring) --
+    every place that logs someone in sets both together, so there is no
+    window where a session exists without its CSRF cookie."""
+    kwargs = _cookie_kwargs()
     response.set_cookie(
-        key=auth_service.SESSION_COOKIE_NAME,
-        value=raw_token,
-        httponly=True,
-        secure=settings.cookie_secure,
-        samesite=settings.cookie_samesite,  # type: ignore[arg-type]
-        max_age=auth_service.SESSION_TTL_DAYS * 24 * 3600,
-        path="/",
+        key=auth_service.SESSION_COOKIE_NAME, value=raw_session_token, httponly=True,
+        max_age=auth_service.SESSION_TTL_DAYS * 24 * 3600, **kwargs,
     )
+    response.set_cookie(
+        key=auth_service.CSRF_COOKIE_NAME, value=auth_service.generate_token(), httponly=False,
+        max_age=auth_service.SESSION_TTL_DAYS * 24 * 3600, **kwargs,
+    )
+
+
+def _clear_auth_cookies(response: Response) -> None:
+    kwargs = _cookie_kwargs()
+    response.delete_cookie(auth_service.SESSION_COOKIE_NAME, **kwargs)
+    response.delete_cookie(auth_service.CSRF_COOKIE_NAME, **kwargs)
 
 
 @router.post("/login", response_model=MeOut)
@@ -63,22 +80,29 @@ def login(payload: LoginInput, response: Response) -> MeOut:
     if user is None:
         raise HTTPException(status_code=401, detail="incorrect email or password")
     raw_token = auth_service.create_session(user.id)
-    _set_session_cookie(response, raw_token)
+    _set_auth_cookies(response, raw_token)
     return MeOut(user_id=user.id, email=user.email, display_name=user.display_name)
 
 
 @router.post("/logout")
 def logout(
+    request: Request,
     response: Response,
     jde_session: str | None = Cookie(default=None, alias=auth_service.SESSION_COOKIE_NAME),
+    jde_csrf: str | None = Cookie(default=None, alias=auth_service.CSRF_COOKIE_NAME),
+    x_csrf_token: str | None = Header(default=None, alias="X-CSRF-Token"),
 ) -> dict:
     # Revokes the server-side session record (not just the cookie) so
     # the same raw token can't be replayed if it leaked before logout --
     # and never 401s just because the cookie was already missing or
     # expired, since the end state (signed out) is the same either way.
+    # CSRF-checked like every other state-changing call (see
+    # dependencies.verify_csrf_if_unsafe) -- a forged logout is low
+    # severity, but there is no reason to exempt it.
     if jde_session:
+        verify_csrf_if_unsafe(request, jde_csrf, x_csrf_token)
         auth_service.revoke_session(jde_session)
-    response.delete_cookie(auth_service.SESSION_COOKIE_NAME, path="/")
+    _clear_auth_cookies(response)
     return {"ok": True}
 
 
@@ -172,7 +196,7 @@ def accept_invitation_route(payload: AcceptInvitationInput, response: Response) 
         raise HTTPException(status_code=400, detail=str(exc))
 
     raw_token = auth_service.create_session(user.id)
-    _set_session_cookie(response, raw_token)
+    _set_auth_cookies(response, raw_token)
     return MeOut(user_id=user.id, email=user.email, display_name=user.display_name)
 
 

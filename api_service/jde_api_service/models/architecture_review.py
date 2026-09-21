@@ -66,5 +66,6 @@ class ArchitectureReviewRun(ApiModel):
 
 
 class AskAboutSolutionInput(ApiModel):
-    asked_by: str
+    # No asked_by -- derived server-side from the authenticated session,
+    # same as models/domain_review.py's GovernanceDecisionInput.
     question: str

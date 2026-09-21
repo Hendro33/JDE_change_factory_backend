@@ -89,7 +89,7 @@ async def ask_about_solution_endpoint(
             story_id=change_id,
             latest_version=run.history[-1],
             question=payload.question,
-            asked_by=payload.asked_by,
+            asked_by=ctx.identity.display_name,
             prior_turns=run.conversation,
             repo_root=settings.repo_root,
             customer_id=ctx.customer_id,
@@ -99,7 +99,7 @@ async def ask_about_solution_endpoint(
 
     updated = run_service.append_conversation_turn(
         change_id,
-        asked_by=payload.asked_by,
+        asked_by=ctx.identity.display_name,
         question=payload.question,
         answer=result["answer"],
         kind=result["kind"],
@@ -153,12 +153,12 @@ def approve_exact_change(
     authoritative approval record, not a copy of it."""
     _require_queued_change(change_id, ctx.customer_id)
     record = _pending_change_record(change_id)
-    approval.approve_change(record["change_id"], payload.decided_by, note=payload.note)
+    approval.approve_change(record["change_id"], ctx.identity.display_name, note=payload.note)
     get_decision_feedback_service().record(
         change_id=change_id,
         customer_id=ctx.customer_id,
         kind="exact_change_approval",
-        decided_by=payload.decided_by,
+        decided_by=ctx.identity.display_name,
         identity_id=ctx.identity.id,
         note=payload.note,
     )
@@ -175,12 +175,12 @@ def reject_exact_change(
     if not payload.note:
         raise HTTPException(status_code=422, detail="a rejection must include a reason")
     record = _pending_change_record(change_id)
-    approval.reject_change(record["change_id"], payload.decided_by, payload.note)
+    approval.reject_change(record["change_id"], ctx.identity.display_name, payload.note)
     get_decision_feedback_service().record(
         change_id=change_id,
         customer_id=ctx.customer_id,
         kind="exact_change_rejection",
-        decided_by=payload.decided_by,
+        decided_by=ctx.identity.display_name,
         identity_id=ctx.identity.id,
         reason_code=payload.rejection_reason,
         note=payload.note,

@@ -145,7 +145,11 @@ class AssignDomainInput(ApiModel):
 
 
 class GovernanceDecisionInput(ApiModel):
-    decided_by: str
+    # Deliberately NO decided_by field -- who decided is derived
+    # server-side from the authenticated session (ctx.identity.display_name
+    # in routers/domain_governance.py), never trusted from the client.
+    # See dependencies.py's own docstring on why identity is never a
+    # client-supplied value.
     note: str = ""
     # Only meaningful on a rejection (approve-change ignores it).
     # Optional and additive to the existing free-text note -- a
@@ -155,11 +159,11 @@ class GovernanceDecisionInput(ApiModel):
 
 
 class DomainOwnerEditInput(ApiModel):
-    edited_by: str
+    # No edited_by -- see GovernanceDecisionInput's own comment.
     note: str = ""
     user_story: UserStory
 
 
 class AskAboutRequirementInput(ApiModel):
-    asked_by: str
+    # No asked_by -- see GovernanceDecisionInput's own comment.
     question: str

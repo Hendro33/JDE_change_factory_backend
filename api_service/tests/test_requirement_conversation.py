@@ -90,7 +90,7 @@ def test_ask_records_an_explanation_without_changing_the_requirement(client, mon
     turn = body["conversation"][0]
     assert turn["kind"] == "explanation"
     assert turn["proposedUserStory"] is None
-    assert turn["askedBy"] == "Ellen Vos"
+    assert turn["askedBy"] == "Hendro"  # derived from the authenticated session, not payload.askedBy
     # The requirement itself is untouched -- still just the original AI-generated version.
     assert len(body["history"]) == 1
 

@@ -75,7 +75,12 @@ app.add_middleware(
     # cookie_samesite for what a cross-origin deployment also needs.
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH"],
-    allow_headers=["X-Customer-Id", "Content-Type"],
+    # X-CSRF-Token: dependencies.verify_csrf_if_unsafe's double-submit
+    # check -- the browser's CORS preflight refuses the actual request
+    # outright if a custom header isn't declared here, which is exactly
+    # what silently broke every state-changing call (including logout)
+    # the moment the frontend started sending this header.
+    allow_headers=["X-Customer-Id", "Content-Type", "X-CSRF-Token"],
 )
 
 app.include_router(auth.router)

@@ -9,11 +9,54 @@ from __future__ import annotations
 
 from urllib.parse import parse_qs, urlsplit
 
-from .conftest import TEST_PASSWORD, headers
+from .conftest import TEST_PASSWORD, _apply_csrf_header, headers
 
 
 def _token_from(preview_url: str, param: str) -> str:
     return parse_qs(urlsplit(preview_url).query)[param][0]
+
+
+# ---------------------------------------------------------------------
+# CSRF -- the double-submit cookie check (dependencies.verify_csrf_if_unsafe).
+# `client` already carries a valid X-CSRF-Token (conftest.py's
+# _apply_csrf_header, mirroring what a real browser's JS does after
+# reading the jde_csrf cookie) -- these tests specifically UNDO that to
+# prove the check is real, not just present.
+# ---------------------------------------------------------------------
+def test_write_without_csrf_header_is_refused(client):
+    csrf_cookie = client.cookies.get("jde_csrf")
+    assert csrf_cookie, "login must set the CSRF cookie"
+    del client.headers["X-CSRF-Token"]
+    try:
+        r = client.put("/admin/jira-integration", headers=headers(customer="vdb"), json={
+            "baseUrl": "https://x.atlassian.net", "projectKey": "X", "pickupStatus": "Ready",
+            "postPickupStatus": "In Progress", "jadeIdField": "customfield_1", "requestTypeField": "",
+        })
+        assert r.status_code == 403
+    finally:
+        client.headers["X-CSRF-Token"] = csrf_cookie
+
+
+def test_write_with_mismatched_csrf_header_is_refused(client):
+    original = client.headers["X-CSRF-Token"]
+    client.headers["X-CSRF-Token"] = "a-value-that-does-not-match-the-cookie"
+    try:
+        r = client.put("/admin/jira-integration", headers=headers(customer="vdb"), json={
+            "baseUrl": "https://x.atlassian.net", "projectKey": "X", "pickupStatus": "Ready",
+            "postPickupStatus": "In Progress", "jadeIdField": "customfield_1", "requestTypeField": "",
+        })
+        assert r.status_code == 403
+    finally:
+        client.headers["X-CSRF-Token"] = original
+
+
+def test_reads_never_require_a_csrf_header(client):
+    del client.headers["X-CSRF-Token"]
+    try:
+        assert client.get("/session").status_code == 200
+        assert client.get("/admin/jira-integration/status", headers=headers(customer="vdb")).status_code == 200
+    finally:
+        client.headers["X-CSRF-Token"] = client.cookies.get("jde_csrf")
 
 
 # ---------------------------------------------------------------------
@@ -188,6 +231,7 @@ def test_domain_owner_is_scoped_to_assigned_domains_only(client):
 
     scoped = fastapi.testclient.TestClient(app)
     scoped.post("/auth/login", json={"email": "scoped-owner@test.local", "password": TEST_PASSWORD})
+    _apply_csrf_header(scoped)
 
     # Seed a change/story and assign it to a DIFFERENT domain than the
     # one this Domain Owner is assigned to.

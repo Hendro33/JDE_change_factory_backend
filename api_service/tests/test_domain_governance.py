@@ -253,7 +253,7 @@ def test_edit_is_routed_through_reviewer_agent_and_both_versions_preserved(clien
     assert "7 working days from the order date" in body["history"][0]["userStory"]["statement"]
     # The Domain Owner's own edit is preserved verbatim in entry 2.
     assert body["history"][1]["userStory"]["statement"] == edited_story["statement"]
-    assert body["history"][1]["actor"] == "Domain Owner"
+    assert body["history"][1]["actor"] == "Hendro"  # derived from the authenticated session, not payload.editedBy
     # The Reviewer Agent's revision (entry 3) is what the fake produced,
     # not a copy of the Domain Owner's raw edit.
     assert "excluding weekends and public holidays" in body["history"][2]["userStory"]["acceptanceCriteria"][0]["text"]
@@ -302,7 +302,7 @@ def test_domain_owner_approval_does_not_clear_gate_2(client, monkeypatch):
     body = r.json()
     assert body["stage"] == "ready_for_application_manager"
     assert body["domainOwnerApproval"]["kind"] == "domain_owner"
-    assert body["domainOwnerApproval"]["approvedBy"] == "Ellen Vos"
+    assert body["domainOwnerApproval"]["approvedBy"] == "Hendro"  # derived from the authenticated session, not payload.decidedBy
     assert body["applicationManagerApproval"] is None
 
     # Gate 2 (backlog.py) is UNCHANGED -- still not approved. Phase 3
@@ -399,7 +399,7 @@ def test_domain_owner_reject_is_terminal_and_never_touches_backlog(client, monke
     assert body["stage"] == "domain_owner_rejected"
     assert body["domainOwnerApproval"]["kind"] == "domain_owner"
     assert body["domainOwnerApproval"]["status"] == "rejected"
-    assert body["domainOwnerApproval"]["approvedBy"] == "Ellen Vos"
+    assert body["domainOwnerApproval"]["approvedBy"] == "Hendro"  # derived from the authenticated session, not payload.decidedBy
     assert body["applicationManagerApproval"] is None
 
     # Never reached mcp_server -- Gate 2 has no record of this at all,
@@ -499,6 +499,27 @@ def test_domain_governance_is_customer_scoped(client, monkeypatch):
     change_id = _seed_and_enhance_t001(client, monkeypatch)
     r = client.get(f"/changes/{change_id}/domain-review", headers=headers(customer="vdb"))
     assert r.status_code == 404  # exists for bwm, invisible to vdb
+
+
+def test_decided_by_in_the_payload_cannot_spoof_the_reviewer_identity(client, monkeypatch):
+    """A client that sends decidedBy in the request body (an old
+    frontend build, or a direct API call) must never be able to record
+    an approval under a name other than the caller's own authenticated
+    identity -- reviewer identity is ALWAYS derived server-side from
+    the session (ctx.identity.display_name), the payload field is
+    accepted (pydantic ignores unknown fields) and silently unused."""
+    change_id = _seed_and_enhance_t001(client, monkeypatch)
+    client.get(f"/changes/{change_id}/domain-review", headers=headers(customer="bwm"))
+    client.post(
+        f"/changes/{change_id}/domain-review/start", headers=headers(customer="bwm"),
+        json={"decidedBy": "Someone Else"},
+    )
+    r = client.post(
+        f"/changes/{change_id}/domain-review/approve", headers=headers(customer="bwm"),
+        json={"decidedBy": "Someone Else Entirely", "note": "Looks right."},
+    )
+    assert r.status_code == 200
+    assert r.json()["domainOwnerApproval"]["approvedBy"] == "Hendro"
 
 
 # ---------------------------------------------------------------------

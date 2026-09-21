@@ -97,6 +97,16 @@ class Settings:
     # combination also needs cookie_secure=True (the default already).
     cookie_samesite: str = os.environ.get("JDE_COOKIE_SAMESITE", "lax")
 
+    # Unset (the default) makes it a host-only cookie -- fine for local
+    # dev and for a same-host deployment. Set this when the frontend and
+    # this API are on DIFFERENT subdomains of the SAME registrable
+    # domain (e.g. api.consultiq.nl serving jade.consultiq.nl) --
+    # ".consultiq.nl" makes the cookie valid on both, and lets
+    # cookie_samesite stay "lax" (subdomains of the same registrable
+    # domain are "same-site" to each other per the SameSite spec, so
+    # this is both simpler AND safer than the cross-site "none" case).
+    cookie_domain: str = os.environ.get("JDE_COOKIE_DOMAIN", "")
+
     # Controlled first-Admin creation (dependencies.py/services/
     # bootstrap_service.py): idempotent, applied on every startup, and
     # ONLY takes effect when both of these are set -- there is no public

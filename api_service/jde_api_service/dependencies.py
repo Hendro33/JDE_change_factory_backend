@@ -23,11 +23,32 @@ FastAPI dependencies that enforce the security requirements:
 
 from __future__ import annotations
 
+import secrets
 from dataclasses import dataclass
 
 from fastapi import Cookie, Depends, Header, HTTPException, Request
 
 from .services import auth_service, membership_service
+
+_UNSAFE_METHODS = {"POST", "PUT", "DELETE", "PATCH"}
+
+
+def verify_csrf_if_unsafe(request: Request, jde_csrf: str | None, x_csrf_token: str | None) -> None:
+    """The double-submit pattern -- login/accept-invitation
+    (routers/auth.py) set a second, JS-readable cookie (jde_csrf)
+    alongside the httponly session cookie. A cross-site attacker's page
+    can make the browser SEND both cookies on a forged request, but it
+    cannot READ jde_csrf's value (browsers enforce same-origin cookie
+    access) to also put it in the X-CSRF-Token header, so a forged
+    request's header can never match. Only checked on state-changing
+    methods -- a GET is never used to mutate anything in this API, so
+    there is nothing for a forged GET to achieve. Shared by
+    resolve_identity below and routers/auth.py's own logout (which
+    doesn't otherwise need a fully resolved Identity)."""
+    if request.method not in _UNSAFE_METHODS:
+        return
+    if not jde_csrf or not x_csrf_token or not secrets.compare_digest(jde_csrf, x_csrf_token):
+        raise HTTPException(status_code=403, detail="missing or invalid CSRF token")
 
 
 @dataclass(frozen=True)
@@ -37,13 +58,22 @@ class Identity:
 
 
 def resolve_identity(
+    request: Request,
     jde_session: str | None = Cookie(default=None, alias=auth_service.SESSION_COOKIE_NAME),
+    jde_csrf: str | None = Cookie(default=None, alias=auth_service.CSRF_COOKIE_NAME),
+    x_csrf_token: str | None = Header(default=None, alias="X-CSRF-Token"),
 ) -> Identity:
+    """Every authenticated route goes through this -- the one place
+    both WHO is calling and, for a state-changing request, whether it
+    is a genuine same-origin call (not a forged cross-site one) are
+    checked. See verify_csrf_if_unsafe's own docstring for the CSRF
+    mechanism."""
     if not jde_session:
         raise HTTPException(status_code=401, detail="not signed in")
     user = auth_service.get_user_for_session(jde_session)
     if user is None:
         raise HTTPException(status_code=401, detail="session expired or invalid -- please sign in again")
+    verify_csrf_if_unsafe(request, jde_csrf, x_csrf_token)
     return Identity(id=user.id, display_name=user.display_name)
 
 

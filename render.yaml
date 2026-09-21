@@ -1,0 +1,96 @@
+# Render.com Blueprint for the JDE Change Factory API service.
+#
+# What this deploys: a single Python web service running api_service
+# (jde_api_service.main:app) with a persistent Disk mounted at /data,
+# so the SQLite database (users, companies, roles, invitations, Jira
+# connections) and the mcp_server-owned backlog/changes/evidence
+# directories all survive restarts and redeploys -- the same
+# JsonFileStore/SQLite-on-disk mechanism this project already uses
+# locally, just pointed at durable storage.
+#
+# Why Render: no other hosting exists in this project yet, this is a
+# prototype (Azure is the stated future platform), and Render is the
+# smallest change from what this repo already is -- a plain FastAPI
+# app, no Dockerfile needed -- that still gets a real persistent disk
+# attached directly to a web service, HTTPS auto-provisioned on any
+# domain you attach, and deploys straight from this GitHub repo.
+#
+# Cost (verified via web search at blueprint-writing time -- Render
+# changed its pricing structure in April 2026; confirm the current
+# number at https://render.com/pricing before committing):
+#   Starter web service: $7/month (512 MB RAM, 0.5 CPU) -- the
+#     smallest PAID plan; a persistent Disk cannot attach to the Free
+#     plan, which is also unsuitable here since it sleeps after
+#     inactivity and would drop every session.
+#   Persistent Disk: $0.25/GB/month -- 1 GB (this blueprint's default)
+#     is $0.25/month, far more than this project's JSON/SQLite data
+#     will ever need.
+#   Custom domain + HTTPS: no extra charge on Render.
+#   Total: ~$7.25/month.
+#
+# What to do with this file: in the Render dashboard, New -> Blueprint,
+# point it at this repo. Render reads this file and proposes the
+# service below for your approval before creating anything.
+services:
+  - type: web
+    name: jde-change-factory-api
+    runtime: python
+    plan: starter
+    branch: main
+    rootDir: .
+    buildCommand: "pip install -e ./api_service"
+    startCommand: "uvicorn jde_api_service.main:app --host 0.0.0.0 --port $PORT --app-dir api_service"
+    healthCheckPath: /health
+    disk:
+      name: jde-data
+      mountPath: /data
+      sizeGB: 1
+    envVars:
+      - key: JDE_API_DATA_DIR
+        value: /data/api_data
+      - key: JDE_BACKLOG_DIR
+        value: /data/backlog
+      - key: JDE_CHANGE_DIR
+        value: /data/changes
+      - key: JDE_EVIDENCE_DIR
+        value: /data/evidence
+      # The live frontend's exact origin -- must be the scheme+host
+      # jade.consultiq.nl is actually served on, no trailing slash, no
+      # wildcard (CORS + the SameSite=lax cookie both need an exact
+      # match).
+      - key: JDE_API_ALLOWED_ORIGINS
+        value: https://jade.consultiq.nl
+      # "lax" works because api.<subdomain>.consultiq.nl and
+      # jade.consultiq.nl are both subdomains of the SAME registrable
+      # domain (consultiq.nl) once JDE_COOKIE_DOMAIN below is set --
+      # see config.py's own comment. Only change this to "none" if the
+      # API ends up on a genuinely different domain (e.g. a bare
+      # onrender.com URL, no custom domain attached).
+      - key: JDE_COOKIE_SAMESITE
+        value: lax
+      # Set this to your actual domain if the API is reachable as e.g.
+      # api.consultiq.nl -- leave UNSET if you deploy first to
+      # Render's own *.onrender.com URL before attaching a custom
+      # domain (a host-only cookie still works there, just not shared
+      # across subdomains, which doesn't matter until the frontend is
+      # also on a consultiq.nl subdomain).
+      - key: JDE_COOKIE_DOMAIN
+        value: ""
+      - key: JDE_COOKIE_SECURE
+        value: "true"
+      # Controlled first-Admin creation (services/bootstrap_service.py)
+      # -- idempotent, and ONLY takes effect when BOTH email and
+      # password are set. Set JDE_BOOTSTRAP_ADMIN_EMAIL and
+      # JDE_BOOTSTRAP_ADMIN_PASSWORD yourself, directly in the Render
+      # dashboard (Environment tab) -- never through this file, never
+      # through chat, never committed. After you confirm you can log
+      # in, delete JDE_BOOTSTRAP_ADMIN_PASSWORD (blank it out and
+      # redeploy) so the mechanism can't be used again.
+      - key: JDE_BOOTSTRAP_ADMIN_EMAIL
+        sync: false
+      - key: JDE_BOOTSTRAP_ADMIN_PASSWORD
+        sync: false
+      # JDE_JIRA_MOCK_MODE intentionally left unset (defaults to
+      # false): each company goes live purely by having Jira
+      # credentials configured through Admin > Integrations, no
+      # deployment-level override needed.

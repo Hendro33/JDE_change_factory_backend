@@ -77,6 +77,20 @@ def isolated_dirs(tmp_path, monkeypatch):
     }
 
 
+def _apply_csrf_header(c) -> None:
+    """login()/accept-invitation set a CSRF cookie alongside the session
+    cookie (double-submit pattern -- see dependencies.verify_csrf_if_unsafe).
+    A real browser's JS reads that cookie and echoes it as X-CSRF-Token
+    on every mutating request; TestClient doesn't do that automatically,
+    so every fixture below does it once after login, exactly like the
+    frontend's own httpApi.ts does."""
+    from jde_api_service.services import auth_service
+
+    token = c.cookies.get(auth_service.CSRF_COOKIE_NAME)
+    assert token, "login() must set the CSRF cookie"
+    c.headers["X-CSRF-Token"] = token
+
+
 def _create_member(user_id: str, email: str, display_name: str, company_ids: list[str]) -> None:
     """Creates a real user with every role on each given company --
     the same broad access the old static "u-hendro"/"u-ellen" demo
@@ -118,6 +132,7 @@ def client(isolated_dirs):
         _create_member("u-ellen", "ellen@test.local", "Ellen Vos", ["vdb"])
         login = c.post("/auth/login", json={"email": "hendro@test.local", "password": TEST_PASSWORD})
         assert login.status_code == 200, login.text
+        _apply_csrf_header(c)
         yield c
 
 
@@ -135,6 +150,7 @@ def ellen_client(client):
     c = TestClient(app)  # no `with` -- schema/seeding already ran via the `client` fixture above
     login = c.post("/auth/login", json={"email": "ellen@test.local", "password": TEST_PASSWORD})
     assert login.status_code == 200, login.text
+    _apply_csrf_header(c)
     return c
 
 
@@ -154,6 +170,7 @@ def viewer_client(client):
     c = TestClient(app)
     login = c.post("/auth/login", json={"email": "viewer@test.local", "password": TEST_PASSWORD})
     assert login.status_code == 200, login.text
+    _apply_csrf_header(c)
     return c
 
 

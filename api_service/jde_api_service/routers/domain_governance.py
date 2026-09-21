@@ -168,7 +168,7 @@ async def submit_domain_owner_edit(
     prior_revision_count = review.history[-1].user_story.revision_count if review.history else 0
 
     service.append_version(
-        change_id, label="domain_owner_edit", user_story=payload.user_story, actor=payload.edited_by, note=payload.note
+        change_id, label="domain_owner_edit", user_story=payload.user_story, actor=ctx.identity.display_name, note=payload.note
     )
     service.set_stage(change_id, "domain_owner_requested_revision")
     service.set_stage(change_id, "reviewer_agent_refining")
@@ -209,7 +209,7 @@ async def submit_domain_owner_edit(
         change_id=change_id,
         customer_id=ctx.customer_id,
         kind="domain_owner_edit",
-        decided_by=payload.edited_by,
+        decided_by=ctx.identity.display_name,
         identity_id=ctx.identity.id,
         note=payload.note,
     )
@@ -250,7 +250,7 @@ async def ask_about_requirement_endpoint(
             story_id=change_id,
             current_story=current_story,
             question=payload.question,
-            asked_by=payload.asked_by,
+            asked_by=ctx.identity.display_name,
             prior_turns=review.conversation,
             repo_root=settings.repo_root,
             customer_id=ctx.customer_id,
@@ -260,7 +260,7 @@ async def ask_about_requirement_endpoint(
 
     return service.append_conversation_turn(
         change_id,
-        asked_by=payload.asked_by,
+        asked_by=ctx.identity.display_name,
         question=payload.question,
         answer=result["answer"],
         kind=result["kind"],
@@ -294,12 +294,12 @@ def request_requirement_reconsideration(
     if not payload.note:
         raise HTTPException(status_code=422, detail="explain why this requirement needs reconsideration")
 
-    updated = service.request_reconsideration(change_id, requested_by=payload.decided_by, note=payload.note, identity_id=ctx.identity.id)
+    updated = service.request_reconsideration(change_id, requested_by=ctx.identity.display_name, note=payload.note, identity_id=ctx.identity.id)
     get_decision_feedback_service().record(
         change_id=change_id,
         customer_id=ctx.customer_id,
         kind="requirement_reconsideration_requested",
-        decided_by=payload.decided_by,
+        decided_by=ctx.identity.display_name,
         identity_id=ctx.identity.id,
         note=payload.note,
     )
@@ -316,12 +316,12 @@ def domain_owner_approve(
     if review is None or review.stage != "domain_owner_reviewing":
         raise HTTPException(status_code=409, detail=f"cannot approve from stage {review.stage if review else 'none'}")
     require_domain_owner_access(ctx, review.business_domain_id)
-    updated = service.record_domain_owner_approval(change_id, payload.decided_by, payload.note, identity_id=ctx.identity.id)
+    updated = service.record_domain_owner_approval(change_id, ctx.identity.display_name, payload.note, identity_id=ctx.identity.id)
     get_decision_feedback_service().record(
         change_id=change_id,
         customer_id=ctx.customer_id,
         kind="domain_owner_approval",
-        decided_by=payload.decided_by,
+        decided_by=ctx.identity.display_name,
         identity_id=ctx.identity.id,
         note=payload.note,
     )
@@ -346,12 +346,12 @@ def domain_owner_reject(
     require_domain_owner_access(ctx, review.business_domain_id)
     if not payload.note:
         raise HTTPException(status_code=422, detail="a rejection must include a reason")
-    updated = service.record_domain_owner_rejection(change_id, payload.decided_by, payload.note, identity_id=ctx.identity.id)
+    updated = service.record_domain_owner_rejection(change_id, ctx.identity.display_name, payload.note, identity_id=ctx.identity.id)
     get_decision_feedback_service().record(
         change_id=change_id,
         customer_id=ctx.customer_id,
         kind="domain_owner_rejection",
-        decided_by=payload.decided_by,
+        decided_by=ctx.identity.display_name,
         identity_id=ctx.identity.id,
         reason_code=payload.rejection_reason,
         note=payload.note,
@@ -389,15 +389,15 @@ def application_manager_approve(
         raise HTTPException(status_code=409, detail=f"cannot approve from stage {review.stage if review else 'none'}")
 
     updated = service.record_application_manager_approval(
-        change_id, payload.decided_by, payload.note, identity_id=ctx.identity.id
+        change_id, ctx.identity.display_name, payload.note, identity_id=ctx.identity.id
     )
-    backlog.approve(change_id, payload.decided_by, payload.note)
-    get_delivery_queue_service().add(change_id, ctx.customer_id, payload.decided_by, payload.note)
+    backlog.approve(change_id, ctx.identity.display_name, payload.note)
+    get_delivery_queue_service().add(change_id, ctx.customer_id, ctx.identity.display_name, payload.note)
     get_decision_feedback_service().record(
         change_id=change_id,
         customer_id=ctx.customer_id,
         kind="application_manager_approval",
-        decided_by=payload.decided_by,
+        decided_by=ctx.identity.display_name,
         identity_id=ctx.identity.id,
         note=payload.note,
     )
@@ -432,14 +432,14 @@ def application_manager_reject(
         raise HTTPException(status_code=422, detail="a rejection must include a reason")
 
     updated = service.record_application_manager_rejection(
-        change_id, payload.decided_by, payload.note, identity_id=ctx.identity.id
+        change_id, ctx.identity.display_name, payload.note, identity_id=ctx.identity.id
     )
-    backlog.reject(change_id, payload.decided_by, payload.note)
+    backlog.reject(change_id, ctx.identity.display_name, payload.note)
     get_decision_feedback_service().record(
         change_id=change_id,
         customer_id=ctx.customer_id,
         kind="application_manager_rejection",
-        decided_by=payload.decided_by,
+        decided_by=ctx.identity.display_name,
         identity_id=ctx.identity.id,
         reason_code=payload.rejection_reason,
         note=payload.note,

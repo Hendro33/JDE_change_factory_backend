@@ -32,6 +32,15 @@ import bcrypt
 from ..persistence.db import connection
 
 SESSION_COOKIE_NAME = "jde_session"
+# Double-submit CSRF cookie -- deliberately NOT httponly (the frontend
+# reads it and echoes it back as the X-CSRF-Token header on every
+# state-changing request; dependencies.py's resolve_identity is what
+# actually checks the two match). No server-side token store needed:
+# forging a match requires reading this cookie, which a cross-site
+# attacker cannot do (browsers enforce same-origin JS access to
+# cookies), even though the browser will still attach cookies to a
+# forged cross-site request.
+CSRF_COOKIE_NAME = "jde_csrf"
 SESSION_TTL_DAYS = 14
 PASSWORD_RESET_TTL_HOURS = 1
 INVITATION_TTL_DAYS = 7
