@@ -7,7 +7,13 @@ simulated backend restart.
 
 from __future__ import annotations
 
+from urllib.parse import parse_qs, urlsplit
+
 from .conftest import TEST_PASSWORD, headers
+
+
+def _token_from(preview_url: str, param: str) -> str:
+    return parse_qs(urlsplit(preview_url).query)[param][0]
 
 
 # ---------------------------------------------------------------------
@@ -37,7 +43,7 @@ def test_forgot_password_never_reveals_whether_an_email_is_registered(client):
 
 def test_password_reset_end_to_end_and_revokes_existing_sessions(client):
     forgot = client.post("/auth/forgot-password", json={"email": "hendro@test.local"})
-    token = forgot.json()["previewUrl"].split("token=")[1]
+    token = _token_from(forgot.json()["previewUrl"], "resetToken")
 
     reset = client.post("/auth/reset-password", json={"token": token, "newPassword": "a-new-password-999"})
     assert reset.status_code == 200
@@ -54,7 +60,7 @@ def test_password_reset_end_to_end_and_revokes_existing_sessions(client):
 
 def test_reset_token_is_single_use(client):
     forgot = client.post("/auth/forgot-password", json={"email": "hendro@test.local"})
-    token = forgot.json()["previewUrl"].split("token=")[1]
+    token = _token_from(forgot.json()["previewUrl"], "resetToken")
 
     first = client.post("/auth/reset-password", json={"token": token, "newPassword": "first-new-password"})
     assert first.status_code == 200
@@ -74,7 +80,7 @@ def test_invite_preview_accept_new_user_end_to_end(client):
     assert invite.status_code == 200
     body = invite.json()
     assert body["status"] == "pending"
-    token = body["previewUrl"].split("token=")[1]
+    token = _token_from(body["previewUrl"], "acceptInvitation")
 
     preview = client.get(f"/auth/invitation/{token}/preview")
     assert preview.status_code == 200
@@ -117,7 +123,7 @@ def test_expired_invitation_cannot_be_accepted(client, monkeypatch):
         "/admin/users/invite", headers=headers(customer="vdb"),
         json={"email": "late@test.local", "roles": ["dashboard_viewer"], "domainIds": []},
     )
-    token = invite.json()["previewUrl"].split("token=")[1]
+    token = _token_from(invite.json()["previewUrl"], "acceptInvitation")
 
     preview = client.get(f"/auth/invitation/{token}/preview")
     assert preview.json()["valid"] is False
@@ -132,7 +138,7 @@ def test_revoked_invitation_cannot_be_accepted(client):
         "/admin/users/invite", headers=headers(customer="vdb"),
         json={"email": "revoke-me@test.local", "roles": ["dashboard_viewer"], "domainIds": []},
     )
-    token = invite.json()["previewUrl"].split("token=")[1]
+    token = _token_from(invite.json()["previewUrl"], "acceptInvitation")
     invitation_id = invite.json()["id"]
 
     revoked = client.post(f"/admin/users/invitations/{invitation_id}/revoke", headers=headers(customer="vdb"))
@@ -148,10 +154,10 @@ def test_resend_invitation_invalidates_the_old_link(client):
         "/admin/users/invite", headers=headers(customer="vdb"),
         json={"email": "resend-me@test.local", "roles": ["dashboard_viewer"], "domainIds": []},
     )
-    old_token = invite.json()["previewUrl"].split("token=")[1]
+    old_token = _token_from(invite.json()["previewUrl"], "acceptInvitation")
 
     resent = client.post(f"/admin/users/invitations/{invite.json()['id']}/resend", headers=headers(customer="vdb"))
-    new_token = resent.json()["previewUrl"].split("token=")[1]
+    new_token = _token_from(resent.json()["previewUrl"], "acceptInvitation")
     assert new_token != old_token
 
     assert client.get(f"/auth/invitation/{old_token}/preview").json()["valid"] is False

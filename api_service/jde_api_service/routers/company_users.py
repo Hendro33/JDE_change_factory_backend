@@ -28,7 +28,10 @@ from ..services.email_service import OutgoingEmail, get_email_service
 
 router = APIRouter(prefix="/admin/users", tags=["company-users"])
 
-_INVITE_PATH = "/accept-invitation"
+# Query param on the frontend's root path -- see routers/auth.py's own
+# comment on why this is not a distinct path (no client-side router or
+# server-side rewrite exists in that frontend).
+_INVITE_QUERY_KEY = "acceptInvitation"
 
 
 def _frontend_origin() -> str:
@@ -72,7 +75,7 @@ def invite_user(payload: InviteInput, ctx: AuthContext = Depends(require_role("a
     inv, raw_token = invitation_service.create_invitation(
         ctx.customer_id, payload.email, list(payload.roles), list(payload.domain_ids), invited_by=ctx.identity.id
     )
-    link = f"{_frontend_origin()}{_INVITE_PATH}?token={raw_token}"
+    link = f"{_frontend_origin()}?{_INVITE_QUERY_KEY}={raw_token}"
     email_service = get_email_service()
     email_service.send(OutgoingEmail(
         to=payload.email, subject="You've been invited to Jade",
@@ -90,7 +93,7 @@ def resend_invitation(invitation_id: str, ctx: AuthContext = Depends(require_rol
     if inv is None or inv["company_id"] != ctx.customer_id:
         raise HTTPException(status_code=404, detail="no such invitation")
     inv, raw_token = invitation_service.resend_invitation(invitation_id, actor_user_id=ctx.identity.id)
-    link = f"{_frontend_origin()}{_INVITE_PATH}?token={raw_token}"
+    link = f"{_frontend_origin()}?{_INVITE_QUERY_KEY}={raw_token}"
     email_service = get_email_service()
     email_service.send(OutgoingEmail(
         to=inv["email"], subject="You've been invited to Jade",

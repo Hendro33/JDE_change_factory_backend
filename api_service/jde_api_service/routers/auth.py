@@ -29,8 +29,13 @@ from ..services.email_service import OutgoingEmail, get_email_service
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
-_RESET_PATH = "/reset-password"
-_INVITE_PATH = "/accept-invitation"
+# Query params on the frontend's root path, not distinct paths -- the
+# frontend is a single static index.html with no client-side router
+# and no server-side rewrite rule (confirmed: no 404.html SPA-fallback
+# in that repo), so a link to e.g. "/reset-password" would 404 on
+# GitHub Pages. "resetToken"/"acceptInvitation" (not both "token") so
+# the frontend can tell which flow a link opened into.
+_RESET_QUERY_KEY = "resetToken"
 
 
 def _frontend_origin() -> str:
@@ -101,7 +106,7 @@ def forgot_password(payload: ForgotPasswordInput) -> ForgotPasswordResult:
 
     raw_token = auth_service.create_password_reset_token(user.id)
     email_service = get_email_service()
-    link = f"{_frontend_origin()}{_RESET_PATH}?token={raw_token}"
+    link = f"{_frontend_origin()}?{_RESET_QUERY_KEY}={raw_token}"
     email_service.send(OutgoingEmail(
         to=user.email, subject="Reset your Jade password",
         body=f"Reset your password: {link}", action_url=link,
