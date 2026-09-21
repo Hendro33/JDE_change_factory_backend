@@ -227,7 +227,7 @@ def test_enhance_requires_the_change_request_to_belong_to_the_caller(client, mon
     monkeypatch.setattr(sdk, "query", _fake_query_success)
     request_id = _seed_t001(client)
 
-    r = client.post(f"/changes/{request_id}/enhance", headers=headers(user="u-hendro", customer="vdb"))
+    r = client.post(f"/changes/{request_id}/enhance", headers=headers(customer="vdb"))
     assert r.status_code == 404
 
 

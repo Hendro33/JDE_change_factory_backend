@@ -58,16 +58,6 @@ class Settings:
     # and controlled by that package.
     data_dir: str = os.environ.get("JDE_API_DATA_DIR", "./api_data")
 
-    # The header that stands in for real authentication in this phase
-    # (Section 15.10 NFR: identity/authorisation is a documented
-    # target-architecture requirement, not built yet). Whatever this
-    # header names, the ENTITLEMENT LIST is always resolved server-side
-    # from customer_service's identity table -- this header selects an
-    # identity, it never supplies permissions directly.
-    demo_identity_header: str = "X-Demo-User-Id"
-    demo_customer_header: str = "X-Customer-Id"
-    default_identity_id: str = os.environ.get("JDE_API_DEFAULT_IDENTITY", "u-hendro")
-
     # The repo root that orchestration_driver.py passes as the Claude
     # Agent SDK session's cwd, so it discovers the EXISTING
     # .claude/agents/*.md subagents and .mcp.json -- same directory a
@@ -93,21 +83,35 @@ class Settings:
     # follows.
     jira_mock_mode: bool = _env_bool("JDE_JIRA_MOCK_MODE", default=False)
 
-    # Gate on Jira configuration/credential access (dependencies.py's
-    # require_admin_key), needed now that this service can be reached
-    # from the public internet -- X-Demo-User-Id/X-Customer-Id alone are
-    # assertions, never a real credential check (see resolve_identity's
-    # own docstring), which was an acceptable pilot gap while this only
-    # ever ran on localhost. Opt-in by design, same convention as
-    # jira_mock_mode above: empty (the default, e.g. every local dev
-    # run and the test suite) means the gate is a no-op, so nothing
-    # about local development changes. A hosted deployment sets this to
-    # a real secret, at which point PUT/DELETE .../jira-credentials,
-    # GET/PUT .../jira-integration and POST .../test-connection all
-    # require it -- see this router's own docstring for exactly what
-    # stays deliberately ungated (GET .../jira-integration/status, and
-    # the customer-facing "Retrieve new requests" sync action).
-    admin_api_key: str = os.environ.get("JDE_ADMIN_API_KEY", "")
+    # The session cookie's Secure attribute -- browsers refuse to send
+    # a Secure cookie over plain http, so this must be off for local
+    # http dev and on for anything reachable over https. Default: on,
+    # since the only case that needs it off is local development, which
+    # opts out explicitly.
+    cookie_secure: bool = _env_bool("JDE_COOKIE_SECURE", default=True)
+
+    # "lax" works for same-origin/local dev. A deployment where the
+    # frontend and this API are on DIFFERENT domains (e.g. a GitHub
+    # Pages frontend calling a separately hosted backend) needs "none"
+    # here -- browsers require Secure whenever SameSite=None, so that
+    # combination also needs cookie_secure=True (the default already).
+    cookie_samesite: str = os.environ.get("JDE_COOKIE_SAMESITE", "lax")
+
+    # Controlled first-Admin creation (dependencies.py/services/
+    # bootstrap_service.py): idempotent, applied on every startup, and
+    # ONLY takes effect when both of these are set -- there is no public
+    # admin-registration endpoint anywhere in this service. Intended for
+    # local/dev use and the very first deployment; leave unset once a
+    # real Admin already exists (services/bootstrap_service.py skips
+    # entirely once its email is already registered).
+    bootstrap_admin_email: str = os.environ.get("JDE_BOOTSTRAP_ADMIN_EMAIL", "")
+    bootstrap_admin_password: str = os.environ.get("JDE_BOOTSTRAP_ADMIN_PASSWORD", "")
+    bootstrap_admin_name: str = os.environ.get("JDE_BOOTSTRAP_ADMIN_NAME", "Admin")
+    # Comma-separated company ids the bootstrap Admin is a member of
+    # (all roles). Empty means every seeded company.
+    bootstrap_admin_companies: list[str] = field(
+        default_factory=lambda: _env_list("JDE_BOOTSTRAP_ADMIN_COMPANIES", "")
+    )
 
 
 settings = Settings()

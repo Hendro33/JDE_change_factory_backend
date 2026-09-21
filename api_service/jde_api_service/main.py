@@ -20,7 +20,19 @@ from fastapi.responses import JSONResponse
 from .config import settings
 
 logger = logging.getLogger("jde_api_service")
-from .routers import admin, architecture_review, change_requests, changes, domain_governance, session
+from .routers import (
+    admin,
+    architecture_review,
+    auth,
+    change_requests,
+    changes,
+    company_users,
+    domain_governance,
+    session,
+)
+from .persistence.db import ensure_schema
+from .services.bootstrap_service import ensure_bootstrap_admin
+from .services.customer_service import ensure_seed_companies
 from .services.registry import (
     get_business_domain_service,
     get_change_request_service,
@@ -36,7 +48,10 @@ from .services.seed_service import (
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     # Idempotent -- safe on every restart, never duplicates existing
-    # records. See services/seed_service.py.
+    # records or resets anything already there.
+    ensure_schema()
+    ensure_seed_companies()
+    ensure_bootstrap_admin()
     ensure_bicycleworks_pilot_dataset(get_change_request_service())
     ensure_bicycleworks_business_domains(get_business_domain_service())
     ensure_t001_backlog_link(get_customer_link_service())
@@ -54,17 +69,23 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.allowed_origins,
-    allow_credentials=False,
-    allow_methods=["GET", "POST", "PUT"],
-    allow_headers=["X-Customer-Id", "X-Demo-User-Id", "Content-Type"],
+    # Real login now: the session lives in an httponly cookie
+    # (dependencies.py's resolve_identity), so the browser must be
+    # allowed to send it cross-origin -- see config.py's own comment on
+    # cookie_samesite for what a cross-origin deployment also needs.
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH"],
+    allow_headers=["X-Customer-Id", "Content-Type"],
 )
 
+app.include_router(auth.router)
 app.include_router(session.router)
 app.include_router(changes.router)
 app.include_router(change_requests.router)
 app.include_router(domain_governance.router)
 app.include_router(architecture_review.router)
 app.include_router(admin.router)
+app.include_router(company_users.router)
 
 
 @app.exception_handler(Exception)

@@ -22,7 +22,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from jde_mcp_server import approval
 
 from ..config import settings
-from ..dependencies import AuthContext, require_customer_access
+from ..dependencies import AuthContext, require_customer_access, require_write_access
 from ..models.architecture_review import ArchitectureReviewRun, AskAboutSolutionInput
 from ..models.domain_review import GovernanceDecisionInput
 from ..services.architecture_driver import run_architecture_review
@@ -67,7 +67,7 @@ def get_architecture_review(
 
 @router.post("/changes/{change_id}/architecture-review/ask", response_model=ArchitectureReviewRun)
 async def ask_about_solution_endpoint(
-    change_id: str, payload: AskAboutSolutionInput, ctx: AuthContext = Depends(require_customer_access)
+    change_id: str, payload: AskAboutSolutionInput, ctx: AuthContext = Depends(require_write_access)
 ) -> ArchitectureReviewRun:
     """"Ask Jade about this solution" -- Architect-backed, scoped to the
     solution already analysed for this story, never a general chatbot.
@@ -113,7 +113,7 @@ async def ask_about_solution_endpoint(
 def start_architecture_review(
     change_id: str,
     background_tasks: BackgroundTasks,
-    ctx: AuthContext = Depends(require_customer_access),
+    ctx: AuthContext = Depends(require_write_access),
 ) -> dict:
     """Manual (re)trigger -- normally unnecessary, since Gate 1 already
     starts this automatically. Useful if a run failed and needs a retry."""
@@ -146,7 +146,7 @@ def _pending_change_record(story_id: str) -> dict:
 
 @router.post("/changes/{change_id}/approve-change", status_code=200)
 def approve_exact_change(
-    change_id: str, payload: GovernanceDecisionInput, ctx: AuthContext = Depends(require_customer_access)
+    change_id: str, payload: GovernanceDecisionInput, ctx: AuthContext = Depends(require_write_access)
 ) -> dict:
     """Gate 2 -- "Jade may execute this specific proposed change."
     Reuses approval.approve_change() unmodified; this is the
@@ -169,7 +169,7 @@ def approve_exact_change(
 
 @router.post("/changes/{change_id}/reject-change", status_code=200)
 def reject_exact_change(
-    change_id: str, payload: GovernanceDecisionInput, ctx: AuthContext = Depends(require_customer_access)
+    change_id: str, payload: GovernanceDecisionInput, ctx: AuthContext = Depends(require_write_access)
 ) -> dict:
     _require_queued_change(change_id, ctx.customer_id)
     if not payload.note:

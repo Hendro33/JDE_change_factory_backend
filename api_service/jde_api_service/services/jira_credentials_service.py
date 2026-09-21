@@ -1,16 +1,17 @@
 """
-Persistence for per-customer Jira credentials (email + API token).
+Persistence for per-company Jira credentials (email + API token).
 
-PILOT-SCOPED simplification, deliberately: plain JsonFileStore, the
-same file-per-document pattern every other api_service-owned collection
-already uses (jira_integration_service.py, domain_review_service.py,
-...) -- not a secrets manager, not encrypted at rest. The directory
-this writes to sits under settings.data_dir (./api_data by default),
-which is git-ignored (see .gitignore's "api_data/" entry), so these
-documents are never committed. See models/jira_integration.py's own
-docstring for the full pilot/production distinction this follows, and
+PILOT-SCOPED simplification, deliberately: plaintext-in-this-SQLite-
+database storage (jira_credentials table, persistence/migrations.py),
+not a secrets manager, not encrypted at rest -- but durable, surviving
+restarts and redeploys, which the earlier JsonFileStore-in-the-data-
+directory version did not guarantee for a hosted deployment. The
+database file sits under settings.data_dir (./api_data by default),
+which is git-ignored (see .gitignore's "api_data/" entry), so it is
+never committed. See models/jira_integration.py's own docstring for
+the full pilot/production distinction this follows, and
 docs/JDE_AI_Driven_Change_Factory_Design_Document_v11.docx Section
-19.7 for where it's now recorded as explicit future hardening.
+19.7 for where it's recorded as explicit future hardening.
 
 The token never leaves this service as part of a router response --
 see JiraCredentials' own docstring: it must never be a FastAPI
@@ -23,7 +24,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from ..models.jira_integration import JiraCredentials, JiraCredentialsUpdate
-from ..persistence.json_file_store import JsonFileStore
+from ..persistence.db import connection
 
 
 def _now() -> str:
@@ -31,12 +32,17 @@ def _now() -> str:
 
 
 class JiraCredentialsService:
-    def __init__(self, directory: str) -> None:
-        self._store = JsonFileStore(directory)
-
     def get_for_customer(self, customer_id: str) -> Optional[JiraCredentials]:
-        doc = self._store.get(customer_id)
-        return JiraCredentials.model_validate(doc) if doc else None
+        with connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM jira_credentials WHERE company_id = ?", (customer_id,)
+            ).fetchone()
+        if row is None:
+            return None
+        return JiraCredentials(
+            customer_id=row["company_id"], email=row["email"], api_token=row["api_token"],
+            updated_at=row["updated_at"], updated_by=row["updated_by"],
+        )
 
     def is_configured(self, customer_id: str) -> bool:
         creds = self.get_for_customer(customer_id)
@@ -50,12 +56,20 @@ class JiraCredentialsService:
             updated_at=_now(),
             updated_by=payload.updated_by,
         )
-        self._store.put(customer_id, creds.model_dump(mode="json", by_alias=False))
+        with connection() as conn:
+            conn.execute(
+                "INSERT INTO jira_credentials (company_id, email, api_token, updated_at, updated_by) "
+                "VALUES (?, ?, ?, ?, ?) "
+                "ON CONFLICT(company_id) DO UPDATE SET email=excluded.email, api_token=excluded.api_token, "
+                "updated_at=excluded.updated_at, updated_by=excluded.updated_by",
+                (customer_id, creds.email, creds.api_token, creds.updated_at, creds.updated_by),
+            )
         return creds
 
     def delete(self, customer_id: str) -> None:
         """Disconnect -- removes this customer's stored credential
-        entirely (not just blanking the fields), so jira_is_live_for_customer
-        goes back to false immediately. Idempotent, same as
-        JsonFileStore.delete."""
-        self._store.delete(customer_id)
+        entirely (not just blanking the fields), so
+        jira_is_live_for_customer goes back to false immediately.
+        Idempotent -- deleting a row that isn't there is not an error."""
+        with connection() as conn:
+            conn.execute("DELETE FROM jira_credentials WHERE company_id = ?", (customer_id,))

@@ -27,7 +27,13 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from jde_mcp_server import backlog
 
 from ..config import settings
-from ..dependencies import AuthContext, require_customer_access
+from ..dependencies import (
+    AuthContext,
+    require_customer_access,
+    require_domain_owner_access,
+    require_role,
+    require_write_access,
+)
 from ..models.business_domain import BusinessDomain
 from ..models.delivery_queue import DeliveryQueueEntry
 from ..models.domain_review import (
@@ -62,6 +68,20 @@ _RECONSIDERABLE_STAGES = {"domain_owner_approved", "ready_for_application_manage
 router = APIRouter(tags=["domain-governance"])
 
 
+def _require_domain_owner_or_product_manager(ctx: AuthContext) -> None:
+    """"Ask Jade about this requirement" is asked by either a Domain
+    Owner (mid review) or a Product Manager (on an already-approved
+    requirement) -- see ask_about_requirement_endpoint's own docstring.
+    Deliberately not domain-scoped even for a Domain Owner caller: this
+    only ever produces a conversation turn and, at most, a proposed
+    amendment that is never applied here (see that docstring), so the
+    risk this guards against is "may this identity ask at all," not
+    "which domain" -- unlike start/edit/approve/reject below, which
+    actually change governance state and stay domain-scoped."""
+    if not (ctx.roles & {"domain_owner", "product_manager"}):
+        raise HTTPException(status_code=403, detail="requires the Domain Owner or Product Manager role")
+
+
 @router.get("/business-domains", response_model=list[BusinessDomain])
 def list_business_domains(ctx: AuthContext = Depends(require_customer_access)) -> list[BusinessDomain]:
     return get_business_domain_service().list_for_customer(ctx.customer_id)
@@ -90,7 +110,7 @@ def get_domain_review(change_id: str, ctx: AuthContext = Depends(require_custome
 
 @router.post("/changes/{change_id}/domain-review/assign-domain", response_model=DomainReview)
 def assign_domain(
-    change_id: str, payload: AssignDomainInput, ctx: AuthContext = Depends(require_customer_access)
+    change_id: str, payload: AssignDomainInput, ctx: AuthContext = Depends(require_write_access)
 ) -> DomainReview:
     change = _change_with_story(change_id, ctx.customer_id)
     get_domain_review_service().ensure(change_id, change.user_story)
@@ -114,6 +134,7 @@ def start_domain_owner_review(
 ) -> DomainReview:
     change = _change_with_story(change_id, ctx.customer_id)
     review = get_domain_review_service().ensure(change_id, change.user_story)
+    require_domain_owner_access(ctx, review.business_domain_id)
 
     if review.stage == "domain_owner_reviewing":
         return review  # idempotent -- already started
@@ -139,6 +160,7 @@ async def submit_domain_owner_edit(
             status_code=409,
             detail="can only submit an edit while the Domain Owner review is in progress -- call .../start first",
         )
+    require_domain_owner_access(ctx, review.business_domain_id)
     # The count carried by the version just before this edit cycle --
     # the honest "how many revisions has this story actually been
     # through" reference point, captured before any of this call's own
@@ -213,6 +235,7 @@ async def ask_about_requirement_endpoint(
     to an Application Manager on an already-approved requirement can be
     seen, never silently applied. See request_requirement_reconsideration
     below for what an Application Manager does with one instead."""
+    _require_domain_owner_or_product_manager(ctx)
     _change_with_story(change_id, ctx.customer_id)
     service = get_domain_review_service()
     review = service.get(change_id)
@@ -248,7 +271,7 @@ async def ask_about_requirement_endpoint(
 
 @router.post("/changes/{change_id}/domain-review/request-reconsideration", response_model=DomainReview)
 def request_requirement_reconsideration(
-    change_id: str, payload: GovernanceDecisionInput, ctx: AuthContext = Depends(require_customer_access)
+    change_id: str, payload: GovernanceDecisionInput, ctx: AuthContext = Depends(require_role("product_manager"))
 ) -> DomainReview:
     """The only way back from past Domain Owner approval: an
     Application Manager, having asked Jade about the already-approved
@@ -292,6 +315,7 @@ def domain_owner_approve(
     review = service.get(change_id)
     if review is None or review.stage != "domain_owner_reviewing":
         raise HTTPException(status_code=409, detail=f"cannot approve from stage {review.stage if review else 'none'}")
+    require_domain_owner_access(ctx, review.business_domain_id)
     updated = service.record_domain_owner_approval(change_id, payload.decided_by, payload.note, identity_id=ctx.identity.id)
     get_decision_feedback_service().record(
         change_id=change_id,
@@ -319,6 +343,7 @@ def domain_owner_reject(
     review = service.get(change_id)
     if review is None or review.stage != "domain_owner_reviewing":
         raise HTTPException(status_code=409, detail=f"cannot reject from stage {review.stage if review else 'none'}")
+    require_domain_owner_access(ctx, review.business_domain_id)
     if not payload.note:
         raise HTTPException(status_code=422, detail="a rejection must include a reason")
     updated = service.record_domain_owner_rejection(change_id, payload.decided_by, payload.note, identity_id=ctx.identity.id)
@@ -339,7 +364,7 @@ def application_manager_approve(
     change_id: str,
     payload: GovernanceDecisionInput,
     background_tasks: BackgroundTasks,
-    ctx: AuthContext = Depends(require_customer_access),
+    ctx: AuthContext = Depends(require_role("product_manager")),
 ) -> DomainReview:
     """Gate 1 -- "Jade may start working on this requirement." The one
     action that actually clears backlog.py's Gate 2 (unmodified) --
@@ -389,7 +414,7 @@ def application_manager_approve(
 
 @router.post("/changes/{change_id}/domain-review/application-manager-reject", response_model=DomainReview)
 def application_manager_reject(
-    change_id: str, payload: GovernanceDecisionInput, ctx: AuthContext = Depends(require_customer_access)
+    change_id: str, payload: GovernanceDecisionInput, ctx: AuthContext = Depends(require_role("product_manager"))
 ) -> DomainReview:
     """Gate 1 rejection -- "Jade is not authorised to work on this,"
     the other real outcome alongside application_manager_approve

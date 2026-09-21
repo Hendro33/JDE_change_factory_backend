@@ -3,7 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 
 from ..config import settings
-from ..dependencies import AuthContext, require_customer_access
+from ..dependencies import AuthContext, require_customer_access, require_write_access
 from ..models.change import Change
 from ..models.metrics import ActivityEntry, FactoryMetrics
 from ..services.orchestration_driver import run_enhancement
@@ -38,7 +38,7 @@ def get_change(change_id: str, ctx: AuthContext = Depends(require_customer_acces
 async def enhance_change(
     change_id: str,
     background_tasks: BackgroundTasks,
-    ctx: AuthContext = Depends(require_customer_access),
+    ctx: AuthContext = Depends(require_write_access),
 ) -> Change:
     """Starts Receive -> Improve -> Check (orchestration_driver.py)
     against an existing, not-yet-promoted ChangeRequest, as a

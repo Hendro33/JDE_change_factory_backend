@@ -1,10 +1,12 @@
 """
-Persistence for the per-customer JiraIntegrationConfig -- see
-models/jira_integration.py for why this is customer-scoped and why the
-API token is never part of what this module stores. JsonFileStore-backed
-like every other api_service-owned collection, keyed by customer_id: one
-document per customer, same convention EngagementScopeService already
-uses for its own per-customer document.
+Persistence for the per-company JiraIntegrationConfig -- see
+models/jira_integration.py for why this is company-scoped and why the
+API token is never part of what this module stores. SQLite-backed (the
+jira_integrations table, persistence/migrations.py) -- durable storage
+that survives restarts and redeploys, replacing the earlier
+JsonFileStore-per-customer-directory version. One row per company,
+same convention EngagementScopeService's own per-customer document
+follows.
 """
 
 from __future__ import annotations
@@ -13,7 +15,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from ..models.jira_integration import JiraIntegrationConfig, JiraIntegrationConfigUpdate
-from ..persistence.json_file_store import JsonFileStore
+from ..persistence.db import connection
 from .jira_gateway import normalize_jira_base_url
 
 
@@ -22,12 +24,19 @@ def _now() -> str:
 
 
 class JiraIntegrationService:
-    def __init__(self, directory: str) -> None:
-        self._store = JsonFileStore(directory)
-
     def get_for_customer(self, customer_id: str) -> Optional[JiraIntegrationConfig]:
-        doc = self._store.get(customer_id)
-        return JiraIntegrationConfig.model_validate(doc) if doc else None
+        with connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM jira_integrations WHERE company_id = ?", (customer_id,)
+            ).fetchone()
+        if row is None:
+            return None
+        return JiraIntegrationConfig(
+            customer_id=row["company_id"], base_url=row["base_url"], project_key=row["project_key"],
+            pickup_status=row["pickup_status"], post_pickup_status=row["post_pickup_status"],
+            jade_id_field=row["jade_id_field"], request_type_field=row["request_type_field"],
+            updated_at=row["updated_at"], updated_by=row["updated_by"],
+        )
 
     def upsert(self, customer_id: str, payload: JiraIntegrationConfigUpdate) -> JiraIntegrationConfig:
         """Raises jira_gateway.InvalidJiraBaseUrl (a ValueError) if
@@ -44,5 +53,19 @@ class JiraIntegrationService:
             updated_at=_now(),
             updated_by=payload.updated_by,
         )
-        self._store.put(customer_id, config.model_dump(mode="json", by_alias=False))
+        with connection() as conn:
+            conn.execute(
+                "INSERT INTO jira_integrations (company_id, base_url, project_key, pickup_status, "
+                "post_pickup_status, jade_id_field, request_type_field, updated_at, updated_by) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(company_id) DO UPDATE SET base_url=excluded.base_url, project_key=excluded.project_key, "
+                "pickup_status=excluded.pickup_status, post_pickup_status=excluded.post_pickup_status, "
+                "jade_id_field=excluded.jade_id_field, request_type_field=excluded.request_type_field, "
+                "updated_at=excluded.updated_at, updated_by=excluded.updated_by",
+                (
+                    customer_id, config.base_url, config.project_key, config.pickup_status,
+                    config.post_pickup_status, config.jade_id_field, config.request_type_field,
+                    config.updated_at, config.updated_by,
+                ),
+            )
         return config

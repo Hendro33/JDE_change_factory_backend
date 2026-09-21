@@ -50,10 +50,10 @@ def test_change_request_is_scoped_to_the_customer_it_was_created_under(client):
     assert r.json() == []
 
 
-def test_change_request_requester_cannot_be_spoofed_via_body(client):
-    r = client.post(
+def test_change_request_requester_cannot_be_spoofed_via_body(ellen_client):
+    r = ellen_client.post(
         "/change-requests",
-        headers=headers(user="u-ellen", customer="vdb"),
+        headers=headers(customer="vdb"),
         json={
             "title": "T",
             "businessSource": "Business",
@@ -66,10 +66,10 @@ def test_change_request_requester_cannot_be_spoofed_via_body(client):
     assert r.json()["requester"] == "Ellen Vos"
 
 
-def test_create_change_request_requires_entitled_customer(client):
-    r = client.post(
+def test_create_change_request_requires_entitled_customer(ellen_client):
+    r = ellen_client.post(
         "/change-requests",
-        headers=headers(user="u-ellen", customer="nhd"),  # Ellen is not entitled to nhd
+        headers=headers(customer="nhd"),  # Ellen is not entitled to nhd
         json={"title": "T", "businessSource": "Business", "sourceReference": "", "rawContent": "R"},
     )
     assert r.status_code == 403

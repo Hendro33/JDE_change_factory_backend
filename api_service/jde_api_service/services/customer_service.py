@@ -1,28 +1,31 @@
 """
-Customer registry and identity->entitlement resolution.
+Company ("customer") data access -- SQLite-backed via persistence/db.py.
 
-This is the ONLY place entitlements are decided. Every other module
-that needs to know "which customers can this caller see" goes through
-resolve_identity() / customer_ids_for() here -- never through a header
-value taken at face value.
+Kept under this filename (not renamed to company_service.py) because
+"customer" is this codebase's own long-established domain term for what
+the new work calls a "company" -- every other model in this service
+(ChangeRequest.customer_id, BusinessDomain.customer_id, JiraIntegrationConfig
+.customer_id, and dozens of call sites across routers/ and services/)
+already uses customer_id throughout. Renaming that field and column
+everywhere would be a large, purely cosmetic change with no functional
+benefit, so this module treats "customer" and "company" as the same
+thing and doesn't rename it -- the new `companies` table (see
+persistence/migrations.py) is exactly that, named `companies` to match
+what was asked for, while every foreign key into it stays `customer_id`
+or `company_id` depending on which module already used which name.
 
-Identity is a documented stand-in for real authentication (design doc
-Section 15.10 -- identity/authorisation is a target-architecture NFR,
-not built yet). The two demo personas below are the same ones
-src/services/session.ts already uses client-side; the difference that
-actually matters is that the entitlement LIST now lives here, resolved
-server-side on every request, rather than in the browser's
-localStorage where a client could edit it.
+WHO belongs to a company and WHAT they can do there is membership_service.py's
+job, not this module's -- this module only ever answers "does this
+company exist / what is it called."
 """
 
 from __future__ import annotations
 
-import json
-import os
 from dataclasses import dataclass
+from datetime import datetime, timezone
+from typing import Optional
 
-_HERE = os.path.dirname(os.path.abspath(__file__))
-_SEED_DIR = os.path.normpath(os.path.join(_HERE, "..", "persistence"))
+from ..persistence.db import connection
 
 
 @dataclass(frozen=True)
@@ -34,71 +37,62 @@ class Customer:
     environment: str
 
 
-@dataclass(frozen=True)
-class Identity:
-    id: str
-    display_name: str
-    role: str
-    customer_ids: tuple[str, ...]
-
-
-class UnknownIdentity(RuntimeError):
-    pass
+def _row_to_customer(row) -> Customer:
+    return Customer(
+        id=row["id"], name=row["name"], short_name=row["short_name"],
+        tools_release=row["tools_release"], environment=row["environment"],
+    )
 
 
 class CustomerRegistry:
-    def __init__(self, customers_path: str, identities_path: str) -> None:
-        with open(customers_path, "r", encoding="utf-8") as f:
-            raw_customers = json.load(f)
-        with open(identities_path, "r", encoding="utf-8") as f:
-            raw_identities = json.load(f)
+    def get_customer(self, customer_id: str) -> Optional[Customer]:
+        with connection() as conn:
+            row = conn.execute("SELECT * FROM companies WHERE id = ?", (customer_id,)).fetchone()
+        return _row_to_customer(row) if row else None
 
-        self._customers: dict[str, Customer] = {
-            c["id"]: Customer(
-                id=c["id"], name=c["name"], short_name=c["short_name"],
-                tools_release=c["tools_release"], environment=c["environment"],
-            )
-            for c in raw_customers
-        }
-        self._identities: dict[str, Identity] = {
-            i["id"]: Identity(
-                id=i["id"], display_name=i["display_name"], role=i["role"],
-                customer_ids=tuple(i["customer_ids"]),
-            )
-            for i in raw_identities
-        }
-
-    def resolve_identity(self, identity_id: str) -> Identity:
-        identity = self._identities.get(identity_id)
-        if identity is None:
-            raise UnknownIdentity(f"no such identity: {identity_id}")
-        return identity
-
-    def customers_for(self, identity: Identity) -> list[Customer]:
-        return [self._customers[cid] for cid in identity.customer_ids if cid in self._customers]
-
-    def get_customer(self, customer_id: str) -> Customer | None:
-        return self._customers.get(customer_id)
-
-    def identities_for_customer(self, customer_id: str) -> list[Identity]:
-        """The inverse of customers_for -- who is entitled to this
-        customer. Admin > Customer Setup's only use of this: pure
-        display, never an access-control decision itself (that stays
-        is_entitled(), checked per-request in dependencies.py)."""
-        return [i for i in self._identities.values() if customer_id in i.customer_ids]
-
-    def is_entitled(self, identity: Identity, customer_id: str) -> bool:
-        return customer_id in identity.customer_ids
+    def list_companies(self) -> list[Customer]:
+        with connection() as conn:
+            rows = conn.execute("SELECT * FROM companies ORDER BY name").fetchall()
+        return [_row_to_customer(r) for r in rows]
 
 
-_registry: CustomerRegistry | None = None
+_registry = CustomerRegistry()
 
 
 def get_registry() -> CustomerRegistry:
-    global _registry
-    if _registry is None:
-        _registry = CustomerRegistry(
-            os.path.join(_SEED_DIR, "seed_customers.json"),
-            os.path.join(_SEED_DIR, "seed_identities.json"),
-        )
     return _registry
+
+
+# ---------------------------------------------------------------------
+# Seeding -- idempotent, same convention as seed_service.py's dataset
+# seeding. Carries over the exact pre-existing demo companies (same
+# ids, same names) so nothing already built against "vdb"/"nhd"/"mrv"/
+# "bwm" (BicycleWorks -- see seed_service.py's own pilot dataset,
+# already keyed to "bwm") needs to change, and so BicycleWorks is never
+# accidentally created a second time under a different id.
+# ---------------------------------------------------------------------
+_SEED_COMPANIES = [
+    {"id": "vdb", "name": "Van den Berg Logistiek", "short_name": "Van den Berg", "tools_release": "9.2.7", "environment": "DEV"},
+    {"id": "nhd", "name": "Noord-Holland Dairy", "short_name": "NH Dairy", "tools_release": "9.2.8", "environment": "DEV"},
+    {"id": "mrv", "name": "Maasrivier Industrials", "short_name": "Maasrivier", "tools_release": "9.2.5", "environment": "DEV"},
+    {"id": "bwm", "name": "BicycleWorks Manufacturing BV", "short_name": "BicycleWorks", "tools_release": "9.2.7", "environment": "DEV"},
+]
+
+
+def ensure_seed_companies() -> list[str]:
+    """Returns the ids of any companies actually created (empty if all
+    were already present)."""
+    created: list[str] = []
+    now = datetime.now(timezone.utc).isoformat()
+    with connection() as conn:
+        for c in _SEED_COMPANIES:
+            existing = conn.execute("SELECT id FROM companies WHERE id = ?", (c["id"],)).fetchone()
+            if existing is not None:
+                continue
+            conn.execute(
+                "INSERT INTO companies (id, name, short_name, tools_release, environment, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (c["id"], c["name"], c["short_name"], c["tools_release"], c["environment"], now),
+            )
+            created.append(c["id"])
+    return created

@@ -93,11 +93,13 @@ def get_metrics_service() -> MetricsService:
 
 
 def get_jira_integration_service() -> JiraIntegrationService:
-    return JiraIntegrationService(os.path.join(settings.data_dir, "jira_integrations"))
+    # SQLite-backed (persistence/db.py), not a directory -- see that
+    # service's own docstring for why this moved off JsonFileStore.
+    return JiraIntegrationService()
 
 
 def get_jira_credentials_service() -> JiraCredentialsService:
-    return JiraCredentialsService(os.path.join(settings.data_dir, "jira_credentials"))
+    return JiraCredentialsService()
 
 
 def jira_is_live_for_customer(customer_id: str) -> bool:

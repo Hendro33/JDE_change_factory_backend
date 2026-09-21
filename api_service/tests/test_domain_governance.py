@@ -497,7 +497,7 @@ def test_application_manager_reject_actually_rejects_gate_2_via_backlog(client, 
 
 def test_domain_governance_is_customer_scoped(client, monkeypatch):
     change_id = _seed_and_enhance_t001(client, monkeypatch)
-    r = client.get(f"/changes/{change_id}/domain-review", headers=headers(user="u-hendro", customer="vdb"))
+    r = client.get(f"/changes/{change_id}/domain-review", headers=headers(customer="vdb"))
     assert r.status_code == 404  # exists for bwm, invisible to vdb
 
 

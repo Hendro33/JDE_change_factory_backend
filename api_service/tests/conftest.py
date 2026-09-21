@@ -10,13 +10,17 @@ _MCP_SERVER_SRC = _HERE.parent.parent / "mcp_server"
 if str(_MCP_SERVER_SRC) not in sys.path:
     sys.path.insert(0, str(_MCP_SERVER_SRC))
 
+# Never a real credential -- fixed, used only against an isolated,
+# throwaway SQLite file per test (isolated_dirs below).
+TEST_PASSWORD = "test-password-not-real-0000"  # noqa: S105 -- test fixture, not a real secret
+
 
 @pytest.fixture()
 def isolated_dirs(tmp_path, monkeypatch):
     """Every test gets its own throwaway directories for both this
-    service's own data (change requests, customer links) and
-    mcp_server's stores (backlog, changes, evidence) -- no test can
-    see another test's or a developer's real local data."""
+    service's own data (change requests, customer links, the SQLite
+    database) and mcp_server's stores (backlog, changes, evidence) --
+    no test can see another test's or a developer's real local data."""
     import dataclasses
 
     from jde_api_service.config import settings as api_settings
@@ -43,6 +47,27 @@ def isolated_dirs(tmp_path, monkeypatch):
         "settings",
         dataclasses.replace(mcp_config_module.settings, evidence_dir=str(evidence_dir)),
     )
+    # A cross-origin cookie policy would refuse the TestClient's
+    # same-origin requests -- irrelevant to what these tests verify.
+    monkeypatch.setattr(api_settings, "cookie_secure", False)
+
+    # Schema migrations normally run via the app's startup lifespan
+    # (main.py) -- applied here too so a test that talks to a service
+    # directly (never starting the app via the `client` fixture) still
+    # gets a real SQLite schema to write into.
+    from jde_api_service.persistence.db import ensure_schema
+
+    ensure_schema()
+
+    # bcrypt's cost factor is deliberately slow in production (that's
+    # the whole point) -- tests hash the same fixed TEST_PASSWORD many
+    # times over, so drop the cost here only. Production code
+    # (auth_service.hash_password) is untouched; this only patches the
+    # bcrypt module bcrypt.gensalt() is imported from.
+    import bcrypt
+
+    _real_gensalt = bcrypt.gensalt
+    monkeypatch.setattr(bcrypt, "gensalt", lambda *a, **kw: _real_gensalt(rounds=4))
 
     return {
         "api_data_dir": api_data_dir,
@@ -52,20 +77,88 @@ def isolated_dirs(tmp_path, monkeypatch):
     }
 
 
+def _create_member(user_id: str, email: str, display_name: str, company_ids: list[str]) -> None:
+    """Creates a real user with every role on each given company --
+    the same broad access the old static "u-hendro"/"u-ellen" demo
+    identities implicitly had, now backed by real rows in the
+    company_memberships/membership_roles tables (see
+    services/membership_service.py) instead of a JSON entitlement list."""
+    from jde_api_service.models.auth import ALL_ROLES
+    from jde_api_service.services import auth_service, membership_service
+
+    auth_service.create_user(email, TEST_PASSWORD, display_name, user_id=user_id)
+    for company_id in company_ids:
+        membership_service.create_membership(user_id, company_id, ALL_ROLES, created_by=user_id)
+
+
 @pytest.fixture()
 def client(isolated_dirs):
+    """Logged in as Hendro (all roles, on every seeded company) --
+    the default identity almost every test uses, matching the old
+    "u-hendro"/"ConsultIQ Consultant" demo persona's broad access.
+
+    Also creates Ellen (all roles, "vdb" only -- the old
+    "u-ellen"/"Application Manager" demo persona) up front, unconditionally,
+    same as the old static seed_identities.json always had both
+    personas available regardless of which one a given test actually
+    used -- a handful of tests assert on Ellen's existence/entitlement
+    without themselves logging in as her (see e.g.
+    test_admin_api.py::test_customer_profile_is_customer_scoped).
+    Tests that need to act AS Ellen use the ellen_client fixture below,
+    which logs in as this same already-created user."""
     from fastapi.testclient import TestClient
     from jde_api_service.main import app
 
-    # `with` triggers FastAPI's startup lifecycle (pilot-dataset
-    # seeding included) the same way a real `uvicorn` run does --
-    # without it, tests would see different behaviour than production.
+    # `with` triggers FastAPI's startup lifecycle (schema migration,
+    # company seeding, pilot-dataset seeding included) the same way a
+    # real `uvicorn` run does -- without it, tests would see different
+    # behaviour than production.
     with TestClient(app) as c:
+        _create_member("u-hendro", "hendro@test.local", "Hendro", ["vdb", "nhd", "mrv", "bwm"])
+        _create_member("u-ellen", "ellen@test.local", "Ellen Vos", ["vdb"])
+        login = c.post("/auth/login", json={"email": "hendro@test.local", "password": TEST_PASSWORD})
+        assert login.status_code == 200, login.text
         yield c
 
 
-def headers(user: str = "u-hendro", customer: str | None = "vdb") -> dict:
-    h = {"X-Demo-User-Id": user}
+@pytest.fixture()
+def ellen_client(client):
+    """A SECOND, narrower session (Ellen, entitled to "vdb" only) for
+    the handful of tests that specifically verify cross-customer
+    isolation. Shares the same underlying database as `client` (same
+    isolated_dirs, via the dependency on the `client` fixture, which
+    already created Ellen's user row) but carries its own, separately
+    authenticated session cookie."""
+    from fastapi.testclient import TestClient
+    from jde_api_service.main import app
+
+    c = TestClient(app)  # no `with` -- schema/seeding already ran via the `client` fixture above
+    login = c.post("/auth/login", json={"email": "ellen@test.local", "password": TEST_PASSWORD})
+    assert login.status_code == 200, login.text
+    return c
+
+
+@pytest.fixture()
+def viewer_client(client):
+    """A THIRD identity holding ONLY the dashboard_viewer role on "vdb"
+    -- for tests verifying that role's read-only restriction
+    (require_write_access) and its exclusion from Admin/Domain-Owner/
+    Product-Manager-gated actions."""
+    from fastapi.testclient import TestClient
+    from jde_api_service.main import app
+    from jde_api_service.services import auth_service, membership_service
+
+    auth_service.create_user("viewer@test.local", TEST_PASSWORD, "Viv Viewer", user_id="u-viewer")
+    membership_service.create_membership("u-viewer", "vdb", ["dashboard_viewer"], created_by="u-hendro")
+
+    c = TestClient(app)
+    login = c.post("/auth/login", json={"email": "viewer@test.local", "password": TEST_PASSWORD})
+    assert login.status_code == 200, login.text
+    return c
+
+
+def headers(customer: str | None = "vdb") -> dict:
+    h: dict = {}
     if customer is not None:
         h["X-Customer-Id"] = customer
     return h

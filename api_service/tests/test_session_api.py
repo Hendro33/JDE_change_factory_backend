@@ -1,37 +1,52 @@
 from __future__ import annotations
 
-from .conftest import headers
 
-
-def test_default_identity_is_consultant_with_four_customers(client):
+def test_default_identity_is_hendro_with_four_companies(client):
     r = client.get("/session")
     assert r.status_code == 200
     body = r.json()
     assert body["userId"] == "u-hendro"
-    assert body["role"] == "ConsultIQ Consultant"
+    assert body["email"] == "hendro@test.local"
     assert {c["id"] for c in body["customers"]} == {"vdb", "nhd", "mrv", "bwm"}
-    assert body["activeCustomerId"] == "vdb"
+    # Every seeded company lists Hendro's roles on THAT company --
+    # the fixture gives him every role everywhere.
+    for c in body["customers"]:
+        assert set(c["roles"]) == {"admin", "dashboard_viewer", "domain_owner", "product_manager"}
 
 
-def test_single_customer_persona_sees_only_its_own_customer(client):
-    r = client.get("/session", headers=headers(user="u-ellen", customer=None))
+def test_single_company_persona_sees_only_its_own_company(ellen_client):
+    r = ellen_client.get("/session")
     assert r.status_code == 200
     body = r.json()
-    assert body["role"] == "Application Manager"
+    assert body["userId"] == "u-ellen"
     assert [c["id"] for c in body["customers"]] == ["vdb"]
 
 
-def test_unknown_identity_is_rejected(client):
-    r = client.get("/session", headers=headers(user="u-does-not-exist", customer=None))
+def test_session_requires_a_valid_session_cookie(client):
+    import fastapi.testclient
+    from jde_api_service.main import app
+
+    # No cookie at all.
+    anon = fastapi.testclient.TestClient(app)
+    r = anon.get("/session")
+    assert r.status_code == 401
+
+    # A garbage cookie value must fail closed, not be treated as some
+    # default/anonymous identity.
+    anon.cookies.set("jde_session", "not-a-real-session-token")
+    r = anon.get("/session")
     assert r.status_code == 401
 
 
-def test_session_never_reveals_customer_data_client_did_not_request(client):
-    # Sanity: the entitlement list is exactly the server's table, not
-    # something the client could have widened by asking.
-    r = client.get(
-        "/session",
-        headers={"X-Demo-User-Id": "u-ellen", "X-Requested-Customers": "vdb,nhd,mrv"},
-    )
-    body = r.json()
-    assert [c["id"] for c in body["customers"]] == ["vdb"]
+def test_logout_revokes_the_session_immediately(client):
+    r = client.get("/session")
+    assert r.status_code == 200
+
+    r = client.post("/auth/logout")
+    assert r.status_code == 200
+
+    # The exact same client/cookie must now be refused -- logout is a
+    # real server-side revocation, not just a client-side cookie clear
+    # (see auth_service.revoke_session).
+    r = client.get("/session")
+    assert r.status_code == 401

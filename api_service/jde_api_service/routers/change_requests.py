@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends
 
-from ..dependencies import AuthContext, require_customer_access
+from ..dependencies import AuthContext, require_write_access
 from ..models.change_request import ChangeRequest, ChangeRequestCreate
 from ..services.registry import get_change_request_service
 
@@ -12,7 +12,7 @@ router = APIRouter(tags=["change-requests"])
 @router.post("/change-requests", response_model=ChangeRequest, status_code=201)
 def create_change_request(
     payload: ChangeRequestCreate,
-    ctx: AuthContext = Depends(require_customer_access),
+    ctx: AuthContext = Depends(require_write_access),
 ) -> ChangeRequest:
     """Direct text entry only (Phase 1). customer_id comes from the
     already-validated X-Customer-Id, and requester comes from the

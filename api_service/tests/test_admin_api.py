@@ -19,7 +19,7 @@ from .conftest import headers
 from .test_domain_governance import _fake_enhance_success, _result, _seed_and_enhance_t001
 
 
-def test_customer_profile_is_customer_scoped(client):
+def test_customer_profile_is_customer_scoped(client, ellen_client):
     r = client.get("/admin/customer-profile", headers=headers(customer="vdb"))
     assert r.status_code == 200
     body = r.json()
@@ -29,7 +29,7 @@ def test_customer_profile_is_customer_scoped(client):
     assert "u-ellen" in ids
 
     # A customer outside the caller's entitlement is refused, not leaked.
-    r = client.get("/admin/customer-profile", headers=headers(user="u-ellen", customer="nhd"))
+    r = ellen_client.get("/admin/customer-profile", headers=headers(customer="nhd"))
     assert r.status_code == 403
 
 

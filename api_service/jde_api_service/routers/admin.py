@@ -26,23 +26,21 @@ for the explicit pilot/production distinction this follows: production
 credential entry belongs behind a real secrets provider, which this
 pilot deliberately does not build.
 
-Now that this service can be reached from the public internet (not
-only localhost, as when Section 15.10's "X-Demo-User-Id is a stand-in
-for real authentication" gap was first accepted), the Jira
-configuration/credential routes below ALSO require require_admin_key
-(dependencies.py) -- a real, server-verified shared secret
-(JDE_ADMIN_API_KEY), on top of the existing customer entitlement
-check, not instead of it: get/update_jira_integration,
-update/delete_jira_credentials, test_jira_connection. Deliberately NOT
-on get_jira_integration_status (three booleans, not the configuration
-itself, and Demand > Requests reads it too) or sync_jira_integration
+Real login replaces the old X-Demo-User-Id/X-Admin-Key stand-ins (see
+dependencies.py): get/update_jira_integration, update/delete_jira_credentials
+and test_jira_connection now require the Admin role
+(require_role("admin")) on top of the existing customer entitlement
+check, not instead of it -- consistent with "Admin: company user
+management, invitations, access assignments, settings, and
+integrations" (models/auth.py). Deliberately NOT role-gated:
+get_jira_integration_status (three booleans, not the configuration
+itself, and Demand > Requests reads it too) and sync_jira_integration
 (Demand > Requests' "Retrieve new requests" -- an everyday operational
 action for anyone entitled to the customer, not a configuration
-change). The rest of this router's write surface (EngagementScope,
-Business Domains) has the same admin-key gap this pilot doesn't close
-yet -- an honest, deliberate non-goal here, not an oversight, the same
-"pilot-scoped, explicitly documented" pattern this file already
-follows for the credential exception above.
+change) -- both still go through require_write_access, which only
+blocks a Dashboard-Viewer-only membership. EngagementScope and
+Business Domain writes also now require the Admin role, the same
+"settings" bucket Jira belongs to.
 """
 
 from __future__ import annotations
@@ -51,7 +49,7 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from jde_mcp_server import config as mcp_config
 
-from ..dependencies import AuthContext, require_admin_key, require_customer_access
+from ..dependencies import AuthContext, require_customer_access, require_role, require_write_access
 from ..models.admin import (
     AgentHealth,
     AgentRunSummary,
@@ -79,6 +77,7 @@ from ..models.session import Customer as CustomerOut
 from ..services.customer_service import get_registry
 from ..services.jira_gateway import InvalidJiraBaseUrl, test_live_connection
 from ..services.jira_sync_service import JiraNotConfigured
+from ..services.membership_service import list_company_members
 from ..services.registry import (
     get_agent_registry_service,
     get_agent_run_service,
@@ -104,8 +103,9 @@ def get_customer_profile(ctx: AuthContext = Depends(require_customer_access)) ->
     if customer is None:
         raise HTTPException(status_code=404, detail=f"no such customer: {ctx.customer_id}")
     identities = [
-        IdentitySummary(id=i.id, display_name=i.display_name, role=i.role)
-        for i in registry.identities_for_customer(ctx.customer_id)
+        IdentitySummary(id=m["user_id"], display_name=m["display_name"], role=", ".join(m["roles"]) or "—")
+        for m in list_company_members(ctx.customer_id)
+        if m["status"] == "active"
     ]
     return CustomerProfile(
         customer=CustomerOut(
@@ -174,7 +174,7 @@ def get_engagement_scope(ctx: AuthContext = Depends(require_customer_access)) ->
 
 @router.put("/engagement-scope", response_model=EngagementScope)
 def update_engagement_scope(
-    payload: EngagementScopeUpdate, ctx: AuthContext = Depends(require_customer_access)
+    payload: EngagementScopeUpdate, ctx: AuthContext = Depends(require_role("admin"))
 ) -> EngagementScope:
     return get_engagement_scope_service().upsert(ctx.customer_id, payload)
 
@@ -250,14 +250,14 @@ def get_agent_health(agent_name: str, ctx: AuthContext = Depends(require_custome
 # ---------------------------------------------------------------------
 @router.post("/business-domains", response_model=BusinessDomain, status_code=201)
 def create_business_domain(
-    payload: BusinessDomainCreate, ctx: AuthContext = Depends(require_customer_access)
+    payload: BusinessDomainCreate, ctx: AuthContext = Depends(require_role("admin"))
 ) -> BusinessDomain:
     return get_business_domain_service().create(payload, ctx.customer_id)
 
 
 @router.put("/business-domains/{domain_id}/status", response_model=BusinessDomain)
 def update_business_domain_status(
-    domain_id: str, payload: BusinessDomainStatusUpdate, ctx: AuthContext = Depends(require_customer_access)
+    domain_id: str, payload: BusinessDomainStatusUpdate, ctx: AuthContext = Depends(require_role("admin"))
 ) -> BusinessDomain:
     domain = get_business_domain_service().get_for_customer(domain_id, ctx.customer_id)
     if domain is None:
@@ -312,9 +312,7 @@ def list_integrations(ctx: AuthContext = Depends(require_customer_access)) -> li
 # Jira Service Management hand-off (jira_gateway.py / jira_sync_service.py)
 # ---------------------------------------------------------------------
 @router.get("/jira-integration", response_model=JiraIntegrationConfig)
-def get_jira_integration(
-    ctx: AuthContext = Depends(require_customer_access), _admin: None = Depends(require_admin_key)
-) -> JiraIntegrationConfig:
+def get_jira_integration(ctx: AuthContext = Depends(require_role("admin"))) -> JiraIntegrationConfig:
     config = get_jira_integration_service().get_for_customer(ctx.customer_id)
     if config is None:
         # Same "no configuration means not configured" honesty as
@@ -325,9 +323,7 @@ def get_jira_integration(
 
 @router.put("/jira-integration", response_model=JiraIntegrationConfig)
 def update_jira_integration(
-    payload: JiraIntegrationConfigUpdate,
-    ctx: AuthContext = Depends(require_customer_access),
-    _admin: None = Depends(require_admin_key),
+    payload: JiraIntegrationConfigUpdate, ctx: AuthContext = Depends(require_role("admin")),
 ) -> JiraIntegrationConfig:
     try:
         return get_jira_integration_service().upsert(ctx.customer_id, payload)
@@ -337,11 +333,11 @@ def update_jira_integration(
 
 @router.get("/jira-integration/status", response_model=JiraConnectionStatus)
 def get_jira_integration_status(ctx: AuthContext = Depends(require_customer_access)) -> JiraConnectionStatus:
-    # Deliberately NOT admin-key-gated, unlike the routes around it --
+    # Deliberately NOT Admin-role-gated, unlike the routes around it --
     # this is three booleans (mock/live, credential present, config
     # complete), not the configuration itself, and Demand > Requests
-    # reads it too (to explain why "Retrieve new requests" is disabled)
-    # without needing the admin key that only Admin > Integrations asks for.
+    # reads it too (to explain why "Retrieve new requests" is disabled),
+    # open to any active member including Dashboard Viewer.
     config = get_jira_integration_service().get_for_customer(ctx.customer_id)
     return JiraConnectionStatus(
         mock_mode=not jira_is_live_for_customer(ctx.customer_id),
@@ -352,9 +348,7 @@ def get_jira_integration_status(ctx: AuthContext = Depends(require_customer_acce
 
 @router.put("/jira-credentials", response_model=JiraConnectionStatus)
 def update_jira_credentials(
-    payload: JiraCredentialsUpdate,
-    ctx: AuthContext = Depends(require_customer_access),
-    _admin: None = Depends(require_admin_key),
+    payload: JiraCredentialsUpdate, ctx: AuthContext = Depends(require_role("admin")),
 ) -> JiraConnectionStatus:
     """Enters or replaces this customer's Jira email + API token --
     the one deliberate exception to "no credential through the Admin
@@ -374,9 +368,7 @@ def update_jira_credentials(
 
 
 @router.delete("/jira-credentials", response_model=JiraConnectionStatus)
-def delete_jira_credentials(
-    ctx: AuthContext = Depends(require_customer_access), _admin: None = Depends(require_admin_key)
-) -> JiraConnectionStatus:
+def delete_jira_credentials(ctx: AuthContext = Depends(require_role("admin"))) -> JiraConnectionStatus:
     """"Disconnect" -- removes this customer's stored Jira credential
     entirely. The connector falls back to JiraMockGateway immediately
     (jira_is_live_for_customer), same as before one was ever entered;
@@ -393,9 +385,7 @@ def delete_jira_credentials(
 
 @router.post("/jira-integration/test-connection", response_model=JiraTestConnectionResult)
 def test_jira_connection(
-    payload: JiraTestConnectionInput,
-    ctx: AuthContext = Depends(require_customer_access),
-    _admin: None = Depends(require_admin_key),
+    payload: JiraTestConnectionInput, ctx: AuthContext = Depends(require_role("admin")),
 ) -> JiraTestConnectionResult:
     """"Test Connection" -- checks whatever is currently typed in the
     Jira form, whether or not it has been saved yet, and never
@@ -409,7 +399,7 @@ def test_jira_connection(
 
 
 @router.post("/jira-integration/sync", response_model=JiraSyncResult)
-def sync_jira_integration(ctx: AuthContext = Depends(require_customer_access)) -> JiraSyncResult:
+def sync_jira_integration(ctx: AuthContext = Depends(require_write_access)) -> JiraSyncResult:
     try:
         return get_jira_sync_service(ctx.customer_id).sync_for_customer(ctx.customer_id)
     except JiraNotConfigured as exc:

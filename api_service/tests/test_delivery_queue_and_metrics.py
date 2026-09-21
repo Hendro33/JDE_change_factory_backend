@@ -92,7 +92,7 @@ def test_delivery_queue_is_customer_scoped(client, monkeypatch):
         json={"decidedBy": "Hendro"},
     )
 
-    r = client.get("/delivery-queue", headers=headers(user="u-hendro", customer="vdb"))
+    r = client.get("/delivery-queue", headers=headers(customer="vdb"))
     assert r.json() == []
 
     r = client.get("/delivery-queue", headers=headers(customer="bwm"))

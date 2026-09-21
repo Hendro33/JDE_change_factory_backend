@@ -176,7 +176,7 @@ def _issue(key: str, status: str, **overrides) -> _MockIssueState:
 
 def _services(isolated_dirs, gateway):
     change_requests = ChangeRequestService(str(isolated_dirs["api_data_dir"] / "change_requests"))
-    integrations = JiraIntegrationService(str(isolated_dirs["api_data_dir"] / "jira_integrations"))
+    integrations = JiraIntegrationService()
     sync = JiraSyncService(integrations, change_requests, gateway)
     return change_requests, integrations, sync
 
@@ -495,56 +495,40 @@ def test_get_jira_gateway_goes_mock_again_after_disconnect(isolated_dirs):
 
 
 # ---------------------------------------------------------------------
-# Admin key -- a second, real credential check in front of Jira
-# configuration/credential routes specifically, opt-in via
-# JDE_ADMIN_API_KEY (empty/unset, the default, is a no-op -- covered
-# implicitly by every test above, none of which sets the header).
-# Never applied to sync (Demand > Requests' "Retrieve new requests"),
-# which stays gated by customer access alone.
+# Admin role -- Jira configuration/credential routes require the Admin
+# role (require_role("admin"), dependencies.py) on top of company
+# entitlement. Replaces the earlier JDE_ADMIN_API_KEY shared-secret
+# mechanism entirely -- real per-user roles now, not a deployment-wide
+# key. Never applied to status or sync (Demand > Requests' "Retrieve
+# new requests"), which stay gated by company access alone.
 # ---------------------------------------------------------------------
-def test_admin_key_unset_leaves_jira_routes_open(client):
+def test_admin_role_allows_jira_config_access(client):
+    # `client` (Hendro) holds every role, including admin, on vdb.
     r = client.put("/admin/jira-credentials", headers=headers(customer="vdb"), json=_credentials_payload())
     assert r.status_code == 200
 
 
-def test_admin_key_refuses_without_the_header(client, monkeypatch):
-    monkeypatch.setattr(api_config.settings, "admin_api_key", "sekret-deploy-key")
-    r = client.put("/admin/jira-credentials", headers=headers(customer="vdb"), json=_credentials_payload())
-    assert r.status_code == 401
+def test_non_admin_role_is_refused_on_jira_config_routes(viewer_client):
+    # `viewer_client` holds ONLY dashboard_viewer on vdb -- no admin role.
+    r = viewer_client.put("/admin/jira-credentials", headers=headers(customer="vdb"), json=_credentials_payload())
+    assert r.status_code == 403
 
 
-def test_admin_key_refuses_the_wrong_value(client, monkeypatch):
-    monkeypatch.setattr(api_config.settings, "admin_api_key", "sekret-deploy-key")
-    r = client.put(
-        "/admin/jira-credentials", headers={**headers(customer="vdb"), "X-Admin-Key": "wrong"}, json=_credentials_payload()
-    )
-    assert r.status_code == 401
-
-
-def test_admin_key_accepts_the_correct_value(client, monkeypatch):
-    monkeypatch.setattr(api_config.settings, "admin_api_key", "sekret-deploy-key")
-    r = client.put(
-        "/admin/jira-credentials", headers={**headers(customer="vdb"), "X-Admin-Key": "sekret-deploy-key"}, json=_credentials_payload()
-    )
-    assert r.status_code == 200
-
-
-def test_admin_key_guards_the_config_routes_but_not_status_or_sync(client, monkeypatch):
-    monkeypatch.setattr(api_config.settings, "admin_api_key", "sekret-deploy-key")
+def test_admin_role_guards_the_config_routes_but_not_status_or_sync(viewer_client):
     bare = headers(customer="vdb")
 
-    assert client.get("/admin/jira-integration", headers=bare).status_code == 401
-    assert client.put("/admin/jira-integration", headers=bare, json=_config_payload()).status_code == 401
-    assert client.put("/admin/jira-credentials", headers=bare, json=_credentials_payload()).status_code == 401
-    assert client.request("DELETE", "/admin/jira-credentials", headers=bare).status_code == 401
-    assert client.post(
+    assert viewer_client.get("/admin/jira-integration", headers=bare).status_code == 403
+    assert viewer_client.put("/admin/jira-integration", headers=bare, json=_config_payload()).status_code == 403
+    assert viewer_client.put("/admin/jira-credentials", headers=bare, json=_credentials_payload()).status_code == 403
+    assert viewer_client.request("DELETE", "/admin/jira-credentials", headers=bare).status_code == 403
+    assert viewer_client.post(
         "/admin/jira-integration/test-connection", headers=bare,
         json={"baseUrl": "https://x.atlassian.net", "email": "a@b.com", "apiToken": "x"},
-    ).status_code == 401
+    ).status_code == 403
 
-    # status and sync are deliberately NOT gated by the admin key --
-    # Demand > Requests reads both (status for the "not configured yet"
-    # hint, sync for "Retrieve new requests" itself) without needing
-    # the admin key that only Admin > Integrations asks for.
-    assert client.get("/admin/jira-integration/status", headers=bare).status_code == 200
-    assert client.post("/admin/jira-integration/sync", headers=bare).status_code == 409  # 409: Jira isn't configured, not 401
+    # status is open to any active member, including Dashboard Viewer.
+    assert viewer_client.get("/admin/jira-integration/status", headers=bare).status_code == 200
+    # sync is a write, so dashboard_viewer is refused by require_write_access
+    # specifically (403), not the admin-role check (which would also be 403,
+    # but for a different reason) -- see require_write_access's own docstring.
+    assert viewer_client.post("/admin/jira-integration/sync", headers=bare).status_code == 403

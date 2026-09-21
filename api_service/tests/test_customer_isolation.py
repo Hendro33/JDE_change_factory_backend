@@ -18,15 +18,15 @@ def _seed_story_for(client, story_id: str, customer_id: str) -> None:
     get_customer_link_service().link(story_id, customer_id)
 
 
-def test_customer_id_header_cannot_grant_access_beyond_entitlement(client):
+def test_customer_id_header_cannot_grant_access_beyond_entitlement(client, ellen_client):
     _seed_story_for(client, "S-VDB-ONLY", "vdb")
 
     # Ellen is only entitled to vdb -- asking for nhd must be refused,
     # not silently scoped to vdb, and not leak nhd's (empty) data either.
-    r = client.get("/changes", headers=headers(user="u-ellen", customer="nhd"))
+    r = ellen_client.get("/changes", headers=headers(customer="nhd"))
     assert r.status_code == 403
 
-    r = client.get("/changes/S-VDB-ONLY", headers=headers(user="u-ellen", customer="nhd"))
+    r = ellen_client.get("/changes/S-VDB-ONLY", headers=headers(customer="nhd"))
     assert r.status_code == 403
 
 
@@ -35,14 +35,14 @@ def test_entitled_customer_switch_correctly_scopes_each_view(client):
     _seed_story_for(client, "S-NHD", "nhd")
 
     # u-hendro (consultant) is entitled to both.
-    r = client.get("/changes", headers=headers(user="u-hendro", customer="vdb"))
+    r = client.get("/changes", headers=headers(customer="vdb"))
     assert [c["id"] for c in r.json()] == ["S-VDB"]
 
-    r = client.get("/changes", headers=headers(user="u-hendro", customer="nhd"))
+    r = client.get("/changes", headers=headers(customer="nhd"))
     assert [c["id"] for c in r.json()] == ["S-NHD"]
 
     # Cross-customer lookup by id must 404, not return the other customer's record.
-    r = client.get("/changes/S-NHD", headers=headers(user="u-hendro", customer="vdb"))
+    r = client.get("/changes/S-NHD", headers=headers(customer="vdb"))
     assert r.status_code == 404
 
 
