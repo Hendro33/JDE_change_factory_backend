@@ -93,5 +93,21 @@ class Settings:
     # follows.
     jira_mock_mode: bool = _env_bool("JDE_JIRA_MOCK_MODE", default=False)
 
+    # Gate on Jira configuration/credential access (dependencies.py's
+    # require_admin_key), needed now that this service can be reached
+    # from the public internet -- X-Demo-User-Id/X-Customer-Id alone are
+    # assertions, never a real credential check (see resolve_identity's
+    # own docstring), which was an acceptable pilot gap while this only
+    # ever ran on localhost. Opt-in by design, same convention as
+    # jira_mock_mode above: empty (the default, e.g. every local dev
+    # run and the test suite) means the gate is a no-op, so nothing
+    # about local development changes. A hosted deployment sets this to
+    # a real secret, at which point PUT/DELETE .../jira-credentials,
+    # GET/PUT .../jira-integration and POST .../test-connection all
+    # require it -- see this router's own docstring for exactly what
+    # stays deliberately ungated (GET .../jira-integration/status, and
+    # the customer-facing "Retrieve new requests" sync action).
+    admin_api_key: str = os.environ.get("JDE_ADMIN_API_KEY", "")
+
 
 settings = Settings()

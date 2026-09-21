@@ -1,0 +1,53 @@
+# Render.com Blueprint for the JDE Change Factory API service.
+#
+# What this deploys: a single Python web service running api_service
+# (jde_api_service.main:app) with a persistent Disk mounted at /data,
+# so change requests, Jira integration config, Jira credentials, and
+# the mcp_server-owned backlog/changes/evidence directories all survive
+# restarts and redeploys -- the same JsonFileStore-on-disk mechanism
+# this project already uses locally, just pointed at durable storage
+# instead of the container's ephemeral filesystem.
+#
+# Why Render: it's the smallest change from what this repo already is
+# (a plain FastAPI app, no Dockerfile needed) that still gets a real
+# persistent disk attached directly to a web service, and it deploys
+# straight from this GitHub repo with no separate infra to stand up.
+# Exact current pricing could not be verified from the environment this
+# blueprint was written in (outbound network access there is
+# allowlisted and excludes render.com) -- confirm current plan pricing
+# at https://render.com/pricing before deploying.
+#
+# To use: connect this repo to Render (New -> Blueprint, point it at
+# this file), then set JDE_ADMIN_API_KEY as documented below.
+services:
+  - type: web
+    name: jde-change-factory-api
+    runtime: python
+    plan: starter # smallest plan that supports attaching a persistent Disk; verify current name/price at signup
+    branch: main
+    rootDir: .
+    buildCommand: "pip install -e ./api_service"
+    startCommand: "uvicorn jde_api_service.main:app --host 0.0.0.0 --port $PORT --app-dir api_service"
+    healthCheckPath: /session
+    disk:
+      name: jde-data
+      mountPath: /data
+      sizeGB: 1 # JSON documents only, well under the smallest available size; resize later if needed
+    envVars:
+      - key: JDE_API_DATA_DIR
+        value: /data/api_data
+      - key: JDE_BACKLOG_DIR
+        value: /data/backlog
+      - key: JDE_CHANGE_DIR
+        value: /data/changes
+      - key: JDE_EVIDENCE_DIR
+        value: /data/evidence
+      - key: JDE_API_ALLOWED_ORIGINS
+        value: https://jade.consultiq.nl
+      - key: JDE_ADMIN_API_KEY
+        generateValue: true # Render generates and stores a random secret; copy it from the Render dashboard into the frontend's admin-key field, once, per browser tab session -- it is never committed or built into the frontend
+      # JDE_JIRA_MOCK_MODE intentionally left unset (defaults to false):
+      # each customer goes live purely by having Jira credentials
+      # configured through Admin > Integrations, no deployment-level
+      # override needed. Set it to "true" here only to force the whole
+      # deployment back to mock (e.g. temporarily, for a demo).

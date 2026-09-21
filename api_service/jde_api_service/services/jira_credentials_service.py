@@ -52,3 +52,10 @@ class JiraCredentialsService:
         )
         self._store.put(customer_id, creds.model_dump(mode="json", by_alias=False))
         return creds
+
+    def delete(self, customer_id: str) -> None:
+        """Disconnect -- removes this customer's stored credential
+        entirely (not just blanking the fields), so jira_is_live_for_customer
+        goes back to false immediately. Idempotent, same as
+        JsonFileStore.delete."""
+        self._store.delete(customer_id)

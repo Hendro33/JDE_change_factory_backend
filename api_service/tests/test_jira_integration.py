@@ -447,3 +447,104 @@ def test_get_jira_gateway_force_mock_overrides_a_configured_credential(isolated_
     )
     monkeypatch.setattr(api_config.settings, "jira_mock_mode", True)
     assert isinstance(get_jira_gateway("cust1"), JiraMockGateway)
+
+
+# ---------------------------------------------------------------------
+# Disconnect -- removes a saved credential (never just blanks it), and
+# the connector falls straight back to mock, same as before one was
+# ever entered.
+# ---------------------------------------------------------------------
+def test_disconnect_removes_the_credential(client):
+    client.put("/admin/jira-credentials", headers=headers(customer="vdb"), json=_credentials_payload())
+    assert client.get("/admin/jira-integration/status", headers=headers(customer="vdb")).json()["credentialsConfigured"] is True
+
+    r = client.request("DELETE", "/admin/jira-credentials", headers=headers(customer="vdb"))
+    assert r.status_code == 200
+    assert r.json() == {"mockMode": True, "credentialsConfigured": False, "configConfigured": False}
+
+    status = client.get("/admin/jira-integration/status", headers=headers(customer="vdb")).json()
+    assert status["credentialsConfigured"] is False
+
+
+def test_disconnect_leaves_site_config_untouched(client):
+    client.put("/admin/jira-integration", headers=headers(customer="vdb"), json=_config_payload())
+    client.put("/admin/jira-credentials", headers=headers(customer="vdb"), json=_credentials_payload())
+
+    client.request("DELETE", "/admin/jira-credentials", headers=headers(customer="vdb"))
+
+    config = client.get("/admin/jira-integration", headers=headers(customer="vdb")).json()
+    assert config["projectKey"] == "CON"  # untouched -- only the credential was removed
+
+
+def test_disconnect_is_idempotent(client):
+    r = client.request("DELETE", "/admin/jira-credentials", headers=headers(customer="vdb"))
+    assert r.status_code == 200
+    assert r.json()["credentialsConfigured"] is False
+
+
+def test_get_jira_gateway_goes_mock_again_after_disconnect(isolated_dirs):
+    from jde_api_service.models.jira_integration import JiraCredentialsUpdate
+    from jde_api_service.services.registry import get_jira_credentials_service
+
+    service = get_jira_credentials_service()
+    service.upsert("cust1", JiraCredentialsUpdate(email="bot@example.com", api_token="secret-token", updated_by="Hendro"))
+    assert isinstance(get_jira_gateway("cust1"), JiraHttpGateway)
+
+    service.delete("cust1")
+    assert isinstance(get_jira_gateway("cust1"), JiraMockGateway)
+
+
+# ---------------------------------------------------------------------
+# Admin key -- a second, real credential check in front of Jira
+# configuration/credential routes specifically, opt-in via
+# JDE_ADMIN_API_KEY (empty/unset, the default, is a no-op -- covered
+# implicitly by every test above, none of which sets the header).
+# Never applied to sync (Demand > Requests' "Retrieve new requests"),
+# which stays gated by customer access alone.
+# ---------------------------------------------------------------------
+def test_admin_key_unset_leaves_jira_routes_open(client):
+    r = client.put("/admin/jira-credentials", headers=headers(customer="vdb"), json=_credentials_payload())
+    assert r.status_code == 200
+
+
+def test_admin_key_refuses_without_the_header(client, monkeypatch):
+    monkeypatch.setattr(api_config.settings, "admin_api_key", "sekret-deploy-key")
+    r = client.put("/admin/jira-credentials", headers=headers(customer="vdb"), json=_credentials_payload())
+    assert r.status_code == 401
+
+
+def test_admin_key_refuses_the_wrong_value(client, monkeypatch):
+    monkeypatch.setattr(api_config.settings, "admin_api_key", "sekret-deploy-key")
+    r = client.put(
+        "/admin/jira-credentials", headers={**headers(customer="vdb"), "X-Admin-Key": "wrong"}, json=_credentials_payload()
+    )
+    assert r.status_code == 401
+
+
+def test_admin_key_accepts_the_correct_value(client, monkeypatch):
+    monkeypatch.setattr(api_config.settings, "admin_api_key", "sekret-deploy-key")
+    r = client.put(
+        "/admin/jira-credentials", headers={**headers(customer="vdb"), "X-Admin-Key": "sekret-deploy-key"}, json=_credentials_payload()
+    )
+    assert r.status_code == 200
+
+
+def test_admin_key_guards_the_config_routes_but_not_status_or_sync(client, monkeypatch):
+    monkeypatch.setattr(api_config.settings, "admin_api_key", "sekret-deploy-key")
+    bare = headers(customer="vdb")
+
+    assert client.get("/admin/jira-integration", headers=bare).status_code == 401
+    assert client.put("/admin/jira-integration", headers=bare, json=_config_payload()).status_code == 401
+    assert client.put("/admin/jira-credentials", headers=bare, json=_credentials_payload()).status_code == 401
+    assert client.request("DELETE", "/admin/jira-credentials", headers=bare).status_code == 401
+    assert client.post(
+        "/admin/jira-integration/test-connection", headers=bare,
+        json={"baseUrl": "https://x.atlassian.net", "email": "a@b.com", "apiToken": "x"},
+    ).status_code == 401
+
+    # status and sync are deliberately NOT gated by the admin key --
+    # Demand > Requests reads both (status for the "not configured yet"
+    # hint, sync for "Retrieve new requests" itself) without needing
+    # the admin key that only Admin > Integrations asks for.
+    assert client.get("/admin/jira-integration/status", headers=bare).status_code == 200
+    assert client.post("/admin/jira-integration/sync", headers=bare).status_code == 409  # 409: Jira isn't configured, not 401

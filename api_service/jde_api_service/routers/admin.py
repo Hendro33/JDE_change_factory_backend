@@ -25,6 +25,24 @@ docs/JDE_AI_Driven_Change_Factory_Design_Document_v11.docx Section 19.7
 for the explicit pilot/production distinction this follows: production
 credential entry belongs behind a real secrets provider, which this
 pilot deliberately does not build.
+
+Now that this service can be reached from the public internet (not
+only localhost, as when Section 15.10's "X-Demo-User-Id is a stand-in
+for real authentication" gap was first accepted), the Jira
+configuration/credential routes below ALSO require require_admin_key
+(dependencies.py) -- a real, server-verified shared secret
+(JDE_ADMIN_API_KEY), on top of the existing customer entitlement
+check, not instead of it: get/update_jira_integration,
+update/delete_jira_credentials, test_jira_connection. Deliberately NOT
+on get_jira_integration_status (three booleans, not the configuration
+itself, and Demand > Requests reads it too) or sync_jira_integration
+(Demand > Requests' "Retrieve new requests" -- an everyday operational
+action for anyone entitled to the customer, not a configuration
+change). The rest of this router's write surface (EngagementScope,
+Business Domains) has the same admin-key gap this pilot doesn't close
+yet -- an honest, deliberate non-goal here, not an oversight, the same
+"pilot-scoped, explicitly documented" pattern this file already
+follows for the credential exception above.
 """
 
 from __future__ import annotations
@@ -33,7 +51,7 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from jde_mcp_server import config as mcp_config
 
-from ..dependencies import AuthContext, require_customer_access
+from ..dependencies import AuthContext, require_admin_key, require_customer_access
 from ..models.admin import (
     AgentHealth,
     AgentRunSummary,
@@ -294,7 +312,9 @@ def list_integrations(ctx: AuthContext = Depends(require_customer_access)) -> li
 # Jira Service Management hand-off (jira_gateway.py / jira_sync_service.py)
 # ---------------------------------------------------------------------
 @router.get("/jira-integration", response_model=JiraIntegrationConfig)
-def get_jira_integration(ctx: AuthContext = Depends(require_customer_access)) -> JiraIntegrationConfig:
+def get_jira_integration(
+    ctx: AuthContext = Depends(require_customer_access), _admin: None = Depends(require_admin_key)
+) -> JiraIntegrationConfig:
     config = get_jira_integration_service().get_for_customer(ctx.customer_id)
     if config is None:
         # Same "no configuration means not configured" honesty as
@@ -305,7 +325,9 @@ def get_jira_integration(ctx: AuthContext = Depends(require_customer_access)) ->
 
 @router.put("/jira-integration", response_model=JiraIntegrationConfig)
 def update_jira_integration(
-    payload: JiraIntegrationConfigUpdate, ctx: AuthContext = Depends(require_customer_access)
+    payload: JiraIntegrationConfigUpdate,
+    ctx: AuthContext = Depends(require_customer_access),
+    _admin: None = Depends(require_admin_key),
 ) -> JiraIntegrationConfig:
     try:
         return get_jira_integration_service().upsert(ctx.customer_id, payload)
@@ -315,6 +337,11 @@ def update_jira_integration(
 
 @router.get("/jira-integration/status", response_model=JiraConnectionStatus)
 def get_jira_integration_status(ctx: AuthContext = Depends(require_customer_access)) -> JiraConnectionStatus:
+    # Deliberately NOT admin-key-gated, unlike the routes around it --
+    # this is three booleans (mock/live, credential present, config
+    # complete), not the configuration itself, and Demand > Requests
+    # reads it too (to explain why "Retrieve new requests" is disabled)
+    # without needing the admin key that only Admin > Integrations asks for.
     config = get_jira_integration_service().get_for_customer(ctx.customer_id)
     return JiraConnectionStatus(
         mock_mode=not jira_is_live_for_customer(ctx.customer_id),
@@ -325,7 +352,9 @@ def get_jira_integration_status(ctx: AuthContext = Depends(require_customer_acce
 
 @router.put("/jira-credentials", response_model=JiraConnectionStatus)
 def update_jira_credentials(
-    payload: JiraCredentialsUpdate, ctx: AuthContext = Depends(require_customer_access)
+    payload: JiraCredentialsUpdate,
+    ctx: AuthContext = Depends(require_customer_access),
+    _admin: None = Depends(require_admin_key),
 ) -> JiraConnectionStatus:
     """Enters or replaces this customer's Jira email + API token --
     the one deliberate exception to "no credential through the Admin
@@ -344,9 +373,29 @@ def update_jira_credentials(
     )
 
 
+@router.delete("/jira-credentials", response_model=JiraConnectionStatus)
+def delete_jira_credentials(
+    ctx: AuthContext = Depends(require_customer_access), _admin: None = Depends(require_admin_key)
+) -> JiraConnectionStatus:
+    """"Disconnect" -- removes this customer's stored Jira credential
+    entirely. The connector falls back to JiraMockGateway immediately
+    (jira_is_live_for_customer), same as before one was ever entered;
+    site/project/status configuration (JiraIntegrationConfig) is left
+    alone, so reconnecting later doesn't mean re-typing all of it."""
+    get_jira_credentials_service().delete(ctx.customer_id)
+    config = get_jira_integration_service().get_for_customer(ctx.customer_id)
+    return JiraConnectionStatus(
+        mock_mode=not jira_is_live_for_customer(ctx.customer_id),
+        credentials_configured=False,
+        config_configured=bool(config and config.is_configured()),
+    )
+
+
 @router.post("/jira-integration/test-connection", response_model=JiraTestConnectionResult)
 def test_jira_connection(
-    payload: JiraTestConnectionInput, ctx: AuthContext = Depends(require_customer_access)
+    payload: JiraTestConnectionInput,
+    ctx: AuthContext = Depends(require_customer_access),
+    _admin: None = Depends(require_admin_key),
 ) -> JiraTestConnectionResult:
     """"Test Connection" -- checks whatever is currently typed in the
     Jira form, whether or not it has been saved yet, and never

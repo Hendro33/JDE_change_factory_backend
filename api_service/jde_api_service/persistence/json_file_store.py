@@ -36,6 +36,14 @@ class JsonFileStore:
         with open(self._path(doc_id), "w", encoding="utf-8") as f:
             json.dump(document, f, indent=2, default=str)
 
+    def delete(self, doc_id: str) -> None:
+        """Idempotent -- deleting a document that isn't there is not an
+        error, same as every other store in this system treats a
+        missing record."""
+        path = self._path(doc_id)
+        if os.path.exists(path):
+            os.remove(path)
+
     def list_all(self) -> list[dict[str, Any]]:
         if not os.path.isdir(self._dir):
             return []

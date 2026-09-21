@@ -63,3 +63,18 @@ def require_customer_access(
             detail=f"'{identity.id}' is not entitled to customer '{x_customer_id}'",
         )
     return AuthContext(identity=identity, customer_id=x_customer_id)
+
+
+def require_admin_key(x_admin_key: str | None = Header(default=None, alias="X-Admin-Key")) -> None:
+    """A second, real credential check in front of Jira configuration/
+    credential endpoints specifically (routers/admin.py's Jira routes)
+    -- opt-in via JDE_ADMIN_API_KEY (config.py's own comment explains
+    why empty means "no-op", same convention as jira_mock_mode).
+    Combined with require_customer_access above (still required on
+    every one of those routes), reaching them from a hosted deployment
+    needs BOTH the shared admin key AND a customer the caller's
+    identity is actually entitled to -- neither alone is enough."""
+    if not settings.admin_api_key:
+        return
+    if x_admin_key != settings.admin_api_key:
+        raise HTTPException(status_code=401, detail="missing or incorrect admin key")
