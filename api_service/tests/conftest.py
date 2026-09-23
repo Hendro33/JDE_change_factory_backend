@@ -190,3 +190,29 @@ def headers(customer: str | None = "vdb") -> dict:
     if customer is not None:
         h["X-Customer-Id"] = customer
     return h
+
+
+def place_in_owned_domain(client, change_id: str, customer: str = "bwm", domain_id: str = "DOM-BWM-ORDER-FULFIL") -> None:
+    """What triage does before a Domain Owner can act: the story is placed
+    in a business domain (Product Manager/Admin), and the fixture's
+    Domain Owners are assigned to that domain (Admin > Users). Without
+    both, require_domain_owner_access refuses -- a story with no domain,
+    or a Domain Owner without the assignment, has no authority."""
+    from jde_api_service.persistence.db import connection
+
+    client.get(f"/changes/{change_id}/domain-review", headers=headers(customer=customer))
+    r = client.post(
+        f"/changes/{change_id}/domain-review/assign-domain", headers=headers(customer=customer),
+        json={"businessDomainId": domain_id, "uncertain": False, "note": ""},
+    )
+    assert r.status_code == 200, r.text
+    with connection() as conn:
+        for user_id in ("u-hendro", "u-ellen"):
+            row = conn.execute(
+                "SELECT id FROM company_memberships WHERE user_id = ? AND company_id = ?", (user_id, customer)
+            ).fetchone()
+            if row is not None:
+                conn.execute(
+                    "INSERT OR IGNORE INTO domain_assignments (membership_id, business_domain_id) VALUES (?, ?)",
+                    (row["id"], domain_id),
+                )

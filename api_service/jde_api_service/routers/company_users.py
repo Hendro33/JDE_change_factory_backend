@@ -24,6 +24,7 @@ from ..models.auth import (
     UpdateMembershipInput,
 )
 from ..services import invitation_service, membership_service
+from ..services.registry import get_business_domain_service
 from ..services.email_service import OutgoingEmail, get_email_service
 
 router = APIRouter(prefix="/admin/users", tags=["company-users"])
@@ -70,8 +71,18 @@ def list_company_users(ctx: AuthContext = Depends(require_role("admin"))) -> Com
     return CompanyUsersOut(members=members, invitations=invitations)
 
 
+def _require_company_domains(domain_ids, company_id: str) -> None:
+    """Domain assignments grant Domain Owner authority, so each one must
+    be a real domain of this same company."""
+    service = get_business_domain_service()
+    unknown = sorted(d for d in set(domain_ids) if service.get_for_customer(d, company_id) is None)
+    if unknown:
+        raise HTTPException(status_code=422, detail=f"not business domains of this company: {', '.join(unknown)}")
+
+
 @router.post("/invite", response_model=InvitationOut)
 def invite_user(payload: InviteInput, ctx: AuthContext = Depends(require_role("admin"))) -> InvitationOut:
+    _require_company_domains(payload.domain_ids, ctx.customer_id)
     inv, raw_token = invitation_service.create_invitation(
         ctx.customer_id, payload.email, list(payload.roles), list(payload.domain_ids), invited_by=ctx.identity.id
     )
@@ -126,6 +137,7 @@ def update_roles(
     membership_id: str, payload: UpdateMembershipInput, ctx: AuthContext = Depends(require_role("admin"))
 ) -> MembershipOut:
     _membership_in_company_or_404(membership_id, ctx.customer_id)
+    _require_company_domains(payload.domain_ids, ctx.customer_id)
     try:
         membership_service.update_membership_roles(
             membership_id, set(payload.roles), set(payload.domain_ids), actor_user_id=ctx.identity.id

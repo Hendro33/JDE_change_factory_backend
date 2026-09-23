@@ -27,6 +27,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from jde_mcp_server import backlog
 
 from ..config import settings
+from ..services import membership_service
 from ..dependencies import (
     AuthContext,
     require_customer_access,
@@ -84,7 +85,11 @@ def _require_domain_owner_or_product_manager(ctx: AuthContext) -> None:
 
 @router.get("/business-domains", response_model=list[BusinessDomain])
 def list_business_domains(ctx: AuthContext = Depends(require_customer_access)) -> list[BusinessDomain]:
-    return get_business_domain_service().list_for_customer(ctx.customer_id)
+    owners = membership_service.assigned_domain_owners(ctx.customer_id)
+    return [
+        d.model_copy(update={"assigned_owners": owners.get(d.id, [])})
+        for d in get_business_domain_service().list_for_customer(ctx.customer_id)
+    ]
 
 
 def _change_with_story(change_id: str, customer_id: str):
@@ -110,10 +115,19 @@ def get_domain_review(change_id: str, ctx: AuthContext = Depends(require_custome
 
 @router.post("/changes/{change_id}/domain-review/assign-domain", response_model=DomainReview)
 def assign_domain(
-    change_id: str, payload: AssignDomainInput, ctx: AuthContext = Depends(require_write_access)
+    change_id: str, payload: AssignDomainInput, ctx: AuthContext = Depends(require_role("product_manager", "admin"))
 ) -> DomainReview:
+    """Choosing the domain chooses who may approve the requirement, so it
+    is a triage decision (Product Manager or Admin), and it is closed
+    once a Domain Owner has started: moving a story into another domain
+    mid-review would hand the decision to someone else."""
     change = _change_with_story(change_id, ctx.customer_id)
-    get_domain_review_service().ensure(change_id, change.user_story)
+    review = get_domain_review_service().ensure(change_id, change.user_story)
+    if review.stage != "ready_for_domain_owner":
+        raise HTTPException(
+            status_code=409,
+            detail=f"the business domain can only be changed before Domain Owner review starts (stage: {review.stage})",
+        )
 
     if not payload.uncertain and payload.business_domain_id:
         domain = get_business_domain_service().get_for_customer(payload.business_domain_id, ctx.customer_id)

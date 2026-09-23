@@ -115,10 +115,22 @@ def test_reset_token_is_single_use(client):
 # Invitations
 # ---------------------------------------------------------------------
 def test_invite_preview_accept_new_user_end_to_end(client):
-    invite = client.post(
+    # Domain assignments grant Domain Owner authority, so they must be
+    # this company's own domains: another company's domain is refused.
+    foreign = client.post(
         "/admin/users/invite",
         headers=headers(customer="vdb"),
         json={"email": "newbie@test.local", "roles": ["domain_owner"], "domainIds": ["DOM-BWM-WAREHOUSE"]},
+    )
+    assert foreign.status_code == 422
+    vdb_domain = client.post(
+        "/admin/business-domains", headers=headers(customer="vdb"),
+        json={"apqcCode": "4.4", "name": "Warehousing", "level": "4.4"},
+    ).json()["id"]
+    invite = client.post(
+        "/admin/users/invite",
+        headers=headers(customer="vdb"),
+        json={"email": "newbie@test.local", "roles": ["domain_owner"], "domainIds": [vdb_domain]},
     )
     assert invite.status_code == 200
     body = invite.json()
@@ -155,7 +167,7 @@ def test_invite_preview_accept_new_user_end_to_end(client):
     member = next(m for m in listing.json()["members"] if m["email"] == "newbie@test.local")
     assert member["status"] == "active"
     assert member["roles"] == ["domain_owner"]
-    assert member["domainIds"] == ["DOM-BWM-WAREHOUSE"]
+    assert member["domainIds"] == [vdb_domain]
 
 
 def test_expired_invitation_cannot_be_accepted(client, monkeypatch):

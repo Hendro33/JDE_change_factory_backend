@@ -213,6 +213,26 @@ def list_company_members(company_id: str) -> list[dict]:
         return result
 
 
+def assigned_domain_owners(company_id: str) -> dict[str, list[str]]:
+    """business_domain_id -> display names of the ACTIVE members who hold
+    the domain_owner role on this company and are assigned to that
+    domain: exactly the people require_domain_owner_access accepts."""
+    with connection() as conn:
+        rows = conn.execute(
+            "SELECT a.business_domain_id, u.display_name FROM domain_assignments a "
+            "JOIN company_memberships m ON m.id = a.membership_id "
+            "JOIN users u ON u.id = m.user_id "
+            "JOIN membership_roles r ON r.membership_id = m.id AND r.role = 'domain_owner' "
+            "WHERE m.company_id = ? AND m.status = 'active' AND u.is_active = 1 "
+            "ORDER BY u.display_name",
+            (company_id,),
+        ).fetchall()
+    owners: dict[str, list[str]] = {}
+    for row in rows:
+        owners.setdefault(row["business_domain_id"], []).append(row["display_name"])
+    return owners
+
+
 def get_membership_by_id(membership_id: str) -> Optional[dict]:
     with connection() as conn:
         row = conn.execute(

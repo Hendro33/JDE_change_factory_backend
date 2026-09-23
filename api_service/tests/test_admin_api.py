@@ -15,7 +15,7 @@ import claude_agent_sdk as sdk
 
 from jde_mcp_server import backlog
 
-from .conftest import headers
+from .conftest import headers, place_in_owned_domain
 from .test_domain_governance import _fake_enhance_success, _result, _seed_and_enhance_t001
 
 
@@ -152,6 +152,7 @@ def test_domain_owner_approval_records_identity_and_feedback(client, monkeypatch
     )
     change_id = r.json()["id"]
     client.post(f"/changes/{change_id}/enhance", headers=headers(customer="bwm"))
+    place_in_owned_domain(client, change_id)
 
     client.get(f"/changes/{change_id}/domain-review", headers=headers(customer="bwm"))
     client.post(f"/changes/{change_id}/domain-review/start", headers=headers(customer="bwm"), json={"decidedBy": "Ellen Vos"})

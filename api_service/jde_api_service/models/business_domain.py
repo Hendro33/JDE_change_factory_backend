@@ -39,10 +39,14 @@ class BusinessDomain(ApiModel):
     # full catalogue below Level 3 are out of scope for this increment.
     level: str
     description: str = ""
-    # Display name only. Who may actually act as Domain Owner comes from
-    # domain_assignments (Admin > Users), not from this field.
+    # Legacy free-text note, kept for existing records and never used for
+    # authority. Who may act as Domain Owner comes only from
+    # domain_assignments (Admin > Users); see assigned_owners.
     domain_owner: str = ""
     status: BusinessDomainStatus = "active"
+    # Derived on read from domain_assignments: active members holding the
+    # domain_owner role who are assigned to this domain. Never stored.
+    assigned_owners: list[str] = []
     # Records created before revisions existed load as revision 1.
     revision: int = 1
     updated_at: Optional[str] = None
