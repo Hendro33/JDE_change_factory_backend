@@ -387,6 +387,7 @@ def test_jira_settings_survive_a_simulated_restart(client, isolated_dirs):
         status = restarted.get("/admin/jira-integration/status", headers=headers(customer="vdb"))
         assert status.json() == {
             "mockMode": False, "credentialsConfigured": True, "configConfigured": True,
+            "state": "live", "unavailableReason": "",
             "credentialStorage": "encrypted", "credentialEncryptionAvailable": True,
         }
 

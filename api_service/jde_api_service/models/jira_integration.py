@@ -130,9 +130,13 @@ class JiraConnectionStatus(ApiModel):
     own JiraCredentials record (see this module's own docstring) --
     still never the value itself."""
 
+    # True only in explicit demo mode (JDE_JIRA_MOCK_MODE=true).
     mock_mode: bool
     credentials_configured: bool
     config_configured: bool
+    # demo / live / unavailable (see registry.jira_mode); never a silent mock.
+    state: str = "unavailable"
+    unavailable_reason: str = ""
     # How the stored token is held: none / encrypted / plaintext (legacy) /
     # unreadable (encrypted under a key this server does not have).
     credential_storage: str = "none"

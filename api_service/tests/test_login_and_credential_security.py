@@ -138,7 +138,9 @@ def test_a_token_under_a_key_the_server_does_not_have_is_unreadable_and_unused(c
     status = client.get("/admin/jira-integration/status", headers=headers("vdb")).json()
     assert status["credentialStorage"] == "unreadable"
     assert status["credentialsConfigured"] is False
-    assert status["mockMode"] is True  # falls back to the mock gateway, never a half-working live one
+    # Unavailable with a reason -- neither a half-working live connector nor a silent mock.
+    assert status["mockMode"] is False
+    assert status["state"] == "unavailable" and "cannot be decrypted" in status["unavailableReason"]
 
 
 def test_key_rotation_re_encrypts_on_start(client, monkeypatch):

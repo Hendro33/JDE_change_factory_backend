@@ -45,6 +45,8 @@ Business Domain writes also now require the Admin role, the same
 
 from __future__ import annotations
 
+import httpx
+
 from fastapi import APIRouter, Depends, HTTPException
 
 from jde_mcp_server import config as mcp_config
@@ -79,7 +81,7 @@ from ..models.session import Customer as CustomerOut
 from ..services import credential_crypto
 from ..services.company_settings_service import CompanySettingsService
 from ..services.customer_service import get_registry
-from ..services.jira_gateway import InvalidJiraBaseUrl, test_live_connection
+from ..services.jira_gateway import InvalidJiraBaseUrl, JiraGatewayError, test_live_connection
 from ..services.jira_sync_service import JiraNotConfigured
 from ..services.membership_service import list_company_members
 from ..services.registry import (
@@ -91,8 +93,9 @@ from ..services.registry import (
     get_engagement_scope_service,
     get_jira_credentials_service,
     get_jira_integration_service,
+    JiraUnavailable,
     get_jira_sync_service,
-    jira_is_live_for_customer,
+    jira_mode,
 )
 
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -333,14 +336,12 @@ def list_integrations(ctx: AuthContext = Depends(require_customer_access)) -> li
     ais_live = (not ais.mock_mode) and bool(ais.ais_base_url)
 
     jira_config = get_jira_integration_service().get_for_customer(ctx.customer_id)
-    jira_credentials_ok = get_jira_credentials_service().is_configured(ctx.customer_id)
-    jira_live = jira_is_live_for_customer(ctx.customer_id) and bool(jira_config and jira_config.is_configured())
-    if api_settings.jira_mock_mode:
-        jira_detail = "This deployment is force-mocked (JDE_JIRA_MOCK_MODE) -- see Jira below to configure and try a sync"
-    elif not jira_credentials_ok:
-        jira_detail = "No Jira credential configured for this customer yet -- see Jira below"
-    elif not jira_config or not jira_config.is_configured():
-        jira_detail = "Credential is set, but the site/project/status configuration is not complete -- see Jira below"
+    mode, reason = jira_mode(ctx.customer_id)
+    jira_live = mode == "live"
+    if mode == "demo":
+        jira_detail = "Demo mode: this deployment uses a simulated Jira (JDE_JIRA_MOCK_MODE=true)"
+    elif mode == "unavailable":
+        jira_detail = f"Unavailable: {reason}"
     else:
         jira_detail = f"Connected to project {jira_config.project_key}"
 
@@ -395,8 +396,11 @@ def _jira_status(customer_id: str) -> JiraConnectionStatus:
     never the credential itself."""
     config = get_jira_integration_service().get_for_customer(customer_id)
     credentials = get_jira_credentials_service()
+    mode, reason = jira_mode(customer_id)
     return JiraConnectionStatus(
-        mock_mode=not jira_is_live_for_customer(customer_id),
+        mock_mode=mode == "demo",
+        state=mode,
+        unavailable_reason=reason if mode == "unavailable" else "",
         credentials_configured=credentials.is_configured(customer_id),
         config_configured=bool(config and config.is_configured()),
         credential_storage=credentials.storage_status(customer_id),
@@ -424,8 +428,8 @@ def update_jira_credentials(
     and never echoed back by this or any other endpoint: the response
     is status only, exactly like get_jira_integration_status above.
     Saving a valid credential here is, by itself, enough to make this
-    customer's connector live (jira_is_live_for_customer) -- no
-    JDE_JIRA_MOCK_MODE or other backend file edit required."""
+    customer's connector live (registry.jira_mode), once the site/project
+    configuration is complete too -- no backend file edit required."""
     try:
         get_jira_credentials_service().upsert(ctx.customer_id, payload, actor=ctx.identity.display_name)
     except credential_crypto.CredentialKeyMissing as exc:
@@ -436,8 +440,8 @@ def update_jira_credentials(
 @router.delete("/jira-credentials", response_model=JiraConnectionStatus)
 def delete_jira_credentials(ctx: AuthContext = Depends(require_role("admin"))) -> JiraConnectionStatus:
     """"Disconnect" -- removes this customer's stored Jira credential
-    entirely. The connector falls back to JiraMockGateway immediately
-    (jira_is_live_for_customer), same as before one was ever entered;
+    entirely. The connector becomes unavailable immediately
+    (registry.jira_mode) -- never a silent mock;
     site/project/status configuration (JiraIntegrationConfig) is left
     alone, so reconnecting later doesn't mean re-typing all of it."""
     get_jira_credentials_service().delete(ctx.customer_id)
@@ -463,5 +467,13 @@ def test_jira_connection(
 def sync_jira_integration(ctx: AuthContext = Depends(require_write_access)) -> JiraSyncResult:
     try:
         return get_jira_sync_service(ctx.customer_id).sync_for_customer(ctx.customer_id)
-    except JiraNotConfigured as exc:
-        raise HTTPException(status_code=409, detail=str(exc))
+    except (JiraNotConfigured, JiraUnavailable) as exc:
+        raise HTTPException(status_code=409, detail=f"Jira integration unavailable: {exc}")
+    except (httpx.HTTPStatusError, httpx.RequestError, JiraGatewayError) as exc:
+        # Real Jira refused or could not be reached (e.g. a wrong token):
+        # reported as such, never replaced by simulated data.
+        detail = (
+            f"Jira rejected the request (HTTP {exc.response.status_code}) -- check the saved credential"
+            if isinstance(exc, httpx.HTTPStatusError) else f"Jira could not be reached: {exc}"
+        )
+        raise HTTPException(status_code=502, detail=f"Jira integration unavailable: {detail}")

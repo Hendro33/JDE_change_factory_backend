@@ -17,13 +17,15 @@ things the design explicitly requires:
 
 from __future__ import annotations
 
+import pytest
+
 from jde_api_service import config as api_config
 from jde_api_service.models.jira_integration import JiraIntegrationConfigUpdate
 from jde_api_service.services.change_request_service import ChangeRequestService
 from jde_api_service.services.jira_gateway import JiraHttpGateway, JiraMockGateway, _MockIssueState
 from jde_api_service.services.jira_integration_service import JiraIntegrationService
 from jde_api_service.services.jira_sync_service import JiraSyncService
-from jde_api_service.services.registry import get_jira_gateway
+from jde_api_service.services.registry import JiraUnavailable, get_jira_gateway
 
 from .conftest import headers
 
@@ -96,7 +98,10 @@ def test_jira_status_never_exposes_credentials(client):
     r = client.get("/admin/jira-integration/status", headers=headers(customer="vdb"))
     assert r.status_code == 200
     body = r.json()
-    assert body["mockMode"] is True  # default in this test environment: no live Jira credential set
+    # Real mode, nothing configured: unavailable -- never a silent mock.
+    assert body["mockMode"] is False
+    assert body["state"] == "unavailable"
+    assert "No Jira credential" in body["unavailableReason"]
     assert body["credentialsConfigured"] is False
     assert body["configConfigured"] is False
     dumped = str(body).lower()
@@ -119,9 +124,10 @@ def test_integrations_list_reflects_jira_configuration_state(client):
 
 
 # ---------------------------------------------------------------------
-# End-to-end sync via the router (mock gateway, as wired by default)
+# End-to-end sync via the router, in explicit demo mode (mock gateway)
 # ---------------------------------------------------------------------
-def test_sync_end_to_end_creates_change_requests_without_enhancing_them(client):
+def test_sync_end_to_end_creates_change_requests_without_enhancing_them(client, monkeypatch):
+    monkeypatch.setattr(api_config.settings, "jira_mock_mode", True)  # explicit demo mode
     client.put("/admin/jira-integration", headers=headers(customer="vdb"), json=_config_payload())
 
     r = client.post("/admin/jira-integration/sync", headers=headers(customer="vdb"))
@@ -322,10 +328,12 @@ def test_update_jira_credentials_never_echoes_the_token(client):
     r = client.put("/admin/jira-credentials", headers=headers(customer="vdb"), json=_credentials_payload())
     assert r.status_code == 200
     body = r.json()
-    # Saving a valid credential is, by itself, enough to go live -- no
-    # JDE_JIRA_MOCK_MODE or other backend file edit involved.
+    # A credential alone is not enough: the site/project configuration
+    # is still missing, so the connector says it is unavailable.
     assert body == {
         "mockMode": False, "credentialsConfigured": True, "configConfigured": False,
+        "state": "unavailable",
+        "unavailableReason": "The Jira site, project or status configuration is not complete.",
         "credentialStorage": "encrypted", "credentialEncryptionAvailable": True,
     }
     dumped = str(body).lower()
@@ -416,12 +424,30 @@ def test_test_connection_reports_failure_without_a_500(client, monkeypatch):
 # that alone, with no JDE_JIRA_MOCK_MODE or other env var involved;
 # JDE_JIRA_MOCK_MODE=true still force-overrides everyone to mock.
 # ---------------------------------------------------------------------
-def test_get_jira_gateway_is_mock_by_default(isolated_dirs):
-    assert isinstance(get_jira_gateway("cust1"), JiraMockGateway)
+def _configure_site(customer_id: str) -> None:
+    from jde_api_service.models.jira_integration import JiraIntegrationConfigUpdate
+    from jde_api_service.services.registry import get_jira_integration_service
+
+    get_jira_integration_service().upsert(
+        customer_id,
+        JiraIntegrationConfigUpdate(
+            base_url="https://example.atlassian.net", project_key="XX", pickup_status="Ready",
+            post_pickup_status="In Jade", jade_id_field="customfield_1",
+        ),
+        actor="Tester",
+    )
 
 
-def test_get_jira_gateway_stays_mock_without_credentials_even_when_not_force_mocked(isolated_dirs, monkeypatch):
+def test_get_jira_gateway_is_unavailable_by_default_in_real_mode(isolated_dirs):
+    with pytest.raises(JiraUnavailable, match="No Jira credential"):
+        get_jira_gateway("cust1")
+
+
+def test_the_mock_gateway_needs_explicit_demo_mode(isolated_dirs, monkeypatch):
     monkeypatch.setattr(api_config.settings, "jira_mock_mode", False)
+    with pytest.raises(JiraUnavailable):
+        get_jira_gateway("cust1")
+    monkeypatch.setattr(api_config.settings, "jira_mock_mode", True)
     assert isinstance(get_jira_gateway("cust1"), JiraMockGateway)
 
 
@@ -435,14 +461,16 @@ def test_get_jira_gateway_goes_live_purely_from_saved_credentials(isolated_dirs)
     get_jira_credentials_service().upsert(
         "cust1", JiraCredentialsUpdate(email="bot@example.com", api_token="secret-token"), actor="Hendro"
     )
+    _configure_site("cust1")
 
     gateway = get_jira_gateway("cust1")
     assert isinstance(gateway, JiraHttpGateway)
     assert gateway._auth() == ("bot@example.com", "secret-token")
 
-    # A different, unconfigured customer is unaffected -- credentials
-    # are never shared across customers, and there's no error, just mock.
-    assert isinstance(get_jira_gateway("cust2"), JiraMockGateway)
+    # A different, unconfigured customer is unaffected -- credentials are
+    # never shared across customers -- and is unavailable, not mocked.
+    with pytest.raises(JiraUnavailable):
+        get_jira_gateway("cust2")
 
 
 def test_get_jira_gateway_force_mock_overrides_a_configured_credential(isolated_dirs, monkeypatch):
@@ -468,7 +496,9 @@ def test_disconnect_removes_the_credential(client):
     r = client.request("DELETE", "/admin/jira-credentials", headers=headers(customer="vdb"))
     assert r.status_code == 200
     assert r.json() == {
-        "mockMode": True, "credentialsConfigured": False, "configConfigured": False,
+        "mockMode": False, "credentialsConfigured": False, "configConfigured": False,
+        "state": "unavailable",
+        "unavailableReason": "No Jira credential is saved for this company. An Admin must enter it under Admin > Integrations > Jira.",
         "credentialStorage": "none", "credentialEncryptionAvailable": True,
     }
 
@@ -492,16 +522,18 @@ def test_disconnect_is_idempotent(client):
     assert r.json()["credentialsConfigured"] is False
 
 
-def test_get_jira_gateway_goes_mock_again_after_disconnect(isolated_dirs):
+def test_get_jira_gateway_becomes_unavailable_after_disconnect(isolated_dirs):
     from jde_api_service.models.jira_integration import JiraCredentialsUpdate
     from jde_api_service.services.registry import get_jira_credentials_service
 
     service = get_jira_credentials_service()
     service.upsert("cust1", JiraCredentialsUpdate(email="bot@example.com", api_token="secret-token"), actor="Hendro")
+    _configure_site("cust1")
     assert isinstance(get_jira_gateway("cust1"), JiraHttpGateway)
 
     service.delete("cust1")
-    assert isinstance(get_jira_gateway("cust1"), JiraMockGateway)
+    with pytest.raises(JiraUnavailable):
+        get_jira_gateway("cust1")
 
 
 # ---------------------------------------------------------------------

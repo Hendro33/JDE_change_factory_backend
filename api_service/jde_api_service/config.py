@@ -64,23 +64,13 @@ class Settings:
     # human running `claude` from the repo root would use.
     repo_root: str = os.environ.get("JDE_API_REPO_ROOT", _REPO_ROOT_DEFAULT)
 
-    # Jira Service Management hand-off connector (jira_gateway.py /
-    # jira_sync_service.py). This is the only deployment-level Jira
-    # setting left, and it is now a FORCE-MOCK override only -- default
-    # false, so a customer whose email + API token are configured under
-    # Admin > Integrations > Jira goes live purely from that Admin
-    # action, with no .env or backend file edit required
-    # (registry.get_jira_gateway is what actually applies this: a
-    # customer with no credentials configured still gets JiraMockGateway
-    # regardless of this flag, so the connector stays fully exercisable
-    # before real credentials exist). Set JDE_JIRA_MOCK_MODE=true only
-    # to force the whole deployment to mock regardless of what any
-    # customer has configured -- e.g. a shared demo/staging environment.
-    # Credentials/config themselves are customer-scoped, entered through
-    # Admin > Integrations > Jira and stored via JiraCredentialsService /
-    # JiraIntegrationService -- see models/jira_integration.py's own
-    # docstring for the explicit pilot/production distinction this
-    # follows.
+    # Jira demo mode. Default false: real mode, where each company's
+    # connector is live only with a readable credential and a complete
+    # configuration (Admin > Integrations > Jira), and otherwise reports
+    # itself unavailable and blocks every Jira operation -- it never
+    # falls back to the simulated gateway. Set JDE_JIRA_MOCK_MODE=true
+    # only for an explicit demo or test deployment, where every company
+    # uses the simulated Jira (registry.jira_mode).
     jira_mock_mode: bool = _env_bool("JDE_JIRA_MOCK_MODE", default=False)
 
     # The session cookie's Secure attribute -- browsers refuse to send
