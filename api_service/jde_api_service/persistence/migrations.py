@@ -179,4 +179,18 @@ MIGRATIONS: list[tuple[int, str]] = [
         );
         """,
     ),
+    (
+        3,
+        """
+        -- Failed sign-in attempts, for rate limiting (services/login_throttle.py).
+        -- scope is 'account' (key = lower-cased email) or 'client' (key =
+        -- client address). Old rows are pruned as new ones arrive.
+        CREATE TABLE login_failures (
+            scope TEXT NOT NULL,
+            key TEXT NOT NULL,
+            failed_at REAL NOT NULL
+        );
+        CREATE INDEX idx_login_failures ON login_failures(scope, key, failed_at);
+        """,
+    ),
 ]

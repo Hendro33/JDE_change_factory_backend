@@ -42,6 +42,7 @@ from .services.registry import (
     get_business_domain_service,
     get_change_request_service,
     get_customer_link_service,
+    get_jira_credentials_service,
 )
 from .services.seed_service import (
     ensure_bicycleworks_business_domains,
@@ -75,6 +76,9 @@ async def _lifespan(app: FastAPI):
     if any(interrupted.values()):
         logger.warning("Marked runs interrupted by the restart as failed: %s", interrupted)
     ensure_schema()
+    reencrypted = get_jira_credentials_service().reencrypt_stored()
+    if reencrypted:
+        logger.info("Encrypted or re-keyed %d stored Jira credential(s)", reencrypted)
     ensure_seed_companies()
     ensure_bootstrap_admin()
     ensure_bicycleworks_pilot_dataset(get_change_request_service())

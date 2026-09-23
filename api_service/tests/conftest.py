@@ -64,6 +64,12 @@ def isolated_dirs(tmp_path, monkeypatch):
     # A cross-origin cookie policy would refuse the TestClient's
     # same-origin requests -- irrelevant to what these tests verify.
     monkeypatch.setattr(api_settings, "cookie_secure", False)
+    # Stored credentials are encrypted with a key from the environment
+    # (services/credential_crypto.py); a fresh throwaway key per test.
+    from cryptography.fernet import Fernet
+
+    monkeypatch.setenv("JDE_CREDENTIAL_KEY", Fernet.generate_key().decode())
+    monkeypatch.delenv("JDE_CREDENTIAL_KEY_PREVIOUS", raising=False)
 
     # Schema migrations normally run via the app's startup lifespan
     # (main.py) -- applied here too so a test that talks to a service

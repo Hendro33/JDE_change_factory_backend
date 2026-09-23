@@ -133,6 +133,11 @@ class JiraConnectionStatus(ApiModel):
     mock_mode: bool
     credentials_configured: bool
     config_configured: bool
+    # How the stored token is held: none / encrypted / plaintext (legacy) /
+    # unreadable (encrypted under a key this server does not have).
+    credential_storage: str = "none"
+    # Whether this server can save a credential at all (encryption key set).
+    credential_encryption_available: bool = False
 
 
 class JiraSyncError(ApiModel):

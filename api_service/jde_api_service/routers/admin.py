@@ -76,6 +76,7 @@ from ..models.jira_integration import (
     JiraTestConnectionResult,
 )
 from ..models.session import Customer as CustomerOut
+from ..services import credential_crypto
 from ..services.company_settings_service import CompanySettingsService
 from ..services.customer_service import get_registry
 from ..services.jira_gateway import InvalidJiraBaseUrl, test_live_connection
@@ -389,6 +390,20 @@ def update_jira_integration(
         raise HTTPException(status_code=422, detail=str(exc))
 
 
+def _jira_status(customer_id: str) -> JiraConnectionStatus:
+    """Status only -- whether a credential exists and how it is held,
+    never the credential itself."""
+    config = get_jira_integration_service().get_for_customer(customer_id)
+    credentials = get_jira_credentials_service()
+    return JiraConnectionStatus(
+        mock_mode=not jira_is_live_for_customer(customer_id),
+        credentials_configured=credentials.is_configured(customer_id),
+        config_configured=bool(config and config.is_configured()),
+        credential_storage=credentials.storage_status(customer_id),
+        credential_encryption_available=credential_crypto.is_configured(),
+    )
+
+
 @router.get("/jira-integration/status", response_model=JiraConnectionStatus)
 def get_jira_integration_status(ctx: AuthContext = Depends(require_customer_access)) -> JiraConnectionStatus:
     # Deliberately NOT Admin-role-gated, unlike the routes around it --
@@ -396,12 +411,7 @@ def get_jira_integration_status(ctx: AuthContext = Depends(require_customer_acce
     # complete), not the configuration itself, and Demand > Requests
     # reads it too (to explain why "Retrieve new requests" is disabled),
     # open to any active member including Dashboard Viewer.
-    config = get_jira_integration_service().get_for_customer(ctx.customer_id)
-    return JiraConnectionStatus(
-        mock_mode=not jira_is_live_for_customer(ctx.customer_id),
-        credentials_configured=get_jira_credentials_service().is_configured(ctx.customer_id),
-        config_configured=bool(config and config.is_configured()),
-    )
+    return _jira_status(ctx.customer_id)
 
 
 @router.put("/jira-credentials", response_model=JiraConnectionStatus)
@@ -416,13 +426,11 @@ def update_jira_credentials(
     Saving a valid credential here is, by itself, enough to make this
     customer's connector live (jira_is_live_for_customer) -- no
     JDE_JIRA_MOCK_MODE or other backend file edit required."""
-    get_jira_credentials_service().upsert(ctx.customer_id, payload, actor=ctx.identity.display_name)
-    config = get_jira_integration_service().get_for_customer(ctx.customer_id)
-    return JiraConnectionStatus(
-        mock_mode=not jira_is_live_for_customer(ctx.customer_id),
-        credentials_configured=True,
-        config_configured=bool(config and config.is_configured()),
-    )
+    try:
+        get_jira_credentials_service().upsert(ctx.customer_id, payload, actor=ctx.identity.display_name)
+    except credential_crypto.CredentialKeyMissing as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    return _jira_status(ctx.customer_id)
 
 
 @router.delete("/jira-credentials", response_model=JiraConnectionStatus)
@@ -433,12 +441,7 @@ def delete_jira_credentials(ctx: AuthContext = Depends(require_role("admin"))) -
     site/project/status configuration (JiraIntegrationConfig) is left
     alone, so reconnecting later doesn't mean re-typing all of it."""
     get_jira_credentials_service().delete(ctx.customer_id)
-    config = get_jira_integration_service().get_for_customer(ctx.customer_id)
-    return JiraConnectionStatus(
-        mock_mode=not jira_is_live_for_customer(ctx.customer_id),
-        credentials_configured=False,
-        config_configured=bool(config and config.is_configured()),
-    )
+    return _jira_status(ctx.customer_id)
 
 
 @router.post("/jira-integration/test-connection", response_model=JiraTestConnectionResult)

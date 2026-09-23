@@ -24,7 +24,7 @@ from ..models.auth import (
     MeOut,
     ResetPasswordInput,
 )
-from ..services import auth_service, invitation_service
+from ..services import auth_service, invitation_service, login_throttle
 from ..services.email_service import OutgoingEmail, get_email_service
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -75,10 +75,22 @@ def _clear_auth_cookies(response: Response) -> None:
 
 
 @router.post("/login", response_model=MeOut)
-def login(payload: LoginInput, response: Response) -> MeOut:
+def login(payload: LoginInput, request: Request, response: Response) -> MeOut:
+    # Rate limited per account and per client (services/login_throttle.py).
+    # A refused attempt never reaches the password check.
+    client = login_throttle.client_address(request)
+    wait = login_throttle.check(payload.email, client)
+    if wait is not None:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Too many failed sign-in attempts. Try again in {max(1, round(wait / 60))} minute(s).",
+            headers={"Retry-After": str(wait)},
+        )
     user = auth_service.authenticate(payload.email, payload.password)
     if user is None:
+        login_throttle.record_failure(payload.email, client)
         raise HTTPException(status_code=401, detail="incorrect email or password")
+    login_throttle.record_success(payload.email)
     raw_token = auth_service.create_session(user.id)
     _set_auth_cookies(response, raw_token)
     return MeOut(user_id=user.id, email=user.email, display_name=user.display_name)
@@ -115,15 +127,12 @@ def me(identity: Identity = Depends(resolve_identity)) -> MeOut:
 
 @router.post("/forgot-password", response_model=ForgotPasswordResult)
 def forgot_password(payload: ForgotPasswordInput) -> ForgotPasswordResult:
-    """Always returns ok=true -- whether the email is registered is
-    never revealed to the caller (see auth_service.authenticate's own
-    comment on the same principle for login). preview_url is only ever
-    populated in dev-preview mode (no real email provider configured,
-    see email_service.py), and even then only when the account exists
-    -- so in dev-preview mode this endpoint DOES reveal registration
-    status to whoever calls it. That is an accepted, explicitly
-    documented prototype trade-off (email_service.py's own docstring):
-    fine for an invite-only internal pilot, not for a public product."""
+    """Always returns ok=true and never the link -- whether the email is
+    registered is not revealed, and the reset link only ever goes to the
+    account's own inbox (once an email provider exists). An earlier build
+    returned the link here in dev-preview mode, which let any anonymous
+    caller reset any account's password. Without an email provider, a
+    company Admin issues the link from Admin > Users instead."""
     user = auth_service.get_user_by_email(payload.email)
     if user is None or not user.is_active:
         return ForgotPasswordResult(ok=True, preview_url=None)
@@ -135,7 +144,7 @@ def forgot_password(payload: ForgotPasswordInput) -> ForgotPasswordResult:
         to=user.email, subject="Reset your Jade password",
         body=f"Reset your password: {link}", action_url=link,
     ))
-    return ForgotPasswordResult(ok=True, preview_url=link if email_service.is_dev_preview else None)
+    return ForgotPasswordResult(ok=True, preview_url=None)
 
 
 @router.post("/reset-password")

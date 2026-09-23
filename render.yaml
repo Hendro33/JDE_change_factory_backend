@@ -35,7 +35,10 @@ services:
   - type: web
     name: jde-change-factory-api
     runtime: python
-    plan: starter
+    # Standard (2 GB): each agent run starts the Claude Code CLI and an MCP
+    # server subprocess next to the API; 512 MB (Starter) is very likely
+    # too small. See docs/stage1/02_SHARED_BACKEND_DEPLOYMENT_PROPOSAL.md.
+    plan: standard
     branch: main
     rootDir: .
     buildCommand: "pip install -e ./api_service"
@@ -44,7 +47,7 @@ services:
     disk:
       name: jde-data
       mountPath: /data
-      sizeGB: 1
+      sizeGB: 5
     envVars:
       - key: JDE_API_DATA_DIR
         value: /data/api_data
@@ -86,6 +89,19 @@ services:
       # through chat, never committed. After you confirm you can log
       # in, delete JDE_BOOTSTRAP_ADMIN_PASSWORD (blank it out and
       # redeploy) so the mechanism can't be used again.
+      # Encrypts stored Jira API tokens (services/credential_crypto.py).
+      # Set it in the dashboard only; it must never be on the disk, in a
+      # backup, or in this file. Keep a copy in the password manager:
+      # without it, stored tokens cannot be read and must be re-entered.
+      - key: JDE_CREDENTIAL_KEY
+        sync: false
+      # Render's proxy overwrites X-Forwarded-For, so the sign-in rate
+      # limit can use the real client address.
+      - key: JDE_TRUST_PROXY_HEADERS
+        value: "true"
+      # No external JDE from this host.
+      - key: JDE_MCP_MOCK_MODE
+        value: "true"
       - key: JDE_BOOTSTRAP_ADMIN_EMAIL
         sync: false
       - key: JDE_BOOTSTRAP_ADMIN_PASSWORD

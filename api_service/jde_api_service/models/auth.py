@@ -59,10 +59,17 @@ class ForgotPasswordResult(ApiModel):
     # own comment on why a login/reset flow must not reveal whether an
     # email is registered.
     ok: bool = True
-    # ONLY populated when JDE_EMAIL_DEV_PREVIEW is on (the default,
-    # since no real email provider is configured) -- see
-    # email_service.py's own docstring. Never populated once a real
-    # provider is wired up.
+    # Always None. This endpoint is anonymous, so returning the link here
+    # would hand any caller a working reset link for any account. Without
+    # an email provider, a company Admin issues the link instead
+    # (POST /admin/users/{membership_id}/password-reset-link).
+    preview_url: Optional[str] = None
+
+
+class PasswordResetLinkOut(ApiModel):
+    # True once a real email provider delivers the link; False in
+    # dev-preview mode, where preview_url is the link for the Admin to hand over.
+    sent: bool
     preview_url: Optional[str] = None
 
 

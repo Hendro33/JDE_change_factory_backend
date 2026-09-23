@@ -67,6 +67,8 @@ ssh <service>` from the CLI:
 tar czf /tmp/jde-backup-$(date +%Y%m%d-%H%M).tar.gz -C /data .
 ```
 
+The archive contains password and session hashes, and Jira tokens encrypted under the current `JDE_CREDENTIAL_KEY` (the key itself is never in it). Encrypt the archive before it leaves the platform, for example `age -r <recipient> -o backup.tar.gz.age backup.tar.gz`, and keep the credential key separately (see "Credential encryption key").
+
 Then download `/tmp/jde-backup-*.tar.gz` via Render's shell file
 transfer (or `render ssh <service> -- cat /tmp/jde-backup-*.tar.gz > local-backup.tar.gz` piped through the CLI) to somewhere durable off
 the platform — your own machine, or object storage. Delete it from
@@ -88,6 +90,51 @@ Jira tokens.
    migrations (`persistence/db.py`'s `ensure_schema()`) run
    automatically on startup and are safe to run again against an
    already-migrated database — they no-op past what's already applied.
+
+## Credential encryption key
+
+Jira API tokens are stored encrypted in SQLite (`services/credential_crypto.py`). The key is **never** on the disk:
+
+- It comes only from `JDE_CREDENTIAL_KEY` in the service's environment. Set it in the Render dashboard.
+- Keep a second copy in the team password manager.
+
+Generate a key on your own machine, and paste it only into those two places:
+
+```bash
+python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+```
+
+- **Without the key**, saving a credential is refused, so nothing is ever stored in plaintext. The Integrations screen shows that encryption is unavailable.
+- **Backups** (below) contain only ciphertext. A restore needs the key that was current when the backup was taken. Keep old keys in the password manager until no backup still needs them.
+- **Lost key:** only the stored tokens are lost. Set a new key; each company's Admin then re-enters its Jira token. Integrations shows the old ones as "unreadable", and Jade falls back to mock Jira for them.
+- **Rotation:**
+  1. Set the new key as `JDE_CREDENTIAL_KEY`, and the old one as `JDE_CREDENTIAL_KEY_PREVIOUS`.
+  2. Redeploy. On start, every token is re-encrypted under the new key.
+  3. Remove `JDE_CREDENTIAL_KEY_PREVIOUS` and redeploy again.
+- **Tokens saved before encryption existed** are reported as "plaintext (legacy)". They are encrypted automatically on the first start with a key set.
+
+## Sign-in rate limiting
+
+Failed sign-ins are counted in SQLite (`services/login_throttle.py`), so the limits survive restarts:
+
+- **Per account:** after 5 failures in 15 minutes, that account is refused, even with the right password, until the window passes.
+- **Per client address:** after 20 failures in 15 minutes, all sign-ins from that address are refused.
+
+Refusals return HTTP 429 with `Retry-After`. Behind Render's proxy, set `JDE_TRUST_PROXY_HEADERS=true` so the real client address is used. Leave it unset anywhere the `X-Forwarded-For` header is not overwritten by a trusted proxy.
+
+To unlock an account early (for example, a user who mistyped repeatedly), delete its rows from the service shell:
+
+```bash
+sqlite3 /data/api_data/jde.sqlite3 "DELETE FROM login_failures WHERE scope='account' AND key='user@example.com';"
+```
+
+## Password resets without an email provider
+
+Until an email provider is configured, no email is sent.
+
+- **Invitations:** the link is shown to the inviting Admin.
+- **Password resets:** a company Admin creates the link under Admin > Users. The anonymous "forgot password" form never returns a link, because that would let anyone reset anyone's password.
+- **Limit on Admins:** an Admin cannot create a reset link for someone who also belongs to a company where that Admin is not an Admin.
 
 ## HTTPS, CORS, and cookies
 

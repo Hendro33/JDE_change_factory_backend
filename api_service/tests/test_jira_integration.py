@@ -324,7 +324,10 @@ def test_update_jira_credentials_never_echoes_the_token(client):
     body = r.json()
     # Saving a valid credential is, by itself, enough to go live -- no
     # JDE_JIRA_MOCK_MODE or other backend file edit involved.
-    assert body == {"mockMode": False, "credentialsConfigured": True, "configConfigured": False}
+    assert body == {
+        "mockMode": False, "credentialsConfigured": True, "configConfigured": False,
+        "credentialStorage": "encrypted", "credentialEncryptionAvailable": True,
+    }
     dumped = str(body).lower()
     for forbidden in ("super-secret-token", "apitoken", "email"):
         assert forbidden not in dumped
@@ -464,7 +467,10 @@ def test_disconnect_removes_the_credential(client):
 
     r = client.request("DELETE", "/admin/jira-credentials", headers=headers(customer="vdb"))
     assert r.status_code == 200
-    assert r.json() == {"mockMode": True, "credentialsConfigured": False, "configConfigured": False}
+    assert r.json() == {
+        "mockMode": True, "credentialsConfigured": False, "configConfigured": False,
+        "credentialStorage": "none", "credentialEncryptionAvailable": True,
+    }
 
     status = client.get("/admin/jira-integration/status", headers=headers(customer="vdb")).json()
     assert status["credentialsConfigured"] is False

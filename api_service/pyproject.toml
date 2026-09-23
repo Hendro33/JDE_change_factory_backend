@@ -24,6 +24,9 @@ dependencies = [
     # audited library, not hand-rolled crypto (see that module's own
     # docstring).
     "bcrypt>=4.0.0",
+    # services/credential_crypto.py: encryption of stored Jira API tokens
+    # (Fernet), with the key held only in the server environment.
+    "cryptography>=42.0.0",
 ]
 
 [project.optional-dependencies]
