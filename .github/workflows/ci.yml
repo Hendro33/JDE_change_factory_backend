@@ -1,12 +1,14 @@
 name: CI
 
-# Runs on every pull request (and on pushes to main / by hand). Nothing here
+# Runs on every pull request, on pushes to main and the claude/** working
+# branches, and by hand. Nothing here
 # deploys, and nothing talks to JDE or Jira: the tests and the gate proof run
 # in mock mode against throwaway directories.
 on:
   pull_request:
   push:
-    branches: [main]
+    # Also the working branches, so a branch shows its status before a PR exists.
+    branches: [main, "claude/**"]
   workflow_dispatch:
 
 permissions:
