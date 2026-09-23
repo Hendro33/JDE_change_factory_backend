@@ -64,8 +64,16 @@ ssh <service>` from the CLI:
 
 ```bash
 # Inside the service's shell -- /data is the mounted disk.
-tar czf /tmp/jde-backup-$(date +%Y%m%d-%H%M).tar.gz -C /data .
+# 1. A consistent copy of the SQLite database. Copying the live file with
+#    tar can capture a half-written page; SQLite's own backup cannot.
+mkdir -p /tmp/jde-backup
+python3 -c "import sqlite3; sqlite3.connect('/data/api_data/jde.sqlite3').backup(sqlite3.connect('/tmp/jde-backup/jde.sqlite3'))"
+# 2. Everything else (JSON stores, backlog, changes, evidence), plus that copy.
+tar czf /tmp/jde-backup-$(date +%Y%m%d-%H%M).tar.gz -C /data --exclude=./api_data/jde.sqlite3 . -C /tmp/jde-backup jde.sqlite3
+rm -rf /tmp/jde-backup
 ```
+
+The JSON files are each written atomically (temp file, then rename), so each file in the archive is whole. A change made while the archive is being written may be in it or not. For a backup that must match one exact moment, take it outside working hours. Render's daily disk snapshot is the second layer.
 
 The archive contains password and session hashes, and Jira tokens encrypted under the current `JDE_CREDENTIAL_KEY` (the key itself is never in it). Encrypt the archive before it leaves the platform, for example `age -r <recipient> -o backup.tar.gz.age backup.tar.gz`, and keep the credential key separately (see "Credential encryption key").
 
@@ -85,7 +93,9 @@ Jira tokens.
    ```bash
    rm -rf /data/*        # only if restoring into a non-empty disk
    tar xzf jde-backup-YYYYMMDD-HHMM.tar.gz -C /data
+   mv /data/jde.sqlite3 /data/api_data/jde.sqlite3
    ```
+   Set `JDE_CREDENTIAL_KEY` to the key that was current when the backup was taken. Otherwise the stored Jira tokens show as unreadable and must be re-entered.
 4. Restart the service so it picks up the restored files. Schema
    migrations (`persistence/db.py`'s `ensure_schema()`) run
    automatically on startup and are safe to run again against an
@@ -125,7 +135,7 @@ Refusals return HTTP 429 with `Retry-After`. Behind Render's proxy, set `JDE_TRU
 To unlock an account early (for example, a user who mistyped repeatedly), delete its rows from the service shell:
 
 ```bash
-sqlite3 /data/api_data/jde.sqlite3 "DELETE FROM login_failures WHERE scope='account' AND key='user@example.com';"
+python3 -c "import sqlite3; c=sqlite3.connect('/data/api_data/jde.sqlite3'); c.execute(\"DELETE FROM login_failures WHERE scope='account' AND key='user@example.com'\"); c.commit()"
 ```
 
 ## Password resets without an email provider
