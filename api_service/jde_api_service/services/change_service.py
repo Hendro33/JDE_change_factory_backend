@@ -226,15 +226,24 @@ def _execution_status(change_record: dict) -> ExecutionStatus:
         last_attempt_at=_iso(last.get("started_at")),
         last_detail=last.get("detail", "") or "",
         before_value=next((a.get("before_value") for a in reversed(attempts) if a.get("before_value") is not None), None),
-        reconciliations=[
-            Reconciliation(
-                at=_iso(r["at"]) or "", verified_by=r["verified_by"], source=r["source"], outcome=r["outcome"],
-                observed_value=r.get("observed_value"), note=r.get("note", ""),
-            )
-            for kind in (execution.WRITE, execution.TEST)
-            for r in ((change_record.get("execution") or {}).get(kind) or {}).get("reconciliations", [])
-        ],
+        write_reconciliations=_reconciliations(change_record, execution.WRITE),
+        test_reconciliations=_reconciliations(change_record, execution.TEST),
     )
+
+
+def _reconciliations(change_record: dict, kind: str) -> list[Reconciliation]:
+    out = []
+    for r in ((change_record.get("execution") or {}).get(kind) or {}).get("reconciliations", []):
+        out.append(Reconciliation(
+            kind=r.get("kind", f"{kind}_reconciliation"), at=_iso(r["at"]) or "",
+            actor=r.get("actor") or {"display_name": r.get("verified_by", "")},
+            verified_by=r["verified_by"], source=r["source"], outcome=r["outcome"],
+            target=r.get("target") or {}, observed=r.get("observed") or {},
+            observed_value=r.get("observed_value"), evidence_reference=r.get("evidence_reference", ""),
+            evidence_entry_hash=r.get("evidence_entry_hash"), settles_attempt_id=r.get("settles_attempt_id"),
+            note=r.get("note", ""),
+        ))
+    return out
 
 
 def _change_from_story(

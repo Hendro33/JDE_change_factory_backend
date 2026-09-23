@@ -86,13 +86,33 @@ class ImplementationSpecification(ApiModel):
     validation_approach: str = ""
 
 
+class ReconciliationActor(ApiModel):
+    user_id: Optional[str] = None
+    display_name: str = ""
+
+
 class Reconciliation(ApiModel):
+    """One audited reconciliation: the exact target checked, what was
+    observed there, who checked, when, and the supporting evidence."""
+
+    # "write_reconciliation" or "test_reconciliation"
+    kind: str = ""
     at: str
+    actor: ReconciliationActor = ReconciliationActor()
     verified_by: str
     # "automated read (mock JDE)" or "human-verified in JDE"
     source: str
     outcome: str
+    # company, story, change, capability, environment, JDE environment and,
+    # for a write, application/version/option/approved value; for a test,
+    # the orchestration.
+    target: dict = {}
+    # write: {"value", "before_value"}; test: {"ran"}
+    observed: dict = {}
     observed_value: Optional[str] = None
+    evidence_reference: str = ""
+    evidence_entry_hash: Optional[str] = None
+    settles_attempt_id: Optional[str] = None
     note: str = ""
 
 
@@ -106,7 +126,10 @@ class ExecutionStatus(ApiModel):
     last_attempt_at: Optional[str] = None
     last_detail: str = ""
     before_value: Optional[str] = None
-    reconciliations: list[Reconciliation] = []
+    # Kept apart on purpose: a write reconciliation settles whether the
+    # value is in JDE; a test reconciliation settles whether the test ran.
+    write_reconciliations: list[Reconciliation] = []
+    test_reconciliations: list[Reconciliation] = []
 
 
 class ExactChange(ApiModel):
@@ -135,11 +158,15 @@ class ReconcileWriteInput(ApiModel):
     # read in JDE itself.
     observed_value: Optional[str] = None
     note: str = ""
+    # Where the observed value can be checked (screenshot, ticket, export).
+    # Required when a person states the value; the automated read makes its own.
+    evidence_reference: str = ""
 
 
 class ReconcileTestInput(ApiModel):
     ran: bool
     note: str
+    evidence_reference: str = ""
 
 
 class PreflightCheck(ApiModel):

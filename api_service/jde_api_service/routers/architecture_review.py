@@ -262,18 +262,31 @@ def reconcile_write(
     try:
         observed = ais.read_processing_option_value(op["application"], op["version"], op["option"])
         source = "automated read (mock JDE)"
-    except LiveReadUnavailable as exc:
-        if payload.observed_value is None or not payload.note.strip():
-            raise HTTPException(status_code=422, detail=f"{exc} Provide observedValue and a note.")
-        observed, source = payload.observed_value, "human-verified in JDE"
-    try:
-        outcome = execution.reconcile_write(
-            record["change_id"], observed_value=observed, source=source,
-            verified_by=ctx.identity.display_name, note=payload.note,
+        evidence_reference = (
+            f"automated read of {op['application']}/{op['version']}/{op['option']} = {observed!r} "
+            f"(mock JDE state)"
         )
-    except approval.ChangeApprovalError as exc:
+    except LiveReadUnavailable as exc:
+        if payload.observed_value is None or not payload.note.strip() or not payload.evidence_reference.strip():
+            raise HTTPException(
+                status_code=422, detail=f"{exc} Provide observedValue, a note and an evidenceReference."
+            )
+        observed, source, evidence_reference = payload.observed_value, "human-verified in JDE", payload.evidence_reference
+    try:
+        entry = execution.reconcile_write(
+            record["change_id"], observed_value=observed, source=source,
+            actor_user_id=ctx.identity.id, actor_name=ctx.identity.display_name,
+            evidence_reference=evidence_reference, note=payload.note,
+        )
+    except execution.ExecutionBlocked as exc:
         raise HTTPException(status_code=409, detail=str(exc))
-    return {"outcome": outcome, "observedValue": observed, "source": source}
+    except approval.ChangeApprovalError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    return {
+        "outcome": entry["outcome"], "observedValue": observed, "source": source,
+        "target": entry["target"], "evidenceReference": entry["evidence_reference"],
+        "evidenceEntryHash": entry["evidence_entry_hash"],
+    }
 
 
 @router.post("/changes/{change_id}/execution/reconcile-test")
@@ -286,10 +299,14 @@ def reconcile_test(
     if record.get("company_id") != ctx.customer_id:
         raise HTTPException(status_code=404, detail=f"no such change: {change_id}")
     try:
-        outcome = execution.reconcile_test(
-            record["change_id"], ran=payload.ran, verified_by=ctx.identity.display_name, note=payload.note
+        entry = execution.reconcile_test(
+            record["change_id"], ran=payload.ran, actor_user_id=ctx.identity.id,
+            actor_name=ctx.identity.display_name, evidence_reference=payload.evidence_reference, note=payload.note,
         )
     except approval.ChangeApprovalError as exc:
         raise HTTPException(status_code=409 if isinstance(exc, execution.ExecutionBlocked) else 422, detail=str(exc))
-    return {"outcome": outcome}
+    return {
+        "outcome": entry["outcome"], "target": entry["target"], "evidenceReference": entry["evidence_reference"],
+        "evidenceEntryHash": entry["evidence_entry_hash"],
+    }
 

@@ -33,6 +33,7 @@ and any MCP server process started for an agent run).
 from __future__ import annotations
 
 import fcntl
+from datetime import datetime, timezone
 import os
 import time
 import uuid
@@ -192,18 +193,104 @@ def mark_interrupted_unknown() -> int:
     return count
 
 
+def _iso(ts: float) -> str:
+    return datetime.fromtimestamp(ts, timezone.utc).isoformat()
+
+
+def _exact_target(record: dict, kind: str) -> dict:
+    """What was checked, identified exactly: the company, story, change and
+    capability, the JDE environment the company's scope binds, and for a
+    write the application/version/option and approved value, for a test
+    the orchestration."""
+    op = record.get("operation") or {}
+    try:
+        env = (approval.load_company_scope(record.get("company_id") or "").get("environment") or {})
+        jde_environment = env.get("dev_environment_id") or None
+    except Exception:  # noqa: BLE001 -- recorded as unknown, never guessed
+        jde_environment = None
+    target = {
+        "company_id": record.get("company_id"),
+        "story_id": record.get("story_id"),
+        "change_id": record.get("change_id"),
+        "capability_id": record.get("capability_id"),
+        "capability_revision": record.get("capability_revision"),
+        "environment": record.get("environment"),
+        "jde_environment": jde_environment,
+    }
+    if kind == WRITE:
+        target.update({
+            "application": op.get("application"), "version": op.get("version"), "option": op.get("option"),
+            "approved_value": str(op.get("value", "")),
+        })
+    else:
+        target["orchestration"] = op.get("test_orchestration")
+    return target
+
+
+def _audit(record: dict, kind: str, block: dict, *, observed: dict, outcome: str, actor_user_id: str,
+           actor_name: str, source: str, evidence_reference: str, note: str) -> dict:
+    """One reconciliation, recorded on the change AND appended to the
+    story's tamper-evident evidence chain."""
+    from .evidence import capture_evidence
+
+    if not actor_user_id:
+        raise approval.ChangeApprovalError("a reconciliation must record who performed it")
+    if not (evidence_reference or "").strip():
+        raise approval.ChangeApprovalError(
+            "a reconciliation needs an evidence reference: where the observed state can be checked "
+            "(e.g. a screenshot or ticket reference, or the automated read)"
+        )
+    unknown_attempt = next((a for a in reversed(block.get("attempts") or []) if a.get("outcome") in (None, "unknown")), None)
+    now = _now()
+    entry = {
+        "kind": f"{kind}_reconciliation",
+        "at": now,
+        "at_iso": _iso(now),
+        "actor": {"user_id": actor_user_id, "display_name": actor_name},
+        "verified_by": actor_name,
+        "target": _exact_target(record, kind),
+        "observed": observed,
+        "source": source,
+        "evidence_reference": evidence_reference.strip(),
+        "settles_attempt_id": unknown_attempt.get("attempt_id") if unknown_attempt else None,
+        "outcome": outcome,
+        "note": note,
+    }
+    target = entry["target"]
+    where = (
+        f"{target.get('application')}/{target.get('version')}/{target.get('option')}" if kind == WRITE
+        else f"test {target.get('orchestration')}"
+    )
+    chained = capture_evidence(record["story_id"], {
+        "event": entry["kind"],
+        "stage": entry["kind"],
+        "actor": actor_name,
+        "detail": f"{where} in {target.get('jde_environment') or 'unbound environment'}: {outcome} "
+                  f"(observed {observed}; {source}; evidence: {entry['evidence_reference']})",
+        "reconciliation": entry,
+    })
+    entry["evidence_entry_hash"] = chained["entry_hash"]
+    block["reconciliations"].append(entry)
+    return entry
+
+
 def reconcile_write(
-    change_id: str, *, observed_value: str, source: str, verified_by: str, note: str = ""
-) -> str:
-    """Compare the ACTUAL target value with the approved and before values.
-    Returns the outcome: applied, not_applied (ready again) or diverged."""
+    change_id: str, *, observed_value: str, source: str, actor_user_id: str, actor_name: str,
+    evidence_reference: str, note: str = "",
+) -> dict:
+    """Compare the ACTUAL target value with the approved and before values
+    and record the reconciliation as an audited action. Outcome: applied,
+    not_applied (ready again -- a retry still passes every normal check:
+    approval expiry, current scope, current policy and approver authority),
+    or diverged. Only a WRITE of unknown outcome is reconciled here; a test
+    run is reconciled separately (reconcile_test)."""
     with _locked(change_id):
         record = approval._load(change_id)
         if record is None:
             raise approval.ChangeApprovalError(f"no change record for {change_id}")
         state = effective_state(record, WRITE)
         if state not in ("unknown",):
-            raise ExecutionBlocked(f"change {change_id} is {state}; only an unknown outcome is reconciled")
+            raise ExecutionBlocked(f"change {change_id}: the write is {state}; only a write of unknown outcome is reconciled")
         block = _block(record, WRITE)
         approved_value = str(record["operation"].get("value", ""))
         before = next((a.get("before_value") for a in reversed(block["attempts"]) if a.get("before_value") is not None), None)
@@ -213,29 +300,39 @@ def reconcile_write(
             outcome, new_state = "not_applied", "ready"
         else:
             outcome, new_state = "diverged", "diverged"
-        block["reconciliations"].append({
-            "at": _now(), "verified_by": verified_by, "source": source, "observed_value": observed_value,
-            "approved_value": approved_value, "before_value": before, "outcome": outcome, "note": note,
-        })
+        entry = _audit(
+            record, WRITE, block, observed={"value": observed_value, "before_value": before}, outcome=outcome,
+            actor_user_id=actor_user_id, actor_name=actor_name, source=source,
+            evidence_reference=evidence_reference, note=note,
+        )
+        entry["observed_value"] = observed_value  # flat copy for older readers
         block["state"] = new_state
         approval._save(change_id, record)
-        return outcome
+        return entry
 
 
-def reconcile_test(change_id: str, *, ran: bool, verified_by: str, note: str) -> str:
+def reconcile_test(
+    change_id: str, *, ran: bool, actor_user_id: str, actor_name: str, evidence_reference: str, note: str
+) -> dict:
     """A test run's effects cannot be read back generically, so a person
-    who checked JDE attests whether it ran. A reason is required."""
+    who checked JDE attests whether it ran, with a note and an evidence
+    reference. Only a TEST of unknown outcome is reconciled here -- never
+    the write."""
     if not note.strip():
         raise approval.ChangeApprovalError("reconciling a test run needs a note saying what was checked in JDE")
     with _locked(change_id):
         record = approval._load(change_id)
-        if effective_state(record, TEST) != "unknown":
-            raise ExecutionBlocked(f"change {change_id}: the test outcome is not unknown; nothing to reconcile")
+        if record is None:
+            raise approval.ChangeApprovalError(f"no change record for {change_id}")
+        state = effective_state(record, TEST)
+        if state != "unknown":
+            raise ExecutionBlocked(f"change {change_id}: the test is {state}; only a test of unknown outcome is reconciled")
         block = _block(record, TEST)
         outcome = "completed" if ran else "not_run"
-        block["reconciliations"].append({
-            "at": _now(), "verified_by": verified_by, "source": "human-verified in JDE", "outcome": outcome, "note": note,
-        })
+        entry = _audit(
+            record, TEST, block, observed={"ran": ran}, outcome=outcome, actor_user_id=actor_user_id,
+            actor_name=actor_name, source="human-verified in JDE", evidence_reference=evidence_reference, note=note,
+        )
         block["state"] = "completed" if ran else "ready"
         approval._save(change_id, record)
-        return outcome
+        return entry

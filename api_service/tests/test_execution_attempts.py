@@ -94,14 +94,16 @@ def test_a_write_interrupted_after_jde_applied_it_is_reconciled_as_applied(clien
     # Reconciliation reads the target: the approved value is there.
     r = client.post("/changes/S-EX-TIMEOUT/execution/reconcile", headers=headers("vdb"), json={"note": "checked"})
     assert r.status_code == 200, r.text
-    assert r.json() == {"outcome": "applied", "observedValue": "SO", "source": "automated read (mock JDE)"}
+    body = r.json()
+    assert (body["outcome"], body["observedValue"], body["source"]) == ("applied", "SO", "automated read (mock JDE)")
     assert _state(change["change_id"]) == "applied"
     with pytest.raises(ExecutionBlocked, match="already been applied"):
         _execute("S-EX-TIMEOUT", change["change_id"])
 
     ec = client.get("/changes/S-EX-TIMEOUT", headers=headers("vdb")).json()["exactChange"]["execution"]
     assert ec["writeState"] == "applied"
-    assert ec["reconciliations"][0]["verifiedBy"] == "Hendro"
+    assert ec["writeReconciliations"][0]["verifiedBy"] == "Hendro"
+    assert ec["testReconciliations"] == []
 
 
 def test_a_write_that_never_reached_jde_is_reconciled_as_not_applied_and_may_run_again(client, monkeypatch):
@@ -229,8 +231,10 @@ def test_an_unknown_test_run_needs_a_human_attestation_with_a_note(client):
     execution.finish(change["change_id"], execution.TEST, attempt, "unknown", "orchestrator timed out")
     url = "/changes/S-EX-TESTUNK/execution/reconcile-test"
     assert client.post(url, headers=headers("vdb"), json={"ran": False, "note": ""}).status_code == 422
-    r = client.post(url, headers=headers("vdb"), json={"ran": False, "note": "No order was created in DEV (checked P4210 W4210A)."})
-    assert r.json() == {"outcome": "not_run"}
+    note = "No order was created in DEV (checked P4210 W4210A)."
+    assert client.post(url, headers=headers("vdb"), json={"ran": False, "note": note}).status_code == 422  # no evidence
+    r = client.post(url, headers=headers("vdb"), json={"ran": False, "note": note, "evidenceReference": "JIRA-123 screenshot"})
+    assert r.json()["outcome"] == "not_run"
     assert _state(change["change_id"], "test") == "ready"
 
 
@@ -297,4 +301,9 @@ def test_a_live_write_is_unknown_until_a_person_verifies_the_target(client, monk
     r = client.post(url, headers=headers("vdb"), json={})
     assert r.status_code == 422 and "Read the value in JDE" in r.json()["detail"]
     r = client.post(url, headers=headers("vdb"), json={"observedValue": "SO", "note": "Read in P983051 after the write"})
-    assert r.json() == {"outcome": "applied", "observedValue": "SO", "source": "human-verified in JDE"}
+    assert r.status_code == 422 and "evidenceReference" in r.json()["detail"]
+    r = client.post(url, headers=headers("vdb"), json={
+        "observedValue": "SO", "note": "Read in P983051 after the write", "evidenceReference": "screenshot in JIRA-77",
+    })
+    body = r.json()
+    assert (body["outcome"], body["observedValue"], body["source"]) == ("applied", "SO", "human-verified in JDE")
