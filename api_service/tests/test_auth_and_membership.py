@@ -325,7 +325,7 @@ def test_cannot_demote_the_last_active_admin(client):
 
     r = client.put(
         f"/admin/users/{hendro_membership['membershipId']}/roles", headers=headers(customer="mrv"),
-        json={"roles": ["domain_owner"], "domainIds": []},  # dropping admin
+        json={"roles": ["domain_owner"], "domainIds": [], "expectedRevision": hendro_membership["revision"]},  # dropping admin
     )
     assert r.status_code == 409
 
@@ -334,7 +334,10 @@ def test_cannot_deactivate_the_last_active_admin(client):
     listing = client.get("/admin/users", headers=headers(customer="mrv")).json()
     hendro_membership = next(m for m in listing["members"] if m["email"] == "hendro@test.local")
 
-    r = client.post(f"/admin/users/{hendro_membership['membershipId']}/deactivate", headers=headers(customer="mrv"))
+    r = client.post(
+        f"/admin/users/{hendro_membership['membershipId']}/deactivate", headers=headers(customer="mrv"),
+        json={"expectedRevision": hendro_membership["revision"]},
+    )
     assert r.status_code == 409
 
 
@@ -342,7 +345,10 @@ def test_deactivating_a_non_admin_membership_succeeds_and_blocks_access(client, 
     listing = client.get("/admin/users", headers=headers(customer="vdb")).json()
     ellen_membership = next(m for m in listing["members"] if m["email"] == "ellen@test.local")
 
-    r = client.post(f"/admin/users/{ellen_membership['membershipId']}/deactivate", headers=headers(customer="vdb"))
+    r = client.post(
+        f"/admin/users/{ellen_membership['membershipId']}/deactivate", headers=headers(customer="vdb"),
+        json={"expectedRevision": ellen_membership["revision"]},
+    )
     assert r.status_code == 200
     assert r.json()["status"] == "inactive"
 

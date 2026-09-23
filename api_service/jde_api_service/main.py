@@ -31,7 +31,7 @@ from .routers import (
     domain_governance,
     session,
 )
-from .persistence.db import ensure_schema
+from .persistence.db import db_path, ensure_schema
 from .persistence.revisions import RevisionConflict, RevisionRequired
 from jde_mcp_server import scope as mcp_scope
 
@@ -57,10 +57,13 @@ def _wire_execution_gate() -> None:
     owns: each company's Admin-saved engagement scope and the story ->
     company links recorded at intake. Exported as environment variables
     too, so an MCP server process started for an agent run inherits the
-    same two directories. An explicit environment setting wins."""
+    same records. An explicit environment setting wins."""
     wiring = {
         "JDE_COMPANY_SCOPE_DIR": os.path.join(settings.data_dir, "engagement_scope"),
         "JDE_STORY_COMPANY_DIR": os.path.join(settings.data_dir, "customer_links"),
+        # Read-only: the gate re-checks the approver's CURRENT roles here
+        # immediately before dispatch (mcp_server authority.py).
+        "JDE_AUTH_DB_PATH": db_path(),
     }
     for name, default in wiring.items():
         os.environ.setdefault(name, os.path.abspath(default))

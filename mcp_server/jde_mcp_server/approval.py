@@ -25,7 +25,7 @@ import time
 from typing import Iterable, Optional
 
 from .backlog import require_approved, BacklogError
-from . import capability_catalog
+from . import authority, capability_catalog
 from .scope import (
     check_environment_binding,
     company_for_story,
@@ -210,52 +210,75 @@ def approve_change(
     *,
     company_id: str,
     approver_roles: Iterable[str],
+    approver_user_id: str,
     note: str = "",
 ) -> dict:
-    """company_id and approver_roles come from the approver's
-    authenticated session (api_service), never from an agent. The
-    company's approval policy decides whether those roles may approve
+    """company_id, approver_roles and approver_user_id come from the
+    approver's authenticated session (api_service), never from an agent.
+    The company's approval policy decides whether those roles may approve
     and how long the approval stays valid; no policy, an unreadable
-    policy or no matching role all refuse."""
-    record = _load_for_company(change_id, company_id)
-    if record["status"] != "pending":
-        raise ChangeApprovalError(f"change {change_id} is {record['status']}, not pending -- only a pending change can be approved")
-    scope = load_company_scope(company_id)
-    policy = require_approval_policy(scope)
-    held = set(approver_roles)
-    matched = sorted(held & set(policy["exact_change_approver_roles"]))
-    if not matched:
-        raise ApproverNotAuthorised(
-            f"{approved_by} does not hold a role this company's approval policy allows to approve an "
-            f"exact change (allowed: {', '.join(policy['exact_change_approver_roles'])}; held: "
-            f"{', '.join(sorted(held)) or 'none'})."
-        )
-    now = time.time()
-    record.update({
-        "status": "approved",
-        "approved_by": approved_by,
-        "approved_at": now,
-        "expires_at": now + policy["approval_valid_hours"] * 3600,
-        "approver_authority": {
-            "roles": matched,
-            "policy_version": policy["policy_version"],
-            "scope_revision": str(scope.get("revision", "unknown")),
-        },
-        "decision_note": note,
-    })
-    _save(change_id, record)
-    return record
+    policy or no matching role all refuse.
+
+    Runs under the change's lock, so a concurrent approve, reject or
+    execution attempt sees either the state before or after, never a mix;
+    the approver's roles are re-read from the membership database inside
+    the lock, so a role revoked a moment ago cannot approve."""
+    from . import execution
+
+    with execution._locked(change_id):
+        record = _load_for_company(change_id, company_id)
+        if record["status"] != "pending":
+            raise ChangeApprovalError(f"change {change_id} is {record['status']}, not pending -- only a pending change can be approved")
+        scope = load_company_scope(company_id)
+        policy = require_approval_policy(scope)
+        held = set(approver_roles)
+        matched = sorted(held & set(policy["exact_change_approver_roles"]))
+        if not matched:
+            raise ApproverNotAuthorised(
+                f"{approved_by} does not hold a role this company's approval policy allows to approve an "
+                f"exact change (allowed: {', '.join(policy['exact_change_approver_roles'])}; held: "
+                f"{', '.join(sorted(held)) or 'none'})."
+            )
+        try:
+            matched = sorted(set(matched) & set(
+                authority.require_current_approver(approver_user_id, company_id, policy["exact_change_approver_roles"])
+            ))
+        except authority.AuthorityRevoked as exc:
+            raise ApproverNotAuthorised(str(exc)) from exc
+        except authority.AuthorityUnverifiable as exc:
+            raise ChangeApprovalError(str(exc)) from exc
+        if not matched:
+            raise ApproverNotAuthorised(f"{approved_by}'s roles changed while approving -- refusing")
+        now = time.time()
+        record.update({
+            "status": "approved",
+            "approved_by": approved_by,
+            "approved_at": now,
+            "expires_at": now + policy["approval_valid_hours"] * 3600,
+            "approver_authority": {
+                "user_id": approver_user_id,
+                "roles": matched,
+                "policy_version": policy["policy_version"],
+                "scope_revision": str(scope.get("revision", "unknown")),
+            },
+            "decision_note": note,
+        })
+        _save(change_id, record)
+        return record
 
 
 def reject_change(change_id: str, approved_by: str, note: str, *, company_id: str) -> dict:
+    from . import execution
+
     if not note:
         raise ChangeApprovalError("a change rejection must include a reason")
-    record = _load_for_company(change_id, company_id)
-    if record["status"] != "pending":
-        raise ChangeApprovalError(f"change {change_id} is {record['status']}, not pending -- only a pending change can be rejected")
-    record.update({"status": "rejected", "approved_by": approved_by, "approved_at": time.time(), "decision_note": note})
-    _save(change_id, record)
-    return record
+    with execution._locked(change_id):
+        record = _load_for_company(change_id, company_id)
+        if record["status"] != "pending":
+            raise ChangeApprovalError(f"change {change_id} is {record['status']}, not pending -- only a pending change can be rejected")
+        record.update({"status": "rejected", "approved_by": approved_by, "approved_at": time.time(), "decision_note": note})
+        _save(change_id, record)
+        return record
 
 
 def _require_live_approval(change_id: str) -> tuple[dict, dict]:
@@ -282,12 +305,18 @@ def _require_live_approval(change_id: str) -> tuple[dict, dict]:
         )
     scope = load_company_scope(company_id)
     policy = require_approval_policy(scope)
-    authority = record.get("approver_authority") or {}
-    if not set(authority.get("roles") or []) & set(policy["exact_change_approver_roles"]):
+    recorded = record.get("approver_authority") or {}
+    if not set(recorded.get("roles") or []) & set(policy["exact_change_approver_roles"]):
         raise ChangeApprovalError(
             f"change {change_id} was not approved by a role the company's current approval policy allows "
             f"({', '.join(policy['exact_change_approver_roles'])}) -- re-approve it."
         )
+    # The approver must STILL hold such a role: a demotion, deactivated
+    # membership or disabled user after approval leaves nothing usable.
+    try:
+        authority.require_current_approver(recorded.get("user_id"), company_id, policy["exact_change_approver_roles"])
+    except (authority.AuthorityRevoked, authority.AuthorityUnverifiable) as exc:
+        raise ChangeApprovalError(f"change {change_id}: {exc}") from exc
     # Defense in depth: re-check the underlying story is still approved too.
     require_approved(record["story_id"])
     return record, scope

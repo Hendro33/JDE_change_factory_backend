@@ -35,6 +35,9 @@ test company whose scope and story links live in a temporary directory
      or on the company's never-touch list (free-text notes do not count).
  21. A test is refused unless it is an approved test whose declared side
      effects the capability permits.
+ 22. An approval stops being usable the moment its approver loses the
+     role (or membership) that allowed it -- checked inside the attempt
+     lock, immediately before dispatch.
 
 If every line says PASS, the safety model this whole project depends
 on is actually working on your machine, not just described in a
@@ -85,6 +88,33 @@ os.environ["JDE_STORY_COMPANY_DIR"] = LINK_DIR
 os.environ["JDE_MOCK_JDE_STATE_FILE"] = os.path.join(_tmp.name, "mock_jde_state.json")
 COMPANY = "GATE-TEST-CO"
 APPROVER_ROLES = {"product_manager"}
+APPROVER_ID = "u-gate-test"
+
+# The gate re-reads the approver's CURRENT roles from the membership
+# database before every dispatch. A minimal stand-in with just the three
+# tables it reads, holding one approver with the Product Manager role.
+AUTH_DB = os.path.join(_tmp.name, "auth.sqlite3")
+os.environ["JDE_AUTH_DB_PATH"] = AUTH_DB
+
+
+def set_approver_roles(roles: list[str], membership_status: str = "active") -> None:
+    import sqlite3
+
+    conn = sqlite3.connect(AUTH_DB)
+    conn.executescript(
+        "CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, is_active INTEGER NOT NULL);"
+        "CREATE TABLE IF NOT EXISTS company_memberships (id TEXT PRIMARY KEY, user_id TEXT, company_id TEXT, status TEXT);"
+        "CREATE TABLE IF NOT EXISTS membership_roles (membership_id TEXT, role TEXT);"
+        "DELETE FROM users; DELETE FROM company_memberships; DELETE FROM membership_roles;"
+    )
+    conn.execute("INSERT INTO users VALUES (?, 1)", (APPROVER_ID,))
+    conn.execute("INSERT INTO company_memberships VALUES ('m-gate', ?, ?, ?)", (APPROVER_ID, COMPANY, membership_status))
+    conn.executemany("INSERT INTO membership_roles VALUES ('m-gate', ?)", [(r,) for r in roles])
+    conn.commit()
+    conn.close()
+
+
+set_approver_roles(["product_manager"])
 
 
 def write_scope(scope: dict) -> None:
@@ -201,7 +231,7 @@ try:
         check("still cannot be written to", True)
 
     print("\n3. Approving the change, then trying a DIFFERENT value than what was approved...")
-    approve_change(change["change_id"], "Gate Test Runner", company_id=COMPANY, approver_roles=APPROVER_ROLES, note="approving for the gate test")
+    approve_change(change["change_id"], "Gate Test Runner", company_id=COMPANY, approver_roles=APPROVER_ROLES, approver_user_id=APPROVER_ID, note="approving for the gate test")
     try:
         client.set_processing_option("GATE-TEST-1", change["change_id"], "P4210", "TESTVER01", "PDOCTYPE", "SV")
         check("a tampered operation is refused", False)
@@ -248,7 +278,7 @@ try:
         "application": "P4210", "version": "TESTVER02", "option": "PDOCTYPE", "value": "SO",
     }
     change2 = propose_change("GATE-TEST-3", op2, "processing_option_update")
-    approve_change(change2["change_id"], "Gate Test Runner", company_id=COMPANY, approver_roles=APPROVER_ROLES, note="approving for the gate test")
+    approve_change(change2["change_id"], "Gate Test Runner", company_id=COMPANY, approver_roles=APPROVER_ROLES, approver_user_id=APPROVER_ID, note="approving for the gate test")
     try:
         client.set_processing_option("GATE-TEST-3", change2["change_id"], "P4210", "TESTVER02", "PDOCTYPE", "SO")
         check("a fully-approved change on a Needs-spike capability is still refused without a spike experiment", False)
@@ -279,7 +309,7 @@ try:
     test_scope["functional_agent"]["spike_experiments"][-1]["expires_at"] = "2020-01-01T00:00:00Z"
     write_scope(test_scope)
     change2b = propose_change("GATE-TEST-3", op2, "processing_option_update")
-    approve_change(change2b["change_id"], "Gate Test Runner", company_id=COMPANY, approver_roles=APPROVER_ROLES)
+    approve_change(change2b["change_id"], "Gate Test Runner", company_id=COMPANY, approver_roles=APPROVER_ROLES, approver_user_id=APPROVER_ID)
     try:
         client.set_processing_option("GATE-TEST-3", change2b["change_id"], "P4210", "TESTVER02", "PDOCTYPE", "SO")
         check("an expired spike experiment allows nothing", False)
@@ -301,7 +331,7 @@ try:
     link("GATE-TEST-OTHERCO", "GATE-TEST-OTHER-CO")
     other = propose_change("GATE-TEST-OTHERCO", {**operation, "story_id": "GATE-TEST-OTHERCO"}, "processing_option_update")
     try:
-        approve_change(other["change_id"], "Gate Test Runner", company_id="GATE-TEST-OTHER-CO", approver_roles=APPROVER_ROLES)
+        approve_change(other["change_id"], "Gate Test Runner", company_id="GATE-TEST-OTHER-CO", approver_roles=APPROVER_ROLES, approver_user_id=APPROVER_ID)
         check("another company's scope never stands in for this one", False)
     except ScopeViolation:
         check("another company's scope never stands in for this one", True)
@@ -314,7 +344,7 @@ try:
     saved_policy = test_scope.pop("approval_policy")
     write_scope(test_scope)
     try:
-        approve_change(change4["change_id"], "Gate Test Runner", company_id=COMPANY, approver_roles=APPROVER_ROLES)
+        approve_change(change4["change_id"], "Gate Test Runner", company_id=COMPANY, approver_roles=APPROVER_ROLES, approver_user_id=APPROVER_ID)
         check("nobody can approve an exact change", False)
     except ScopeViolation:
         check("nobody can approve an exact change", True)
@@ -323,13 +353,13 @@ try:
 
     print("\n15. An approver whose role the policy does not allow...")
     try:
-        approve_change(change4["change_id"], "Gate Test Runner", company_id=COMPANY, approver_roles={"domain_owner"})
+        approve_change(change4["change_id"], "Gate Test Runner", company_id=COMPANY, approver_roles={"domain_owner"}, approver_user_id=APPROVER_ID)
         check("an approver without an allowed role is refused", False)
     except ApproverNotAuthorised:
         check("an approver without an allowed role is refused", True)
 
     print("\n16. An approval past its validity window...")
-    approve_change(change4["change_id"], "Gate Test Runner", company_id=COMPANY, approver_roles=APPROVER_ROLES)
+    approve_change(change4["change_id"], "Gate Test Runner", company_id=COMPANY, approver_roles=APPROVER_ROLES, approver_user_id=APPROVER_ID)
     rec = approval_module._load(change4["change_id"])
     rec["expires_at"] = time.time() - 1
     approval_module._save(change4["change_id"], rec)
@@ -361,7 +391,7 @@ finally:
     link("GATE-TEST-5")
     op5 = {**operation, "story_id": "GATE-TEST-5"}
     change5 = propose_change("GATE-TEST-5", op5, "processing_option_update")
-    approve_change(change5["change_id"], "Gate Test Runner", company_id=COMPANY, approver_roles=APPROVER_ROLES)
+    approve_change(change5["change_id"], "Gate Test Runner", company_id=COMPANY, approver_roles=APPROVER_ROLES, approver_user_id=APPROVER_ID)
     real_submit = ais_module._mock_submit
 
     def timed_out(*args):
@@ -387,7 +417,7 @@ finally:
         approve(story, "Gate Test Runner", "approving for the gate test")
         link(story)
         ch = propose_change(story, {**operation, "story_id": story}, "processing_option_update")
-        approve_change(ch["change_id"], "Gate Test Runner", company_id=COMPANY, approver_roles=APPROVER_ROLES)
+        approve_change(ch["change_id"], "Gate Test Runner", company_id=COMPANY, approver_roles=APPROVER_ROLES, approver_user_id=APPROVER_ID)
         try:
             client.set_processing_option(story, ch["change_id"], "P4210", "TESTVER01", "PDOCTYPE", "SO")
             return False
@@ -426,7 +456,7 @@ finally:
         link(story)
         ch = propose_change(story, {**operation, "story_id": story, "test_orchestration": "ORCH_GATE_TEST"},
                             "processing_option_update")
-        approve_change(ch["change_id"], "Gate Test Runner", company_id=COMPANY, approver_roles=APPROVER_ROLES)
+        approve_change(ch["change_id"], "Gate Test Runner", company_id=COMPANY, approver_roles=APPROVER_ROLES, approver_user_id=APPROVER_ID)
         client.set_processing_option(story, ch["change_id"], "P4210", "TESTVER01", "PDOCTYPE", "SO")
         try:
             client.run_orchestration(story, ch["change_id"], "ORCH_GATE_TEST", {})
@@ -435,6 +465,27 @@ finally:
             ok = True
         label = "an unapproved test is refused" if not tests else "a test with a forbidden side effect is refused"
         check(label, ok)
+
+    print("\n22. The approver loses their role after approving...")
+    test_scope["test_scope"]["approved_tests"] = [
+        {"orchestration": "ORCH_GATE_TEST", "side_effects": ["creates_dev_transaction"]}]
+    write_scope(test_scope)
+    for story, change_roles, status, label in (
+        ("GATE-TEST-12", [], "active", "a role revoked after approval blocks dispatch"),
+        ("GATE-TEST-13", ["product_manager"], "inactive", "a deactivated membership blocks dispatch"),
+    ):
+        propose_to_backlog(story, f"gate test {story}", {"financial_impact": "Low"}, "Low")
+        approve(story, "Gate Test Runner", "approving for the gate test")
+        link(story)
+        ch = propose_change(story, {**operation, "story_id": story}, "processing_option_update")
+        approve_change(ch["change_id"], "Gate Test Runner", company_id=COMPANY, approver_roles=APPROVER_ROLES, approver_user_id=APPROVER_ID)
+        set_approver_roles(change_roles, status)
+        try:
+            client.set_processing_option(story, ch["change_id"], "P4210", "TESTVER01", "PDOCTYPE", "SO")
+            check(label, False)
+        except ChangeApprovalError as e:
+            check(label, "no longer holds" in str(e))
+        set_approver_roles(["product_manager"])
 
     print("\nCleaning up test data...")
     _clean_test_files()

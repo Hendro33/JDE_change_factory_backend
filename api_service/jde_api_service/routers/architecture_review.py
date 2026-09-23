@@ -166,6 +166,7 @@ def approve_exact_change(
             ctx.identity.display_name,
             company_id=ctx.customer_id,
             approver_roles=ctx.roles,
+            approver_user_id=ctx.identity.id,
             note=payload.note,
         )
     except approval.ApproverNotAuthorised as exc:

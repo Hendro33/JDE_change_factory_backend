@@ -88,7 +88,8 @@ def test_exact_change_surfaces_capability_status_and_executability(client, monke
     )
     assert r.status_code == 200, r.text
     approval_module.approve_change(
-        record["change_id"], "Hendro", company_id="vdb", approver_roles={"product_manager"}, note="approved for the test"
+        record["change_id"], "Hendro", company_id="vdb", approver_roles={"product_manager"},
+        approver_user_id="u-hendro", note="approved for the test",
     )
 
     r = client.get(f"/changes/{story_id}", headers=headers(customer="vdb"))

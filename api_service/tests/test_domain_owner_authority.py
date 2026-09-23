@@ -93,6 +93,6 @@ def test_member_domains_must_belong_to_the_same_company(client):
     ellen = next(m for m in membership_service.list_company_members("vdb") if m["user_id"] == "u-ellen")
     r = client.put(
         f"/admin/users/{ellen['membership_id']}/roles", headers=headers("vdb"),
-        json={"roles": ["domain_owner"], "domainIds": ["DOM-BWM-WAREHOUSE"]},
+        json={"roles": ["domain_owner"], "domainIds": ["DOM-BWM-WAREHOUSE"], "expectedRevision": ellen["revision"]},
     )
     assert r.status_code == 422

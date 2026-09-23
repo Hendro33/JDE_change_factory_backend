@@ -193,4 +193,13 @@ MIGRATIONS: list[tuple[int, str]] = [
         CREATE INDEX idx_login_failures ON login_failures(scope, key, failed_at);
         """,
     ),
+    (
+        4,
+        """
+        -- Optimistic concurrency for role, domain and status changes
+        -- (membership_service.py): an Admin's edit is refused if the
+        -- membership changed since they loaded it.
+        ALTER TABLE company_memberships ADD COLUMN revision INTEGER NOT NULL DEFAULT 1;
+        """,
+    ),
 ]

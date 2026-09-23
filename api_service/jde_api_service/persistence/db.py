@@ -56,12 +56,19 @@ def get_connection() -> sqlite3.Connection:
 
 
 @contextmanager
-def connection() -> Iterator[sqlite3.Connection]:
+def connection(*, immediate: bool = False) -> Iterator[sqlite3.Connection]:
     """Commits on a clean exit, rolls back on an exception, always
     closes -- the pattern every service function in this module uses so
-    none of them has to repeat it."""
+    none of them has to repeat it.
+
+    immediate=True takes SQLite's write lock at the start (BEGIN
+    IMMEDIATE), so a read-check-write sequence -- compare a revision,
+    re-check the actor's authority, then write -- cannot interleave with
+    another writer's."""
     conn = get_connection()
     try:
+        if immediate:
+            conn.execute("BEGIN IMMEDIATE")
         yield conn
         conn.commit()
     except Exception:

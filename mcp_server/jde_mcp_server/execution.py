@@ -37,7 +37,7 @@ import os
 import time
 import uuid
 from contextlib import contextmanager
-from typing import Iterator, Optional
+from typing import Callable, Iterator, Optional
 
 from . import approval
 
@@ -101,10 +101,20 @@ def require_ready(record: dict, kind: str) -> None:
         raise ExecutionBlocked(f"change {record['change_id']}: {_BLOCK_REASON.get(state, state)} (state: {state})")
 
 
-def begin(change_id: str, kind: str, *, before_value: Optional[str] = None) -> str:
+def begin(
+    change_id: str, kind: str, *, before_value: Optional[str] = None, revalidate: Optional[Callable[[], object]] = None
+) -> str:
     """Record an attempt BEFORE the request is sent. Raises ExecutionBlocked
-    unless the change is ready -- this is what stops a blind retry."""
+    unless the change is ready -- this is what stops a blind retry.
+
+    `revalidate` re-runs every authorisation and eligibility check (the
+    approval, its expiry, the approver's CURRENT roles, the company's scope
+    and capability boundaries) inside the same lock that approve, reject,
+    reconcile and other attempts take -- so nothing that changes between
+    the caller's own checks and this moment can be used stale."""
     with _locked(change_id):
+        if revalidate is not None:
+            revalidate()
         record = approval._load(change_id)
         if record is None:
             raise approval.ChangeApprovalError(f"no change record for {change_id}")

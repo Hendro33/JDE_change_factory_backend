@@ -116,6 +116,16 @@ def require_role(*allowed: str):
     return _dependency
 
 
+def require_current_role(ctx: AuthContext, *allowed: str) -> None:
+    """require_role, re-evaluated against the database now rather than
+    the roles loaded at the start of the request -- for use inside a
+    workflow transition's lock."""
+    if not (membership_service.roles_for(ctx.identity.id, ctx.customer_id) & set(allowed)):
+        raise HTTPException(
+            status_code=403, detail=f"you no longer hold one of these roles: {', '.join(allowed)} -- nothing was changed"
+        )
+
+
 _WRITE_METHODS = {"POST", "PUT", "DELETE", "PATCH"}
 
 
@@ -144,7 +154,10 @@ def require_domain_owner_access(ctx: AuthContext, business_domain_id: str | None
     rather than left open to every Domain Owner in the company. Authority
     comes only from domain_assignments (Admin > Users), never from
     BusinessDomain.domain_owner, which is a free-text display note."""
-    if "domain_owner" not in ctx.roles:
+    # Read fresh from the database, not from the request's context: this is
+    # also called inside a review transition's lock, where it must see a
+    # role or assignment removed a moment ago.
+    if "domain_owner" not in membership_service.roles_for(ctx.identity.id, ctx.customer_id):
         raise HTTPException(status_code=403, detail="requires the Domain Owner role")
     if not business_domain_id:
         raise HTTPException(

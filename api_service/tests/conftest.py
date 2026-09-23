@@ -50,6 +50,8 @@ def isolated_dirs(tmp_path, monkeypatch):
     ):
         monkeypatch.setenv(env_name, str(api_data_dir / sub))
         monkeypatch.setattr(scope_module, attr, str(api_data_dir / sub))
+    # The gate re-reads the approver's current roles from this database.
+    monkeypatch.setenv("JDE_AUTH_DB_PATH", str(api_data_dir / "jde.sqlite3"))
     # mcp_server's Settings is frozen (by design, and it isn't ours to
     # modify) -- rebind the module-level `settings` name to a fresh
     # instance instead of mutating the existing one. change_service.py

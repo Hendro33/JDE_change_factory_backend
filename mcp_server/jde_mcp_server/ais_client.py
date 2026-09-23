@@ -195,29 +195,36 @@ class AISClient:
     def set_processing_option(
         self, story_id: str, change_id: str, application: str, version: str, option: str, value: str
     ) -> dict[str, Any]:
-        require_approved(story_id)
         operation = {"tool": "set_processing_option", "story_id": story_id, "application": application, "version": version, "option": option, "value": value}
-        record = require_exact_change(change_id, operation)
-        reject_if_oracle_owned_version(version)
-        scope = load_company_scope(record["company_id"])
-        scope_entry = check_functional_scope(scope, application, version, option)
-        check_allowed_value(scope_entry, value)
-        # The capability's enforcement contract: the approved target must be
-        # approved FOR this capability, through an allowed mechanism, in an
-        # option category that is declared and not protected.
-        enforcement = capability_catalog.require_enforcement(record["capability_id"])
-        if scope_entry.get("capability_id") != record["capability_id"]:
-            raise ScopeViolation(
-                f"{application}/{version}/{option} is approved for capability {scope_entry.get('capability_id')!r}, "
-                f"not {record['capability_id']!r}"
-            )
-        check_mechanism(scope, enforcement["mechanism"])
-        check_option_category(scope, scope_entry, enforcement)
-        require_bound_environment(scope)
+
+        def authorise() -> dict:
+            require_approved(story_id)
+            record = require_exact_change(change_id, operation)
+            reject_if_oracle_owned_version(version)
+            scope = load_company_scope(record["company_id"])
+            scope_entry = check_functional_scope(scope, application, version, option)
+            check_allowed_value(scope_entry, value)
+            # The capability's enforcement contract: the approved target must be
+            # approved FOR this capability, through an allowed mechanism, in an
+            # option category that is declared and not protected.
+            enforcement = capability_catalog.require_enforcement(record["capability_id"])
+            if scope_entry.get("capability_id") != record["capability_id"]:
+                raise ScopeViolation(
+                    f"{application}/{version}/{option} is approved for capability {scope_entry.get('capability_id')!r}, "
+                    f"not {record['capability_id']!r}"
+                )
+            check_mechanism(scope, enforcement["mechanism"])
+            check_option_category(scope, scope_entry, enforcement)
+            require_bound_environment(scope)
+            return record
+
+        # Checked now (so nothing is prepared for a refused operation) and
+        # again inside the attempt lock, immediately before dispatch.
+        authorise()
 
         if settings.mock_mode:
             before = _mock_read(application, version, option)
-            attempt = execution.begin(change_id, execution.WRITE, before_value=before)
+            attempt = execution.begin(change_id, execution.WRITE, before_value=before, revalidate=authorise)
             try:
                 _mock_submit(application, version, option, value)
             except Exception as exc:  # noqa: BLE001 -- anything after "sending" is an unknown outcome
@@ -245,7 +252,7 @@ class AISClient:
         headers = self._headers()  # authenticate BEFORE the attempt: a login failure sends nothing
         # The before value cannot be read from a live response yet (see
         # LiveReadUnavailable), so it is recorded as unknown.
-        attempt = execution.begin(change_id, execution.WRITE, before_value=None)
+        attempt = execution.begin(change_id, execution.WRITE, before_value=None, revalidate=authorise)
         try:
             resp = self._http.post(f"{settings.ais_base_url}/jderest/formservice", headers=headers, json=payload)
         except httpx.ConnectError as exc:
@@ -282,17 +289,21 @@ class AISClient:
     # a different test than the one a human saw approved would defeat
     # the point of the exact-change approval.
     def run_orchestration(self, story_id: str, change_id: str, name: str, payload: dict) -> dict[str, Any]:
-        require_approved(story_id)
-        record = require_change_covers_test(change_id, name)
-        scope = load_company_scope(record["company_id"])
-        check_test_boundary(scope, name, capability_catalog.require_enforcement(record["capability_id"]))
-        require_bound_environment(scope)
+        def authorise() -> dict:
+            require_approved(story_id)
+            record = require_change_covers_test(change_id, name)
+            scope = load_company_scope(record["company_id"])
+            check_test_boundary(scope, name, capability_catalog.require_enforcement(record["capability_id"]))
+            require_bound_environment(scope)
+            return record
+
+        authorise()
         if settings.mock_mode:
-            attempt = execution.begin(change_id, execution.TEST)
+            attempt = execution.begin(change_id, execution.TEST, revalidate=authorise)
             execution.finish(change_id, execution.TEST, attempt, "completed", "mock orchestration")
             return _mock_fixture("run_orchestration", name=name, payload=payload, result="PASS")
         headers = self._headers()
-        attempt = execution.begin(change_id, execution.TEST)
+        attempt = execution.begin(change_id, execution.TEST, revalidate=authorise)
         try:
             resp = self._http.post(f"{settings.ais_base_url}/jderest/v2/orchestrator/{name}", headers=headers, json=payload)
             resp.raise_for_status()

@@ -97,7 +97,9 @@ def _propose(story_id: str) -> dict:
 def _approve(change_id: str, company: str = "vdb", roles=("product_manager",)) -> dict:
     from jde_mcp_server import approval
 
-    return approval.approve_change(change_id, "Hendro", company_id=company, approver_roles=set(roles), note="ok")
+    return approval.approve_change(
+        change_id, "Hendro", company_id=company, approver_roles=set(roles), approver_user_id="u-hendro", note="ok"
+    )
 
 
 def _execute(story_id: str, change_id: str, value: str = "SO") -> dict:

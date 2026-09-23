@@ -110,6 +110,8 @@ class MembershipOut(ApiModel):
     status: MembershipStatus
     roles: list[Role]
     domain_ids: list[str] = []
+    # Send back as expected_revision on the next role/domain/status change.
+    revision: int = 1
 
 
 class InvitationOut(ApiModel):
@@ -136,6 +138,12 @@ class InviteInput(ApiModel):
 class UpdateMembershipInput(ApiModel):
     roles: list[Role]
     domain_ids: list[str] = []
+    # Required: the revision the Admin loaded (428 if absent, 409 if stale).
+    expected_revision: Optional[int] = None
+
+
+class MembershipStatusInput(ApiModel):
+    expected_revision: Optional[int] = None
 
 
 class CompanyUsersOut(ApiModel):

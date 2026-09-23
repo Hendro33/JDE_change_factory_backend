@@ -21,6 +21,7 @@ from ..models.auth import (
     InvitationOut,
     InviteInput,
     MembershipOut,
+    MembershipStatusInput,
     PasswordResetLinkOut,
     UpdateMembershipInput,
 )
@@ -44,6 +45,7 @@ def _membership_out(m: dict) -> MembershipOut:
     return MembershipOut(
         membership_id=m["membership_id"], user_id=m["user_id"], email=m["email"],
         display_name=m["display_name"], status=m["status"], roles=m["roles"], domain_ids=m["domain_ids"],
+        revision=m["revision"],
     )
 
 
@@ -165,6 +167,17 @@ def _membership_in_company_or_404(membership_id: str, company_id: str) -> dict:
     return m
 
 
+def _member_out(membership_id: str, company_id: str) -> MembershipOut:
+    return _membership_out(next(
+        m for m in membership_service.list_company_members(company_id) if m["membership_id"] == membership_id
+    ))
+
+
+# Role, domain and status changes carry the revision the Admin loaded
+# (409 if someone changed the membership since, 428 if absent) and
+# re-check, inside the same write transaction, that the caller is STILL
+# an Admin of this company: two Admins editing at once, or an Admin
+# demoted mid-request, cannot leave a stale decision applied.
 @router.put("/{membership_id}/roles", response_model=MembershipOut)
 def update_roles(
     membership_id: str, payload: UpdateMembershipInput, ctx: AuthContext = Depends(require_role("admin"))
@@ -173,34 +186,39 @@ def update_roles(
     _require_company_domains(payload.domain_ids, ctx.customer_id)
     try:
         membership_service.update_membership_roles(
-            membership_id, set(payload.roles), set(payload.domain_ids), actor_user_id=ctx.identity.id
+            membership_id, set(payload.roles), set(payload.domain_ids), actor_user_id=ctx.identity.id,
+            expected_revision=payload.expected_revision, as_admin=True,
         )
     except membership_service.LastAdminError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
-    updated = next(
-        m for m in membership_service.list_company_members(ctx.customer_id) if m["membership_id"] == membership_id
-    )
-    return _membership_out(updated)
+    except membership_service.ActorNoLongerAuthorised as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
+    return _member_out(membership_id, ctx.customer_id)
+
+
+def _set_status(membership_id: str, status: str, payload: MembershipStatusInput | None, ctx: AuthContext) -> MembershipOut:
+    _membership_in_company_or_404(membership_id, ctx.customer_id)
+    try:
+        membership_service.set_membership_status(
+            membership_id, status, actor_user_id=ctx.identity.id,
+            expected_revision=payload.expected_revision if payload else None, as_admin=True,
+        )
+    except membership_service.LastAdminError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except membership_service.ActorNoLongerAuthorised as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
+    return _member_out(membership_id, ctx.customer_id)
 
 
 @router.post("/{membership_id}/deactivate", response_model=MembershipOut)
-def deactivate(membership_id: str, ctx: AuthContext = Depends(require_role("admin"))) -> MembershipOut:
-    _membership_in_company_or_404(membership_id, ctx.customer_id)
-    try:
-        membership_service.set_membership_status(membership_id, "inactive", actor_user_id=ctx.identity.id)
-    except membership_service.LastAdminError as exc:
-        raise HTTPException(status_code=409, detail=str(exc))
-    updated = next(
-        m for m in membership_service.list_company_members(ctx.customer_id) if m["membership_id"] == membership_id
-    )
-    return _membership_out(updated)
+def deactivate(
+    membership_id: str, payload: MembershipStatusInput | None = None, ctx: AuthContext = Depends(require_role("admin"))
+) -> MembershipOut:
+    return _set_status(membership_id, "inactive", payload, ctx)
 
 
 @router.post("/{membership_id}/reactivate", response_model=MembershipOut)
-def reactivate(membership_id: str, ctx: AuthContext = Depends(require_role("admin"))) -> MembershipOut:
-    _membership_in_company_or_404(membership_id, ctx.customer_id)
-    membership_service.set_membership_status(membership_id, "active", actor_user_id=ctx.identity.id)
-    updated = next(
-        m for m in membership_service.list_company_members(ctx.customer_id) if m["membership_id"] == membership_id
-    )
-    return _membership_out(updated)
+def reactivate(
+    membership_id: str, payload: MembershipStatusInput | None = None, ctx: AuthContext = Depends(require_role("admin"))
+) -> MembershipOut:
+    return _set_status(membership_id, "active", payload, ctx)
