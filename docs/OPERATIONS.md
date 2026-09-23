@@ -124,6 +124,61 @@ The key is deliberately **not** in the backup: whoever holds the archive alone c
 
 Keep every retired key in the password manager until no retained backup still lists its id.
 
+## JDE discovery for the Architect
+
+Each company has one read-only **discovery profile**, set up under Admin → Integrations → JDE. It is separate from the execution gate's JDE settings (`JDE_AIS_*`, used only by `mcp_server`); the two never share credentials.
+
+**Where things are stored:**
+- **Profile metadata:** in `jde_profiles`, with every saved revision kept in `jde_profile_revisions`.
+- **The credential:** encrypted with `JDE_CREDENTIAL_KEY`.
+- **Observations, sanitised activity, artifact metadata and design evidence baselines:** in SQLite.
+- **Artifact bytes:** under `<JDE_API_DATA_DIR>/artifacts/`.
+- **Hand-off files for the Functional Agent:** under `<JDE_API_DATA_DIR>/design_baselines/`.
+
+All of it is covered by the backup script.
+
+**Deployment controls.** Both default to off, and both are needed before anything live is contacted:
+
+| Variable | Meaning |
+|---|---|
+| `JDE_DISCOVERY_LIVE_ENABLED` | `true` allows profiles in *live* mode. Unset means only the labelled simulation works. |
+| `JDE_DISCOVERY_ALLOWED_HOSTS` | Comma-separated AIS host names a live profile may use. Anything else is refused before a connection is opened. |
+
+A live profile never falls back to the simulation, and the simulation never pretends to be live.
+
+**The live transport itself:**
+- verified TLS;
+- no redirects;
+- the profile's timeout;
+- a circuit breaker after 3 consecutive failures, open for 5 minutes;
+- one request at a time per company;
+- at most 10 records, no paging, no retries.
+
+The only paths it can call are the token request, logout, `defaultconfig`, `dataservice` (BROWSE only) and `poservice`.
+
+**Before the first supervised live connection** (none has happened yet):
+1. **Customer/CNC:** a dedicated JDE user and a role that can read only the approved tables and applications in the DEV environment. Jade's read-only design does not make an over-privileged account safe.
+2. **Customer/CNC:** a network route that reaches only the DEV AIS server, and written confirmation that the environment is isolated. Record this in the profile.
+3. **Operator:** set `JDE_DISCOVERY_ALLOWED_HOSTS` to that host, and `JDE_DISCOVERY_LIVE_ENABLED=true`, for the supervised session only.
+4. **Admin:** save the live profile with a short window and a minimal approved-read list. Enter the credential.
+5. **With the customer present:**
+   - run Test Connection;
+   - run one approved sample read per capability;
+   - compare the results with what the customer sees in JDE. Response shapes are unverified until this is done (Experiment A1).
+6. **Admin:** enable discovery only after that comparison. Disable the connection when the window ends, and remove `JDE_DISCOVERY_LIVE_ENABLED` again.
+
+**Disable Connection** blocks new and queued calls at once. It reports any request already in flight, which finishes; nothing is interrupted mid-request. Re-enabling needs a fresh Test Connection and fresh sample reads.
+
+**Data sharing.** The profile's policy decides what reaches the external model:
+
+| Policy | What the model sees |
+|---|---|
+| `metadata_only` (default) | Values and artifact content are redacted |
+| `configuration_and_artifacts` | Configuration values and artifact text; business data stays redacted |
+| `full` | Everything |
+
+Choose `full` only with the customer's written agreement.
+
 ## Credential encryption key
 
 Jira API tokens are stored encrypted in SQLite (`services/credential_crypto.py`). The key is **never** on the disk:
