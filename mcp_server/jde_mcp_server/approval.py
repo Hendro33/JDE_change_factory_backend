@@ -407,8 +407,12 @@ def preflight(change_id: str) -> dict:
                 "checks": [{"check": "Change record exists", "ok": False, "detail": f"no change record {change_id}"}]}
     op = record.get("operation", {})
     check("Story approved (Gate 2)", lambda: backlog.require_approved(record["story_id"]))
-    live = check("Exact change approved, unexpired, same company, approver authority current", lambda: _require_live_approval(change_id))
-    scope = live[1] if isinstance(live, tuple) else None
+    check("Exact change approved, unexpired, same company, approver authority current", lambda: _require_live_approval(change_id))
+    # The company's scope is read on its own, so its checks are reported
+    # even while the approval itself is still missing.
+    scope = check("Company scope saved for the story's company",
+                  lambda: load_company_scope(company_for_story(record["story_id"])))
+    scope = scope if isinstance(scope, dict) else None
     check("Operation supported for this capability", lambda: require_supported_operation(record.get("capability_id", ""), op))
     if scope is not None:
         check("DEV environment bound and isolation confirmed", lambda: scope_module.check_environment_binding(scope, record["environment"]))
