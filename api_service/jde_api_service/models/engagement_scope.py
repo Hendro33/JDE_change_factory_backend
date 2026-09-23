@@ -28,6 +28,9 @@ from .base import ApiModel
 
 
 class ApprovedVersion(ApiModel):
+    # Which capability_catalog.json entry this target is enabled for. The
+    # execution gate refuses an entry with no capability_id.
+    capability_id: str = ""
     application: str
     version: str
     options: list[str] = []
@@ -35,8 +38,29 @@ class ApprovedVersion(ApiModel):
     notes: str = ""
 
 
+class SpikeExperiment(ApiModel):
+    """A bounded DEV validation experiment for a Needs-spike capability.
+    Only valid until expires_at; a missing or past expiry blocks it."""
+
+    capability_id: str
+    capability_revision: str
+    application: str
+    version: str
+    option: str = ""
+    environment: str = "DEV"
+    expires_at: str  # ISO-8601 with timezone
+    note: str = ""
+    # Stamped server-side from the authenticated session when saved.
+    approved_by: Optional[str] = None
+    approved_at: Optional[str] = None
+
+
 class FunctionalAgentScope(ApiModel):
     approved_versions: list[ApprovedVersion] = []
+    spike_experiments: list[SpikeExperiment] = []
+    # Reference only -- recorded for humans, NOT read by the execution
+    # gate (which enforces approved_versions and the catalogue's own
+    # restrictions). Kept because Appendix D asks for them.
     never_touch_categories: list[str] = []
     approvers: list[str] = []
 
@@ -45,26 +69,50 @@ class TechnicalAgentScope(ApiModel):
     authorized_object_types: list[str] = []
     reserved_product_code: str = ""
     naming_prefix: str = ""
+    # Reference only -- not read by the execution gate.
     approvers: list[str] = []
+
+
+class EnvironmentBinding(ApiModel):
+    """The one DEV environment this company's executions may target.
+    Isolation is a human (CNC) confirmation recorded with evidence; the
+    gate refuses to run until it is confirmed."""
+
+    dev_environment_id: str = ""
+    dev_path_code: str = ""
+    ais_data_source_name: str = ""
+    isolation_confirmed: bool = False
+    isolation_evidence: str = ""
+    # Stamped server-side when isolation_confirmed is first set true.
+    isolation_confirmed_by: Optional[str] = None
+    isolation_confirmed_at: Optional[str] = None
 
 
 class EngagementScope(ApiModel):
     customer_id: str
     tools_release: str = ""
+    environment: EnvironmentBinding = EnvironmentBinding()
     functional_agent: FunctionalAgentScope = FunctionalAgentScope()
     technical_agent: TechnicalAgentScope = TechnicalAgentScope()
+    # 0 = never saved. Incremented on every save; the execution gate
+    # stamps it onto change records as the scope revision used.
+    revision: int = 0
     # None means "never configured" -- distinct from an explicitly
     # empty-but-saved scope, same honesty this whole model exists for.
     updated_at: Optional[str] = None
+    # Always the authenticated user who saved -- never client-supplied.
     updated_by: Optional[str] = None
 
 
 class EngagementScopeUpdate(ApiModel):
     """Full-replace payload -- an admin edits the whole scope at once,
     same convention as the frontend's other edit forms. No partial-patch
-    semantics, to keep this simple."""
+    semantics, to keep this simple. Any client-sent updatedBy is ignored
+    (extra fields are dropped); the actor comes from the session."""
 
     tools_release: str = ""
+    environment: EnvironmentBinding = EnvironmentBinding()
     functional_agent: FunctionalAgentScope = FunctionalAgentScope()
     technical_agent: TechnicalAgentScope = TechnicalAgentScope()
-    updated_by: str
+    # The revision the client loaded; required once the scope exists.
+    expected_revision: Optional[int] = None

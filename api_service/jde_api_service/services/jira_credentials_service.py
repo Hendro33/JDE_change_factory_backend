@@ -41,28 +41,36 @@ class JiraCredentialsService:
             return None
         return JiraCredentials(
             customer_id=row["company_id"], email=row["email"], api_token=row["api_token"],
-            updated_at=row["updated_at"], updated_by=row["updated_by"],
+            revision=row["revision"], updated_at=row["updated_at"], updated_by=row["updated_by"],
         )
 
     def is_configured(self, customer_id: str) -> bool:
         creds = self.get_for_customer(customer_id)
         return bool(creds and creds.email and creds.api_token)
 
-    def upsert(self, customer_id: str, payload: JiraCredentialsUpdate) -> JiraCredentials:
-        creds = JiraCredentials(
-            customer_id=customer_id,
-            email=payload.email,
-            api_token=payload.api_token,
-            updated_at=_now(),
-            updated_by=payload.updated_by,
-        )
+    def upsert(self, customer_id: str, payload: JiraCredentialsUpdate, actor: str) -> JiraCredentials:
+        """A deliberate overwrite (see JiraCredentialsUpdate), attributed
+        to the authenticated actor; the revision still increments so the
+        change history is visible."""
         with connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT revision FROM jira_credentials WHERE company_id = ?", (customer_id,)
+            ).fetchone()
+            creds = JiraCredentials(
+                customer_id=customer_id,
+                email=payload.email,
+                api_token=payload.api_token,
+                revision=(row["revision"] + 1) if row else 1,
+                updated_at=_now(),
+                updated_by=actor,
+            )
             conn.execute(
-                "INSERT INTO jira_credentials (company_id, email, api_token, updated_at, updated_by) "
-                "VALUES (?, ?, ?, ?, ?) "
+                "INSERT INTO jira_credentials (company_id, email, api_token, updated_at, updated_by, revision) "
+                "VALUES (?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT(company_id) DO UPDATE SET email=excluded.email, api_token=excluded.api_token, "
-                "updated_at=excluded.updated_at, updated_by=excluded.updated_by",
-                (customer_id, creds.email, creds.api_token, creds.updated_at, creds.updated_by),
+                "updated_at=excluded.updated_at, updated_by=excluded.updated_by, revision=excluded.revision",
+                (customer_id, creds.email, creds.api_token, creds.updated_at, creds.updated_by, creds.revision),
             )
         return creds
 

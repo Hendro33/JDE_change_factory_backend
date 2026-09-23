@@ -191,8 +191,9 @@ def test_no_hardcoded_status_or_field_names(isolated_dirs):
         JiraIntegrationConfigUpdate(
             base_url="https://example.atlassian.net", project_key="XX",
             pickup_status="Triaged -> Send to AI Team", post_pickup_status="AI Team Working On It",
-            jade_id_field="customfield_99999", updated_by="Tester",
+            jade_id_field="customfield_99999",
         ),
+        actor="Tester",
     )
 
     result = sync.sync_for_customer("cust1")
@@ -212,8 +213,9 @@ def test_write_back_never_happens_before_intake_persists(isolated_dirs, monkeypa
         JiraIntegrationConfigUpdate(
             base_url="https://example.atlassian.net", project_key="XX",
             pickup_status="Ready for Jade", post_pickup_status="Jade - In Progress",
-            jade_id_field="customfield_1", updated_by="Tester",
+            jade_id_field="customfield_1",
         ),
+        actor="Tester",
     )
 
     def _boom(*args, **kwargs):
@@ -252,8 +254,9 @@ def test_retry_after_transition_failure_does_not_repost_comment(isolated_dirs):
         JiraIntegrationConfigUpdate(
             base_url="https://example.atlassian.net", project_key="XX",
             pickup_status="Ready for Jade", post_pickup_status="Jade - In Progress",
-            jade_id_field="customfield_1", updated_by="Tester",
+            jade_id_field="customfield_1",
         ),
+        actor="Tester",
     )
 
     first = sync.sync_for_customer("cust1")
@@ -284,8 +287,9 @@ def test_source_metadata_is_imported_but_never_used_for_routing(isolated_dirs):
         JiraIntegrationConfigUpdate(
             base_url="https://example.atlassian.net", project_key="XX",
             pickup_status="Ready for Jade", post_pickup_status="Jade - In Progress",
-            jade_id_field="customfield_1", updated_by="Tester",
+            jade_id_field="customfield_1",
         ),
+        actor="Tester",
     )
 
     result = sync.sync_for_customer("cust1")
@@ -426,7 +430,7 @@ def test_get_jira_gateway_goes_live_purely_from_saved_credentials(isolated_dirs)
     # default (jira_mock_mode defaults false) plus an Admin-saved
     # credential, exactly the "no .env or backend file edit" flow.
     get_jira_credentials_service().upsert(
-        "cust1", JiraCredentialsUpdate(email="bot@example.com", api_token="secret-token", updated_by="Hendro")
+        "cust1", JiraCredentialsUpdate(email="bot@example.com", api_token="secret-token"), actor="Hendro"
     )
 
     gateway = get_jira_gateway("cust1")
@@ -443,7 +447,7 @@ def test_get_jira_gateway_force_mock_overrides_a_configured_credential(isolated_
     from jde_api_service.services.registry import get_jira_credentials_service
 
     get_jira_credentials_service().upsert(
-        "cust1", JiraCredentialsUpdate(email="bot@example.com", api_token="secret-token", updated_by="Hendro")
+        "cust1", JiraCredentialsUpdate(email="bot@example.com", api_token="secret-token"), actor="Hendro"
     )
     monkeypatch.setattr(api_config.settings, "jira_mock_mode", True)
     assert isinstance(get_jira_gateway("cust1"), JiraMockGateway)
@@ -487,7 +491,7 @@ def test_get_jira_gateway_goes_mock_again_after_disconnect(isolated_dirs):
     from jde_api_service.services.registry import get_jira_credentials_service
 
     service = get_jira_credentials_service()
-    service.upsert("cust1", JiraCredentialsUpdate(email="bot@example.com", api_token="secret-token", updated_by="Hendro"))
+    service.upsert("cust1", JiraCredentialsUpdate(email="bot@example.com", api_token="secret-token"), actor="Hendro")
     assert isinstance(get_jira_gateway("cust1"), JiraHttpGateway)
 
     service.delete("cust1")

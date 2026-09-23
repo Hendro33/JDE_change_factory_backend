@@ -157,4 +157,26 @@ MIGRATIONS: list[tuple[int, str]] = [
         CREATE INDEX idx_password_resets_user ON password_reset_tokens(user_id);
         """,
     ),
+    (
+        2,
+        """
+        -- Optimistic concurrency (persistence/revisions.py): existing
+        -- rows start at revision 1.
+        ALTER TABLE jira_integrations ADD COLUMN revision INTEGER NOT NULL DEFAULT 1;
+        ALTER TABLE jira_credentials ADD COLUMN revision INTEGER NOT NULL DEFAULT 1;
+
+        -- Small company-level settings (dashboard thresholds, approval
+        -- policy, ...), each a JSON value under a fixed key, revisioned
+        -- and attributed to the authenticated user who saved it.
+        CREATE TABLE company_settings (
+            company_id TEXT NOT NULL,
+            key TEXT NOT NULL,
+            value TEXT NOT NULL,
+            revision INTEGER NOT NULL,
+            updated_at TEXT NOT NULL,
+            updated_by TEXT NOT NULL,
+            PRIMARY KEY (company_id, key)
+        );
+        """,
+    ),
 ]

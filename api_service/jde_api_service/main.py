@@ -31,6 +31,7 @@ from .routers import (
     session,
 )
 from .persistence.db import ensure_schema
+from .persistence.revisions import RevisionConflict, RevisionRequired
 from .services.bootstrap_service import ensure_bootstrap_admin
 from .services.customer_service import ensure_seed_companies
 from .services.registry import (
@@ -91,6 +92,16 @@ app.include_router(domain_governance.router)
 app.include_router(architecture_review.router)
 app.include_router(admin.router)
 app.include_router(company_users.router)
+
+
+@app.exception_handler(RevisionConflict)
+async def _revision_conflict_handler(request: Request, exc: RevisionConflict) -> JSONResponse:
+    return JSONResponse(status_code=409, content={"detail": str(exc), "currentRevision": exc.current_revision})
+
+
+@app.exception_handler(RevisionRequired)
+async def _revision_required_handler(request: Request, exc: RevisionRequired) -> JSONResponse:
+    return JSONResponse(status_code=428, content={"detail": str(exc), "currentRevision": exc.current_revision})
 
 
 @app.exception_handler(Exception)

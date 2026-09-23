@@ -64,6 +64,7 @@ from ..config import settings as api_settings
 from ..models.agent_registry import AgentDefinition
 from ..models.capability import Capability, CapabilityCatalog
 from ..models.business_domain import BusinessDomain, BusinessDomainCreate, BusinessDomainStatusUpdate
+from ..models.company_settings import DashboardThresholds, DashboardThresholdsUpdate
 from ..models.engagement_scope import EngagementScope, EngagementScopeUpdate
 from ..models.jira_integration import (
     JiraConnectionStatus,
@@ -75,6 +76,7 @@ from ..models.jira_integration import (
     JiraTestConnectionResult,
 )
 from ..models.session import Customer as CustomerOut
+from ..services.company_settings_service import CompanySettingsService
 from ..services.customer_service import get_registry
 from ..services.jira_gateway import InvalidJiraBaseUrl, test_live_connection
 from ..services.jira_sync_service import JiraNotConfigured
@@ -163,6 +165,39 @@ def get_erp_landscape(ctx: AuthContext = Depends(require_customer_access)) -> Er
     )
 
 
+_DASHBOARD_THRESHOLDS_KEY = "dashboard_thresholds"
+
+
+def _thresholds_out(stored) -> DashboardThresholds:
+    if stored is None:
+        return DashboardThresholds()
+    return DashboardThresholds(
+        warn_at=stored.value["warn_at"], critical_at=stored.value["critical_at"], configured=True,
+        revision=stored.revision, updated_at=stored.updated_at, updated_by=stored.updated_by,
+    )
+
+
+@router.get("/dashboard-thresholds", response_model=DashboardThresholds)
+def get_dashboard_thresholds(ctx: AuthContext = Depends(require_customer_access)) -> DashboardThresholds:
+    """Readable by every member -- the Home dashboard colours its KPIs
+    with these. Defaults (configured=False, revision 0) until saved."""
+    return _thresholds_out(CompanySettingsService().get(ctx.customer_id, _DASHBOARD_THRESHOLDS_KEY))
+
+
+@router.put("/dashboard-thresholds", response_model=DashboardThresholds)
+def update_dashboard_thresholds(
+    payload: DashboardThresholdsUpdate, ctx: AuthContext = Depends(require_role("admin"))
+) -> DashboardThresholds:
+    stored = CompanySettingsService().put(
+        ctx.customer_id,
+        _DASHBOARD_THRESHOLDS_KEY,
+        {"warn_at": payload.warn_at, "critical_at": payload.critical_at},
+        payload.expected_revision,
+        actor=ctx.identity.display_name,
+    )
+    return _thresholds_out(stored)
+
+
 @router.get("/engagement-scope", response_model=EngagementScope)
 def get_engagement_scope(ctx: AuthContext = Depends(require_customer_access)) -> EngagementScope:
     scope = get_engagement_scope_service().get_for_customer(ctx.customer_id)
@@ -178,7 +213,7 @@ def get_engagement_scope(ctx: AuthContext = Depends(require_customer_access)) ->
 def update_engagement_scope(
     payload: EngagementScopeUpdate, ctx: AuthContext = Depends(require_role("admin"))
 ) -> EngagementScope:
-    return get_engagement_scope_service().upsert(ctx.customer_id, payload)
+    return get_engagement_scope_service().upsert(ctx.customer_id, payload, actor=ctx.identity.display_name)
 
 
 # ---------------------------------------------------------------------
@@ -274,7 +309,7 @@ def get_capability(capability_id: str, ctx: AuthContext = Depends(require_custom
 def create_business_domain(
     payload: BusinessDomainCreate, ctx: AuthContext = Depends(require_role("admin"))
 ) -> BusinessDomain:
-    return get_business_domain_service().create(payload, ctx.customer_id)
+    return get_business_domain_service().create(payload, ctx.customer_id, actor=ctx.identity.display_name)
 
 
 @router.put("/business-domains/{domain_id}/status", response_model=BusinessDomain)
@@ -284,7 +319,9 @@ def update_business_domain_status(
     domain = get_business_domain_service().get_for_customer(domain_id, ctx.customer_id)
     if domain is None:
         raise HTTPException(status_code=404, detail=f"no such business domain: {domain_id}")
-    return get_business_domain_service().update_status(domain_id, payload.status)
+    return get_business_domain_service().update_status(
+        domain_id, payload.status, payload.expected_revision, actor=ctx.identity.display_name
+    )
 
 
 # ---------------------------------------------------------------------
@@ -348,7 +385,7 @@ def update_jira_integration(
     payload: JiraIntegrationConfigUpdate, ctx: AuthContext = Depends(require_role("admin")),
 ) -> JiraIntegrationConfig:
     try:
-        return get_jira_integration_service().upsert(ctx.customer_id, payload)
+        return get_jira_integration_service().upsert(ctx.customer_id, payload, actor=ctx.identity.display_name)
     except InvalidJiraBaseUrl as exc:
         raise HTTPException(status_code=422, detail=str(exc))
 
@@ -380,7 +417,7 @@ def update_jira_credentials(
     Saving a valid credential here is, by itself, enough to make this
     customer's connector live (jira_is_live_for_customer) -- no
     JDE_JIRA_MOCK_MODE or other backend file edit required."""
-    get_jira_credentials_service().upsert(ctx.customer_id, payload)
+    get_jira_credentials_service().upsert(ctx.customer_id, payload, actor=ctx.identity.display_name)
     config = get_jira_integration_service().get_for_customer(ctx.customer_id)
     return JiraConnectionStatus(
         mock_mode=not jira_is_live_for_customer(ctx.customer_id),

@@ -117,7 +117,7 @@ def test_business_domain_create_and_status_transition(client):
     assert domain_id not in [d["id"] for d in r.json()]
 
     r = client.put(
-        f"/admin/business-domains/{domain_id}/status", headers=headers(customer="vdb"), json={"status": "retired"}
+        f"/admin/business-domains/{domain_id}/status", headers=headers(customer="vdb"), json={"status": "retired", "expectedRevision": 1}
     )
     assert r.status_code == 200
     assert r.json()["status"] == "retired"

@@ -13,7 +13,25 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Any, Optional
+import tempfile
+import threading
+from contextlib import contextmanager
+from typing import Any, Iterator, Optional
+
+# One lock per store directory, shared by every JsonFileStore instance
+# pointing at it (services are constructed per request). This makes a
+# read-check-write sequence safe within ONE process only -- the pilot's
+# deployment shape. Multiple processes or hosts need a real database.
+_DIR_LOCKS: dict[str, threading.RLock] = {}
+_DIR_LOCKS_GUARD = threading.Lock()
+
+
+def _lock_for(directory: str) -> threading.RLock:
+    key = os.path.abspath(directory)
+    with _DIR_LOCKS_GUARD:
+        if key not in _DIR_LOCKS:
+            _DIR_LOCKS[key] = threading.RLock()
+        return _DIR_LOCKS[key]
 
 
 class JsonFileStore:
@@ -25,6 +43,13 @@ class JsonFileStore:
         safe_id = doc_id.replace("/", "_")
         return os.path.join(self._dir, f"{safe_id}.json")
 
+    @contextmanager
+    def locked(self) -> Iterator[None]:
+        """Hold this while reading, checking a revision and writing, so
+        two concurrent saves cannot both pass the check."""
+        with _lock_for(self._dir):
+            yield
+
     def get(self, doc_id: str) -> Optional[dict[str, Any]]:
         path = self._path(doc_id)
         if not os.path.exists(path):
@@ -33,8 +58,21 @@ class JsonFileStore:
             return json.load(f)
 
     def put(self, doc_id: str, document: dict[str, Any]) -> None:
-        with open(self._path(doc_id), "w", encoding="utf-8") as f:
-            json.dump(document, f, indent=2, default=str)
+        # Write to a temp file in the same directory, then atomically
+        # replace -- a crash mid-write leaves the previous version intact
+        # instead of a truncated file.
+        path = self._path(doc_id)
+        fd, tmp = tempfile.mkstemp(dir=self._dir, prefix=".tmp-", suffix=".json")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(document, f, indent=2, default=str)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, path)
+        except BaseException:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+            raise
 
     def delete(self, doc_id: str) -> None:
         """Idempotent -- deleting a document that isn't there is not an
