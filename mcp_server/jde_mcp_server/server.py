@@ -36,6 +36,7 @@ from .backlog import (
     StoryNotApproved,
 )
 from .approval import propose_change as _propose_change, ChangeApprovalError
+from .design_baseline import get_design_baseline as _get_design_baseline
 
 mcp = _MCPServerClass("jde-change-factory")
 
@@ -214,6 +215,18 @@ def verify_evidence_chain(story_id: str) -> dict:
     tamper-evidence rather than assume it -- e.g. before an Application
     Manager or CNC relies on a story's evidence package for sign-off."""
     return _verify_chain(story_id)
+
+
+@mcp.tool()
+def get_design_baseline(story_id: str) -> dict:
+    """The Architect's instructions for this story together with the exact
+    evidence manifest the design was based on (environment profile
+    revision, observations, artifact revisions/checksums, documents,
+    gaps). Call it before anything else. It is a snapshot: it does not
+    authorise any write, and a status of needs_reassessment means the
+    evidence changed after the design -- stop and send it back to the
+    Architect. Re-validate every live precondition you rely on."""
+    return _get_design_baseline(story_id)
 
 
 def main() -> None:

@@ -163,8 +163,24 @@ def get_erp_landscape(ctx: AuthContext = Depends(require_customer_access)) -> Er
             environment=ais.ais_environment or None,
             role=ais.ais_role or None,
         ),
+        discovery_profile=_discovery_summary(ctx.customer_id),
         engagement_scope_configured=configured,
         scope_globally_shared_note=_SCOPE_SHARED_NOTE,
+    )
+
+
+def _discovery_summary(company_id: str):
+    from ..discovery import profile_service
+    from ..models.admin import DiscoveryProfileSummary
+
+    v = profile_service.view(company_id)
+    if not v.configured or v.config is None:
+        return DiscoveryProfileSummary(configured=False)
+    return DiscoveryProfileSummary(
+        configured=True, revision=v.revision, environment=v.config.environment, path_code=v.config.path_code,
+        application_release=v.config.expected_application_release, tools_release=v.config.expected_tools_release,
+        mode=v.config.connection_mode, discovery_enabled=v.discovery_enabled, disabled=v.disabled,
+        health={k: c.state for k, c in v.health.items()},
     )
 
 

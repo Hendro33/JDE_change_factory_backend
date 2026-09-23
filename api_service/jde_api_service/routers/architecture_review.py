@@ -133,6 +133,7 @@ def start_architecture_review(
         repo_root=settings.repo_root,
         run_service=run_service,
         customer_id=ctx.customer_id,
+        initiated_by=ctx.identity.id,
     )
     return {"status": "started"}
 

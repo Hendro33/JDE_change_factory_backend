@@ -151,12 +151,12 @@ async def ask_about_requirement(
 # endpoint's own stage precondition, enforced here instead by simply
 # never giving the agent the tools that could execute anything.
 # ---------------------------------------------------------------------
+# No JDE reads here: the conversation explains the recorded analysis and
+# its evidence baseline. New evidence comes only from a governed
+# Architect run or Refresh Evidence (discovery/), never from this chat.
 _SOLUTION_ALLOWED_TOOLS = [
     "Task",
     "mcp__jde-change-factory__get_approved_story",
-    "mcp__jde-change-factory__get_object",
-    "mcp__jde-change-factory__get_version",
-    "mcp__jde-change-factory__get_processing_options",
 ]
 
 _SOLUTION_ANSWER_SCHEMA_INSTRUCTIONS = """

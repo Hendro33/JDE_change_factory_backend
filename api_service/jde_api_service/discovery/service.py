@@ -1,0 +1,534 @@
+"""
+The discovery service: the only code that turns a request for evidence
+into a JDE read.
+
+Every request -- from the Architect's tools, an Admin's sample read, or a
+Refresh Evidence action -- is validated HERE, outside the model, before
+any network dispatch: the story's company (re-resolved from the backend's
+own link), that company's profile, its revision, enabled state, DEV
+environment, window, capability status, approved targets/fields/filters,
+record limits, the circuit breaker and the one-at-a-time lock. A refusal
+is logged as a blocked request and nothing is sent.
+
+Results come back as structured, sanitised evidence with provenance. What
+the external model may see is governed by the profile's data-sharing
+policy; values it may not see are redacted, and the limitation is stated.
+"""
+
+from __future__ import annotations
+
+import json
+import threading
+import time
+import uuid
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from typing import Any, Optional
+
+from ..persistence.db import connection
+from ..services import credential_crypto
+from . import capabilities, profile_service, transport
+from .models import ApprovedRead, JdeProfileConfig
+
+# Tests may inject an httpx transport for the live adapter (never used in production).
+LIVE_HTTP_TRANSPORT = None
+MAX_GRANT_SECONDS = 2 * 3600
+_VALUE_MAX = 200
+
+
+class DiscoveryBlocked(RuntimeError):
+    """Refused by policy before anything was sent."""
+
+
+class DiscoveryFailed(RuntimeError):
+    """Sent (or attempted) but the endpoint failed; no retry is made."""
+
+
+@dataclass(frozen=True)
+class DiscoveryGrant:
+    """Who may read, for which story, under which profile revision, until
+    when. Built by the backend from trusted records -- never by the model."""
+
+    company_id: str
+    story_id: Optional[str]
+    domain_id: Optional[str]
+    profile_revision: int
+    agent_run_id: Optional[str]
+    actor_user_id: Optional[str]
+    expires_at: float
+    purpose: str = "architect"
+
+
+# ---------------------------------------------------------------------
+# One request at a time per company, and what is in flight
+# ---------------------------------------------------------------------
+_locks: dict[str, threading.Lock] = {}
+_locks_guard = threading.Lock()
+_in_flight: dict[str, dict[str, Any]] = {}
+
+
+def _lock_for(company_id: str) -> threading.Lock:
+    with _locks_guard:
+        return _locks.setdefault(company_id, threading.Lock())
+
+
+def in_flight(company_id: str) -> list[dict[str, Any]]:
+    with _locks_guard:
+        entry = _in_flight.get(company_id)
+        return [dict(entry)] if entry else []
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+# ---------------------------------------------------------------------
+# Activity (sanitised) and observations (immutable)
+# ---------------------------------------------------------------------
+def _target_summary(capability_id: str, target: str, fields: list[str], filters: list[dict]) -> str:
+    """Operation shape only: filter VALUES are never logged."""
+    parts = [capability_id, target or "-"]
+    if fields:
+        parts.append("[" + ",".join(fields[:12]) + "]")
+    if filters:
+        parts.append("where " + " and ".join(f"{f.get('field')} {f.get('op')} ?" for f in filters[:6]))
+    return " ".join(parts)[:300]
+
+
+def log_activity(*, request_id: str, company_id: str, profile_revision: Optional[int], grant: Optional[DiscoveryGrant],
+                 actor_user_id: Optional[str], operation: str, target: str, mode: Optional[str], started: float,
+                 result_count: Optional[int], outcome: str, reason: str = "") -> None:
+    with connection() as conn:
+        conn.execute(
+            "INSERT INTO discovery_activity (request_id, company_id, profile_revision, actor_user_id, agent_run_id, "
+            "story_id, operation, target, mode, started_at, duration_ms, result_count, outcome, reason) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (request_id, company_id, profile_revision, actor_user_id or (grant.actor_user_id if grant else None),
+             grant.agent_run_id if grant else None, grant.story_id if grant else None, operation, target, mode,
+             datetime.fromtimestamp(started, timezone.utc).isoformat(), int((time.time() - started) * 1000),
+             result_count, outcome, _sanitise_reason(reason)),
+        )
+
+
+def _sanitise_reason(reason: str) -> str:
+    text = reason.replace("\n", " ")[:300]
+    for marker in ("password", "token=", "jde-ais-auth"):
+        if marker in text.lower():
+            return "details withheld from the log (may contain a credential)"
+    return text
+
+
+def list_activity(company_id: str, limit: int = 100) -> list[dict]:
+    with connection() as conn:
+        rows = conn.execute(
+            "SELECT a.*, u.display_name AS actor_name FROM discovery_activity a "
+            "LEFT JOIN users u ON u.id = a.actor_user_id WHERE a.company_id = ? ORDER BY a.id DESC LIMIT ?",
+            (company_id, limit),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_observation(company_id: str, observation_id: str) -> Optional[dict]:
+    with connection() as conn:
+        row = conn.execute("SELECT * FROM discovery_observations WHERE id = ? AND company_id = ?",
+                           (observation_id, company_id)).fetchone()
+    if row is None:
+        return None
+    d = dict(row)
+    d["request"], d["evidence"] = json.loads(d["request"]), json.loads(d["evidence"])
+    return d
+
+
+# ---------------------------------------------------------------------
+# Data-sharing policy
+# ---------------------------------------------------------------------
+def _redact(value: Any) -> str:
+    if value in (None, ""):
+        return "[blank]"
+    text = str(value)
+    kind = "number" if text.replace(".", "", 1).replace("-", "", 1).isdigit() else "text"
+    return f"[redacted {kind}, {len(text)} chars]"
+
+
+def model_may_see_values(policy: str, data_class: str) -> bool:
+    if policy == "full":
+        return True
+    if policy == "configuration_and_artifacts":
+        return data_class == "configuration"
+    return False
+
+
+def apply_sharing(policy: str, cap: capabilities.DiscoveryCapability, records: list[dict]) -> tuple[list[dict], dict]:
+    allowed = model_may_see_values(policy, cap.data_class)
+    cleaned = []
+    for rec in records:
+        row = {}
+        for k, v in rec.items():
+            v = None if v is None else str(v)[:_VALUE_MAX]
+            row[k] = v if allowed else _redact(v)
+        cleaned.append(row)
+    note = ("values shared under the company's data-sharing policy" if allowed else
+            f"values redacted: the company's data-sharing policy ({policy}) does not allow {cap.data_class.replace('_', ' ')} "
+            "values in external-model prompts. Structure, counts and field names only.")
+    return cleaned, {"policy": policy, "values_shared": allowed, "note": note}
+
+
+# ---------------------------------------------------------------------
+# Validation -- all of it before any network dispatch
+# ---------------------------------------------------------------------
+def _approved_read(config: JdeProfileConfig, capability_id: str) -> Optional[ApprovedRead]:
+    return next((r for r in config.approved_reads if r.capability_id == capability_id), None)
+
+
+def validate(grant: DiscoveryGrant, capability_id: str, target: str, fields: list[str], filters: list[dict],
+             max_records: int, *, require_enabled: bool = True) -> tuple[dict, capabilities.DiscoveryCapability, list[str], int]:
+    if time.time() > grant.expires_at:
+        raise DiscoveryBlocked("the discovery grant for this run has expired")
+    if grant.story_id is not None:
+        from ..services.registry import get_customer_link_service
+
+        linked = get_customer_link_service().customer_for(grant.story_id)
+        if linked != grant.company_id:
+            raise DiscoveryBlocked("the story is not linked to this company; another company's profile is never used")
+    profile = profile_service.load(grant.company_id)
+    if profile is None:
+        raise DiscoveryBlocked("this company has no JDE discovery profile")
+    config: JdeProfileConfig = profile["config"]
+    if profile["disabled"]:
+        raise DiscoveryBlocked("the JDE discovery connection is disabled")
+    if require_enabled:
+        if not profile_service.is_active(profile):
+            raise DiscoveryBlocked("discovery is not enabled for the current profile revision")
+        if profile["revision"] != grant.profile_revision:
+            raise DiscoveryBlocked("the profile changed after this run started; a new run is needed")
+    if config.environment_type != "DEV":
+        raise DiscoveryBlocked("discovery is DEV-only")
+    if not profile_service.window_open(config):
+        raise DiscoveryBlocked("outside the approved discovery window")
+    cap = capabilities.get(capability_id)
+    if cap is None:
+        raise DiscoveryBlocked(f"{capability_id!r} is not a discovery capability (discovery only reads)")
+    if cap.base_status == "unavailable":
+        raise DiscoveryBlocked(f"{capability_id} is unavailable: {cap.unavailable_reason} {cap.alternative}")
+    read = _approved_read(config, capability_id)
+    if read is None:
+        raise DiscoveryBlocked(f"{capability_id} is not an approved read for this company; expanding scope needs an Admin")
+    if require_enabled:
+        status, detail = profile_service.capability_status(profile, capability_id)
+        if status != "supported":
+            raise DiscoveryBlocked(f"{capability_id} is {status}: {detail}")
+    if cap.target_kind != "none" and target not in read.targets:
+        raise DiscoveryBlocked(f"target {target!r} is not approved for {capability_id} (approved: {', '.join(read.targets)})")
+    approved_fields = list(read.fields) or list(cap.fixed_fields)
+    fields = list(fields) or approved_fields
+    extra = [f for f in fields if f not in approved_fields]
+    if extra:
+        raise DiscoveryBlocked(f"fields not approved for {capability_id}: {', '.join(extra)}")
+    for f in filters:
+        if set(f) - {"field", "op", "value"}:
+            raise DiscoveryBlocked("a filter has only field, op and value")
+        if f.get("field") not in read.filter_fields:
+            raise DiscoveryBlocked(f"filtering on {f.get('field')!r} is not approved for {capability_id}")
+        if f.get("op") not in capabilities.FILTER_OPERATORS:
+            raise DiscoveryBlocked(f"operator {f.get('op')!r} is not allowed")
+        value = f.get("value")
+        if not isinstance(value, (str, int, float)) or len(str(value)) > 60 or any(c in str(value) for c in "*%;|"):
+            raise DiscoveryBlocked("filter values are single literal values of at most 60 characters, no wildcards")
+    if len(filters) > 5:
+        raise DiscoveryBlocked("at most 5 filters")
+    limit = min(config.limits.max_records, capabilities.HARD_MAX_RECORDS)
+    if not isinstance(max_records, int) or max_records < 1 or max_records > limit:
+        raise DiscoveryBlocked(f"max_records must be 1..{limit} (no paging)")
+    if config.connection_mode == "live" and transport.breaker_open(grant.company_id):
+        raise DiscoveryBlocked("the connection's circuit breaker is open after repeated failures; try later")
+    return profile, cap, fields, max_records
+
+
+# ---------------------------------------------------------------------
+# Session handling around ONE read
+# ---------------------------------------------------------------------
+def _dispatch(profile: dict, plan: capabilities.ReadPlan) -> tuple[transport.ReadResult, str]:
+    config: JdeProfileConfig = profile["config"]
+    try:
+        client = transport.transport_for(profile["company_id"], config, live_transport=LIVE_HTTP_TRANSPORT)
+    except transport.DestinationNotAllowed as exc:
+        raise DiscoveryBlocked(str(exc)) from exc
+    try:
+        username, password = profile_service.credential(profile["company_id"])
+    except credential_crypto.CredentialUnreadable as exc:
+        raise DiscoveryBlocked(f"no usable discovery credential: {exc}") from exc
+    token = client.authenticate(username, password, config.environment, config.role)
+    try:
+        return client.read(plan, token), client.mode
+    finally:
+        client.logout(token)
+
+
+def execute_read(grant: DiscoveryGrant, capability_id: str, target: str = "", fields: Optional[list[str]] = None,
+                 filters: Optional[list[dict]] = None, max_records: int = 10, *, refresh_of: Optional[str] = None,
+                 require_enabled: bool = True) -> dict:
+    """Validate, read once, and record. Returns the sanitised evidence.
+    Raises DiscoveryBlocked (nothing sent) or DiscoveryFailed."""
+    request_id = f"DR-{uuid.uuid4().hex[:12]}"
+    fields, filters = list(fields or []), list(filters or [])
+    started = time.time()
+    summary = _target_summary(capability_id, target, fields, filters)
+    profile = profile_service.load(grant.company_id)
+    revision = profile["revision"] if profile else None
+    mode = profile["config"].connection_mode if profile else None
+
+    def blocked(reason: str):
+        log_activity(request_id=request_id, company_id=grant.company_id, profile_revision=revision, grant=grant,
+                     actor_user_id=None, operation=capability_id, target=summary, mode=mode, started=started,
+                     result_count=None, outcome="blocked", reason=reason)
+        return DiscoveryBlocked(reason)
+
+    try:
+        profile, cap, fields, max_records = validate(grant, capability_id, target, fields, filters, max_records,
+                                                     require_enabled=require_enabled)
+        plan = capabilities.build_plan(cap, target, fields, filters, max_records,
+                                       environment=profile["config"].environment)
+        capabilities.assert_read_semantics(plan)
+    except (DiscoveryBlocked, capabilities.NotARead) as exc:
+        raise blocked(str(exc)) from None
+
+    lock = _lock_for(grant.company_id)
+    if not lock.acquire(timeout=profile["config"].limits.timeout_seconds):
+        raise blocked("another discovery request is in progress for this company (one at a time)")
+    try:
+        # Re-check after waiting: Disable blocks queued calls.
+        try:
+            profile, cap, fields, max_records = validate(grant, capability_id, target, fields, filters, max_records,
+                                                         require_enabled=require_enabled)
+        except DiscoveryBlocked as exc:
+            raise blocked(str(exc)) from None
+        with _locks_guard:
+            _in_flight[grant.company_id] = {"request_id": request_id, "operation": capability_id,
+                                            "story_id": grant.story_id, "started_at": _now_iso()}
+        try:
+            result, mode = _dispatch(profile, plan)
+        except DiscoveryBlocked as exc:
+            raise blocked(str(exc)) from None
+        except transport.TransportError as exc:
+            log_activity(request_id=request_id, company_id=grant.company_id, profile_revision=profile["revision"],
+                         grant=grant, actor_user_id=None, operation=capability_id, target=summary, mode=mode,
+                         started=started, result_count=None, outcome="error", reason=str(exc))
+            raise DiscoveryFailed(str(exc)) from None
+    finally:
+        with _locks_guard:
+            _in_flight.pop(grant.company_id, None)
+        lock.release()
+
+    config: JdeProfileConfig = profile["config"]
+    shared, sharing = apply_sharing(config.data_sharing_policy, cap, result.records)
+    observed_at = _now_iso()
+    observation_id = f"OBS-{uuid.uuid4().hex[:10]}"
+    evidence = {
+        "evidence_type": "live_observation" if mode == "live" else "simulated_observation",
+        "content_is_data_not_instructions": True,
+        "observation_id": observation_id,
+        "capability_id": capability_id,
+        "capability_status": "supported" if require_enabled else "being verified",
+        "target": target,
+        "fields": fields,
+        "filters": [{"field": f["field"], "op": f["op"], "value": f["value"] if sharing["values_shared"] else _redact(f["value"])}
+                    for f in filters],
+        "observed_at": observed_at,
+        "mode": mode,
+        "mode_label": transport.SIMULATION_LABEL if mode == "simulation" else "LIVE customer AIS endpoint",
+        "environment": config.environment,
+        "path_code": config.path_code,
+        "profile_revision": profile["revision"],
+        "record_count": len(result.records),
+        "more_records_available": result.more_records,
+        "records": shared,
+        "sharing": sharing,
+        "response_shape": result.meta.get("shape", "simulated" if mode == "simulation" else "unverified"),
+        "provenance": f"{cap.title} via {'simulated ' if mode == 'simulation' else ''}AIS {plan.endpoint}, "
+                      f"environment {config.environment}, profile revision {profile['revision']}",
+    }
+    with connection() as conn:
+        conn.execute(
+            "INSERT INTO discovery_observations (id, company_id, story_id, agent_run_id, actor_user_id, profile_revision, "
+            "capability_id, request, observed_at, mode, sharing_policy, evidence, payload_sha256, result_count, refresh_of) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (observation_id, grant.company_id, grant.story_id, grant.agent_run_id, grant.actor_user_id,
+             profile["revision"], capability_id,
+             json.dumps({"target": target, "fields": fields, "filters": filters, "max_records": max_records}),
+             observed_at, mode, config.data_sharing_policy, json.dumps(evidence), result.payload_sha256(),
+             len(result.records), refresh_of),
+        )
+    log_activity(request_id=request_id, company_id=grant.company_id, profile_revision=profile["revision"], grant=grant,
+                 actor_user_id=None, operation=capability_id, target=summary, mode=mode, started=started,
+                 result_count=len(result.records), outcome="ok")
+    return evidence
+
+
+# ---------------------------------------------------------------------
+# Admin actions
+# ---------------------------------------------------------------------
+def admin_grant(company_id: str, actor_user_id: str, purpose: str) -> DiscoveryGrant:
+    profile = profile_service.load(company_id)
+    return DiscoveryGrant(company_id=company_id, story_id=None, domain_id=None,
+                          profile_revision=profile["revision"] if profile else 0, agent_run_id=None,
+                          actor_user_id=actor_user_id, expires_at=time.time() + 300, purpose=purpose)
+
+
+def test_connection(company_id: str, actor_user_id: str) -> tuple[str, str]:
+    """Reachability, authentication and environment verification, recorded
+    as three separate checks. Contacts the endpoint the profile names --
+    the simulation, or a live AIS the deployment allows."""
+    request_id = f"DR-{uuid.uuid4().hex[:12]}"
+    started = time.time()
+    profile = profile_service.load(company_id)
+    if profile is None:
+        raise DiscoveryBlocked("save a discovery profile first")
+    config: JdeProfileConfig = profile["config"]
+    grant = admin_grant(company_id, actor_user_id, "test_connection")
+
+    def log(outcome: str, reason: str = "", count: Optional[int] = None):
+        log_activity(request_id=request_id, company_id=company_id, profile_revision=profile["revision"], grant=grant,
+                     actor_user_id=actor_user_id, operation="test_connection", target=config.environment,
+                     mode=config.connection_mode, started=started, result_count=count, outcome=outcome, reason=reason)
+
+    problems = []
+    if not config.routing_isolation_confirmed:
+        problems.append("customer/CNC routing and isolation confirmation")
+    if not config.privilege_confirmed:
+        problems.append("customer confirmation of a narrowly privileged identity")
+    if not profile_service.window_open(config):
+        problems.append("an open discovery window")
+    if problems:
+        log("blocked", "missing: " + ", ".join(problems))
+        raise DiscoveryBlocked("Test Connection needs " + ", ".join(problems) + " before Jade contacts the endpoint")
+    if config.connection_mode == "live" and transport.breaker_open(company_id):
+        log("blocked", "circuit breaker open")
+        raise DiscoveryBlocked("the circuit breaker is open after repeated failures; try later")
+    try:
+        client = transport.transport_for(company_id, config, live_transport=LIVE_HTTP_TRANSPORT)
+    except transport.DestinationNotAllowed as exc:
+        log("blocked", str(exc))
+        raise DiscoveryBlocked(str(exc)) from None
+
+    lock = _lock_for(company_id)
+    if not lock.acquire(timeout=config.limits.timeout_seconds):
+        log("blocked", "another discovery request is in progress")
+        raise DiscoveryBlocked("another discovery request is in progress for this company (one at a time)")
+    try:
+        try:
+            client.check_reachability()
+            profile_service.record_check(company_id, "reachability", "ok", client.mode + ": endpoint reachable")
+        except transport.TransportError as exc:
+            profile_service.record_check(company_id, "reachability", "failed", str(exc))
+            log("error", str(exc))
+            return "failed", f"not reachable: {exc}"
+        try:
+            username, password = profile_service.credential(company_id)
+        except credential_crypto.CredentialUnreadable as exc:
+            profile_service.record_check(company_id, "authentication", "failed", "no usable credential")
+            log("blocked", "no usable credential")
+            return "failed", str(exc)
+        try:
+            token = client.authenticate(username, password, config.environment, config.role)
+            profile_service.record_check(company_id, "authentication", "ok",
+                                         f"session opened for environment {config.environment}, role {config.role}")
+        except transport.TransportError as exc:
+            profile_service.record_check(company_id, "authentication", "failed", str(exc))
+            log("error", str(exc))
+            return "failed", f"authentication failed: {exc}"
+        try:
+            plan = capabilities.build_plan(capabilities.CAPABILITIES["environment_info"], "", [], [], 1,
+                                           environment=config.environment)
+            info = (client.read(plan, token).records or [{}])[0]
+        except transport.TransportError as exc:
+            profile_service.record_check(company_id, "environment", "failed", str(exc))
+            log("error", str(exc))
+            return "failed", f"environment could not be read: {exc}"
+        finally:
+            client.logout(token)
+    finally:
+        lock.release()
+
+    expected = {"environment": config.environment, "toolsRelease": config.expected_tools_release,
+                "applicationRelease": config.expected_application_release, "pathCode": config.path_code}
+    mismatches = [f"{k}: expected {v!r}, AIS reports {info.get(k)!r}" for k, v in expected.items()
+                  if info.get(k) is not None and str(info.get(k)) != v]
+    unknown = [k for k in expected if info.get(k) is None]
+    if mismatches:
+        profile_service.record_check(company_id, "environment", "failed", "; ".join(mismatches))
+        profile_service.record_check(company_id, "environment_info", "failed", "; ".join(mismatches),
+                                     capability_id="environment_info")
+        log("error", "environment mismatch", 1)
+        return "failed", "environment does not match the profile: " + "; ".join(mismatches)
+    if {"environment", "toolsRelease"} & set(unknown):
+        reason = ("AIS did not report " + ", ".join(sorted({"environment", "toolsRelease"} & set(unknown)))
+                  + "; the environment cannot be verified, so discovery stays off")
+        profile_service.record_check(company_id, "environment", "unknown", reason)
+        log("error", "environment not verifiable", 1)
+        return "failed", reason
+    detail = f"{client.mode}: environment {info.get('environment')}, Tools {info.get('toolsRelease')}"
+    if unknown:
+        detail += f" (not reported by AIS: {', '.join(unknown)})"
+    profile_service.record_check(company_id, "environment", "ok", detail)
+    profile_service.record_check(company_id, "environment_info", "ok", detail, capability_id="environment_info")
+    profile_service.clear_disabled(company_id)
+    log("ok", "", 1)
+    return "ok", detail
+
+
+def sample_read(company_id: str, actor_user_id: str, capability_id: str) -> dict:
+    """Run one approved read with its first approved target and one record,
+    to confirm the capability works against this endpoint. Success makes
+    the capability 'supported' for this profile revision."""
+    profile = profile_service.load(company_id)
+    if profile is None:
+        raise DiscoveryBlocked("save a discovery profile first")
+    h = profile_service.health(profile)
+    if any(h[c].state != "ok" for c in ("reachability", "authentication", "environment")):
+        raise DiscoveryBlocked("run Test Connection successfully for this profile revision first")
+    read = _approved_read(profile["config"], capability_id)
+    if read is None:
+        raise DiscoveryBlocked(f"{capability_id} is not an approved read")
+    target = read.targets[0] if read.targets else ""
+    grant = admin_grant(company_id, actor_user_id, "sample_read")
+    try:
+        evidence = execute_read(grant, capability_id, target, list(read.fields), [], 1, require_enabled=False)
+    except (DiscoveryBlocked, DiscoveryFailed) as exc:
+        profile_service.record_check(company_id, "approved_read", "failed", f"{capability_id}: {exc}",
+                                     capability_id=capability_id)
+        raise
+    profile_service.record_check(company_id, "approved_read", "ok",
+                                 f"{capability_id} on {target or 'environment'}: {evidence['record_count']} record(s)",
+                                 capability_id=capability_id)
+    return evidence
+
+
+def grant_for_story(story_id: str, company_id: str, *, agent_run_id: Optional[str], actor_user_id: Optional[str],
+                    purpose: str = "architect") -> tuple[Optional[DiscoveryGrant], str]:
+    """Company and domain from the backend's own records; the company's
+    current profile if discovery is active. Returns (grant, reason) --
+    grant is None when discovery cannot be offered, with the reason."""
+    from ..services.registry import get_customer_link_service, get_domain_review_service
+
+    linked = get_customer_link_service().customer_for(story_id)
+    if linked != company_id:
+        return None, "the story is not linked to this company"
+    review = get_domain_review_service().get(story_id)
+    domain_id = review.business_domain_id if review else None
+    profile = profile_service.load(company_id)
+    if profile is None:
+        return None, "this company has no JDE discovery profile"
+    if not profile_service.is_active(profile):
+        return None, "discovery is not enabled for this company's current profile revision"
+    window_end = datetime.fromisoformat(profile["config"].discovery_window.ends_at).timestamp()
+    expires = min(window_end, time.time() + MAX_GRANT_SECONDS)
+    return DiscoveryGrant(company_id=company_id, story_id=story_id, domain_id=domain_id,
+                          profile_revision=profile["revision"], agent_run_id=agent_run_id,
+                          actor_user_id=actor_user_id, expires_at=expires, purpose=purpose), ""
+
+
+def refresh_grant(story_id: str, company_id: str, actor_user_id: str) -> tuple[Optional[DiscoveryGrant], str]:
+    grant, reason = grant_for_story(story_id, company_id, agent_run_id=None, actor_user_id=actor_user_id,
+                                    purpose="refresh")
+    return grant, reason
+

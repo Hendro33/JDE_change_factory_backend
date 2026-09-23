@@ -76,6 +76,14 @@ class ArchitectureReviewService:
         )
         self._save(run)
 
+    def attach_baseline(self, story_id: str, baseline_id: str, baseline_sha256: str) -> None:
+        run = self.get(story_id)
+        if run is None or not run.history:
+            return
+        run.history[-1].baseline_id = baseline_id
+        run.history[-1].baseline_sha256 = baseline_sha256
+        self._save(run)
+
     def fail(self, story_id: str, error: str) -> None:
         run = self.get(story_id)
         if run is None:

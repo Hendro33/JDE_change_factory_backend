@@ -43,6 +43,10 @@ class ArchitectAnalysisVersion(ApiModel):
     implementation_spec: ImplementationSpecification
     note: str = ""
     captured_at: str
+    # The immutable evidence manifest recorded for this design revision
+    # (discovery/baseline.py). Absent on analyses recorded before it existed.
+    baseline_id: Optional[str] = None
+    baseline_sha256: Optional[str] = None
 
 
 class ArchitectureReviewRun(ApiModel):

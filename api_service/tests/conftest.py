@@ -53,6 +53,15 @@ def isolated_dirs(tmp_path, monkeypatch):
     # The gate re-reads the approver's current roles from this database.
     monkeypatch.setenv("JDE_AUTH_DB_PATH", str(api_data_dir / "jde.sqlite3"))
     monkeypatch.setenv("JDE_WRITE_PAUSE_FILE", str(tmp_path / "WRITE_PAUSED"))
+    monkeypatch.setenv("JDE_DESIGN_BASELINE_DIR", str(api_data_dir / "design_baselines"))
+    # Discovery: a fresh simulated estate and closed circuit breakers per test;
+    # live discovery stays switched off unless a test turns it on.
+    from jde_api_service.discovery import transport as discovery_transport
+
+    discovery_transport.reset_simulations()
+    discovery_transport._breakers.clear()
+    monkeypatch.delenv("JDE_DISCOVERY_LIVE_ENABLED", raising=False)
+    monkeypatch.delenv("JDE_DISCOVERY_ALLOWED_HOSTS", raising=False)
     # mcp_server's Settings is frozen (by design, and it isn't ours to
     # modify) -- rebind the module-level `settings` name to a fresh
     # instance instead of mutating the existing one. change_service.py

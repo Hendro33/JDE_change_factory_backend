@@ -36,11 +36,30 @@ class AisConnectionStatus(ApiModel):
     role: Optional[str] = None
 
 
+class DiscoveryProfileSummary(ApiModel):
+    """A read-only reference to the authoritative JDE discovery profile
+    (Admin > Integrations > JDE). ERP Landscape never stores or edits
+    connection settings itself."""
+
+    configured: bool
+    revision: int = 0
+    environment: Optional[str] = None
+    path_code: Optional[str] = None
+    application_release: Optional[str] = None
+    tools_release: Optional[str] = None
+    mode: Optional[str] = None
+    discovery_enabled: bool = False
+    disabled: bool = False
+    health: dict[str, str] = {}
+
+
 class ErpLandscape(ApiModel):
     customer_id: str
     tools_release: str
     environment: str
+    # The EXECUTION gate's connection (process-wide, separate from discovery).
     ais: AisConnectionStatus
+    discovery_profile: Optional[DiscoveryProfileSummary] = None
     engagement_scope_configured: bool
     # Deliberately always present and always the same text: this is a
     # structural fact about the current architecture, not a per-call

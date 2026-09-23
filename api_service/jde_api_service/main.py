@@ -28,6 +28,7 @@ from .routers import (
     change_requests,
     changes,
     company_users,
+    discovery,
     domain_governance,
     session,
 )
@@ -67,6 +68,9 @@ def _wire_execution_gate() -> None:
         "JDE_AUTH_DB_PATH": db_path(),
         # Present while a backup or restore holds writes (services/write_pause.py).
         "JDE_WRITE_PAUSE_FILE": write_pause.pause_file(),
+        # Each design's evidence baseline, for the Functional/Technical agents
+        # (mcp_server get_design_baseline). Written by discovery/baseline.py.
+        "JDE_DESIGN_BASELINE_DIR": os.path.join(settings.data_dir, "design_baselines"),
     }
     for name, default in wiring.items():
         os.environ.setdefault(name, os.path.abspath(default))
@@ -145,6 +149,7 @@ app.include_router(domain_governance.router)
 app.include_router(architecture_review.router)
 app.include_router(admin.router)
 app.include_router(company_users.router)
+app.include_router(discovery.router)
 
 
 @app.exception_handler(RevisionConflict)

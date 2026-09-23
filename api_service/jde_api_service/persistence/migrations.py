@@ -202,4 +202,118 @@ MIGRATIONS: list[tuple[int, str]] = [
         ALTER TABLE company_memberships ADD COLUMN revision INTEGER NOT NULL DEFAULT 1;
         """,
     ),
+    (
+        5,
+        """
+        -- Architect Environment Discovery (discovery/). Company-specific,
+        -- read-only JDE discovery profile: non-secret settings are JSON in
+        -- config; the credential secret is encrypted (credential_crypto);
+        -- every saved revision is kept in jde_profile_revisions.
+        CREATE TABLE jde_profiles (
+            company_id TEXT PRIMARY KEY,
+            revision INTEGER NOT NULL,
+            config TEXT NOT NULL,
+            material_hash TEXT NOT NULL,
+            credential_username TEXT,
+            credential_secret TEXT,
+            credential_revision INTEGER NOT NULL DEFAULT 0,
+            credential_updated_at TEXT,
+            credential_updated_by TEXT,
+            health TEXT NOT NULL DEFAULT '{}',
+            capability_checks TEXT NOT NULL DEFAULT '{}',
+            discovery_enabled INTEGER NOT NULL DEFAULT 0,
+            enabled_material_hash TEXT,
+            enabled_by TEXT,
+            enabled_at TEXT,
+            disabled INTEGER NOT NULL DEFAULT 0,
+            disabled_by TEXT,
+            disabled_at TEXT,
+            updated_at TEXT NOT NULL,
+            updated_by TEXT NOT NULL
+        );
+        CREATE TABLE jde_profile_revisions (
+            company_id TEXT NOT NULL,
+            revision INTEGER NOT NULL,
+            config TEXT NOT NULL,
+            material_hash TEXT NOT NULL,
+            credential_revision INTEGER NOT NULL,
+            saved_at TEXT NOT NULL,
+            saved_by TEXT NOT NULL,
+            PRIMARY KEY (company_id, revision)
+        );
+        -- Sanitised: operation, target shape, counts and outcome only --
+        -- never credentials, tokens, filter values or business payloads.
+        CREATE TABLE discovery_activity (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            request_id TEXT NOT NULL,
+            company_id TEXT NOT NULL,
+            profile_revision INTEGER,
+            actor_user_id TEXT,
+            agent_run_id TEXT,
+            story_id TEXT,
+            operation TEXT NOT NULL,
+            target TEXT NOT NULL,
+            mode TEXT,
+            started_at TEXT NOT NULL,
+            duration_ms INTEGER,
+            result_count INTEGER,
+            outcome TEXT NOT NULL,
+            reason TEXT NOT NULL DEFAULT ''
+        );
+        CREATE INDEX idx_discovery_activity_company ON discovery_activity(company_id, id);
+        -- Immutable: a refresh adds a new row (refresh_of) instead of editing.
+        CREATE TABLE discovery_observations (
+            id TEXT PRIMARY KEY,
+            company_id TEXT NOT NULL,
+            story_id TEXT,
+            agent_run_id TEXT,
+            actor_user_id TEXT,
+            profile_revision INTEGER NOT NULL,
+            capability_id TEXT NOT NULL,
+            request TEXT NOT NULL,
+            observed_at TEXT NOT NULL,
+            mode TEXT NOT NULL,
+            sharing_policy TEXT NOT NULL,
+            evidence TEXT NOT NULL,
+            payload_sha256 TEXT NOT NULL,
+            result_count INTEGER NOT NULL,
+            refresh_of TEXT
+        );
+        CREATE INDEX idx_discovery_observations_story ON discovery_observations(company_id, story_id);
+        -- Technical exports and reference documents: immutable revisions.
+        CREATE TABLE technical_artifacts (
+            artifact_id TEXT NOT NULL,
+            revision INTEGER NOT NULL,
+            company_id TEXT NOT NULL,
+            domain_id TEXT,
+            kind TEXT NOT NULL,
+            meta TEXT NOT NULL,
+            sha256 TEXT NOT NULL,
+            size_bytes INTEGER NOT NULL,
+            storage_key TEXT NOT NULL,
+            extraction_status TEXT NOT NULL,
+            extraction_note TEXT NOT NULL DEFAULT '',
+            uploaded_by TEXT NOT NULL,
+            uploaded_at TEXT NOT NULL,
+            PRIMARY KEY (artifact_id, revision)
+        );
+        CREATE INDEX idx_technical_artifacts_company ON technical_artifacts(company_id);
+        -- One immutable evidence manifest per Architect design revision (and
+        -- per refresh). Only status/reassessment change afterwards.
+        CREATE TABLE design_baselines (
+            baseline_id TEXT PRIMARY KEY,
+            company_id TEXT NOT NULL,
+            story_id TEXT NOT NULL,
+            design_revision INTEGER NOT NULL,
+            baseline_revision INTEGER NOT NULL,
+            created_at TEXT NOT NULL,
+            trigger TEXT NOT NULL,
+            manifest TEXT NOT NULL,
+            manifest_sha256 TEXT NOT NULL,
+            status TEXT NOT NULL,
+            reassessment TEXT NOT NULL DEFAULT '[]'
+        );
+        CREATE INDEX idx_design_baselines_story ON design_baselines(company_id, story_id);
+        """,
+    ),
 ]

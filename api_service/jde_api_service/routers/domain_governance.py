@@ -444,6 +444,7 @@ def application_manager_approve(
         repo_root=settings.repo_root,
         run_service=get_architecture_review_service(),
         customer_id=ctx.customer_id,
+        initiated_by=ctx.identity.id,
     )
     return updated
 
