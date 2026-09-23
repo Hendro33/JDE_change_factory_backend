@@ -24,7 +24,7 @@ import httpx
 
 from .config import settings
 from .backlog import require_approved
-from .scope import reject_if_oracle_owned_version, check_functional_scope, check_allowed_value
+from .scope import reject_if_oracle_owned_version, check_functional_scope, check_allowed_value, load_company_scope
 from .approval import require_exact_change, require_change_covers_test
 
 # Fill this in with the exact, validated FSR event sequence from the
@@ -118,7 +118,8 @@ class AISClient:
     #      version (XJDE/ZJDE) that must never be written to directly
     #   4. Engagement scope (Appendix D.2) -- is this specific
     #      application/version/option/value combination one this
-    #      customer has actually authorised
+    #      company has actually authorised (the story's own company,
+    #      from its intake link -- see scope.company_for_story)
     # None of these substitutes for another. A story can be approved,
     # the exact change can be approved, and the write can still be an
     # Oracle template or an out-of-scope option -- all four must hold.
@@ -127,9 +128,9 @@ class AISClient:
     ) -> dict[str, Any]:
         require_approved(story_id)
         operation = {"tool": "set_processing_option", "story_id": story_id, "application": application, "version": version, "option": option, "value": value}
-        require_exact_change(change_id, operation)
+        record = require_exact_change(change_id, operation)
         reject_if_oracle_owned_version(version)
-        scope_entry = check_functional_scope(application, version, option)
+        scope_entry = check_functional_scope(load_company_scope(record["company_id"]), application, version, option)
         check_allowed_value(scope_entry, value)
         if settings.mock_mode:
             return _mock_fixture(

@@ -27,6 +27,9 @@ class ArchitectureReviewService:
         doc = self._store.get(story_id)
         return ArchitectureReviewRun.model_validate(doc) if doc else None
 
+    def list_all(self) -> list[ArchitectureReviewRun]:
+        return [ArchitectureReviewRun.model_validate(doc) for doc in self._store.list_all()]
+
     def start(self, story_id: str) -> ArchitectureReviewRun:
         """A (re)start -- the manual retrigger, or the automatic run
         Gate 1 schedules. Preserves any existing history/conversation:

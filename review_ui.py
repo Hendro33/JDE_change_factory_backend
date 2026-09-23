@@ -8,9 +8,12 @@ Local review console for the human decision points.
 
 WHAT THIS IS
 This is a browser front-end for exactly the same functions
-backlog_review.py calls -- backlog.approve/reject and
-approval.approve_change/reject_change. It is a nicer way to reach the
-same enforced code path, not a second path around it. Anything the
+backlog_review.py calls -- backlog.approve/reject for stories. Exact
+changes are shown read-only: approving or rejecting one needs an
+authenticated approver whose role the company's approval policy
+allows, which only Jade itself (api_service) can establish. It is a
+nicer way to reach the same enforced code path, not a second path
+around it. Anything the
 gate refuses on the command line, it refuses here, for the same reason.
 
 WHAT THIS IS DELIBERATELY NOT
@@ -38,6 +41,10 @@ import os
 import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
+
+EXACT_CHANGE_DECISIONS_MOVED = (
+    "Exact-change decisions need an authenticated approver whose role the company's approval policy allows. This local tool has no login, so it cannot make them: approve or reject the change in Jade (Governance > Architecture Review)."
+)
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "mcp_server"))
 
@@ -206,16 +213,9 @@ function changeCard(c){
     <p style="font-size:13px;color:var(--muted);margin:8px 0 0">
       This is precisely what will run. If the operation differs from this by even one character
       when it executes, it will be refused automatically.</p>
-    <div class="actions">
-      <input id="cn-${esc(c.change_id)}" placeholder="reason (required to reject, optional to approve)">
-      <button class="go" onclick="act('/api/approve-change',{change_id:'${esc(c.change_id)}',note:document.getElementById('cn-${esc(c.change_id)}').value})">Approve this exact change</button>
-      <button class="no" onclick="rejc('${esc(c.change_id)}')">Reject</button>
-    </div></div>`;
-}
-function rejc(id){
-  const n = document.getElementById("cn-"+id).value.trim();
-  if(!n){ alert("A rejection needs a reason."); return; }
-  act("/api/reject-change", {change_id:id, note:n});
+    <p style="font-size:13px;margin:8px 0 0"><strong>Decide this in Jade</strong> (Governance &gt;
+      Architecture Review): exact-change approval needs a signed-in approver whose role this
+      company's approval policy allows.</p></div>`;
 }
 
 function pill(s){
@@ -307,10 +307,8 @@ class Handler(BaseHTTPRequestHandler):
                 backlog.approve(body["story_id"], who, note)
             elif p == "/api/reject-story":
                 backlog.reject(body["story_id"], who, note)
-            elif p == "/api/approve-change":
-                approval.approve_change(body["change_id"], who, note=note)
-            elif p == "/api/reject-change":
-                approval.reject_change(body["change_id"], who, note)
+            elif p in ("/api/approve-change", "/api/reject-change"):
+                return self._send(200, json.dumps({"ok": False, "error": EXACT_CHANGE_DECISIONS_MOVED}))
             else:
                 return self._send(404, json.dumps({"ok": False, "error": "not found"}))
             return self._send(200, json.dumps({"ok": True}))

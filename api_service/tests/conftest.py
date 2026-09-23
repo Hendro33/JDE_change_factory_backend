@@ -36,6 +36,17 @@ def isolated_dirs(tmp_path, monkeypatch):
     monkeypatch.setattr(api_settings, "data_dir", str(api_data_dir))
     monkeypatch.setattr(backlog_module, "BACKLOG_DIR", str(backlog_dir))
     monkeypatch.setattr(approval_module, "CHANGE_DIR", str(change_dir))
+    # The execution gate reads each company's saved scope and the
+    # story -> company links from this service's own data directory
+    # (main._wire_execution_gate does the same at startup).
+    from jde_mcp_server import scope as scope_module
+
+    for env_name, attr, sub in (
+        ("JDE_COMPANY_SCOPE_DIR", "COMPANY_SCOPE_DIR", "engagement_scope"),
+        ("JDE_STORY_COMPANY_DIR", "STORY_COMPANY_DIR", "customer_links"),
+    ):
+        monkeypatch.setenv(env_name, str(api_data_dir / sub))
+        monkeypatch.setattr(scope_module, attr, str(api_data_dir / sub))
     # mcp_server's Settings is frozen (by design, and it isn't ours to
     # modify) -- rebind the module-level `settings` name to a fresh
     # instance instead of mutating the existing one. change_service.py

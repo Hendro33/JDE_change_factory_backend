@@ -11,6 +11,7 @@ Run locally:
 from __future__ import annotations
 
 import logging
+import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
@@ -32,7 +33,10 @@ from .routers import (
 )
 from .persistence.db import ensure_schema
 from .persistence.revisions import RevisionConflict, RevisionRequired
+from jde_mcp_server import scope as mcp_scope
+
 from .services.bootstrap_service import ensure_bootstrap_admin
+from .services.run_recovery import reconcile_interrupted_runs
 from .services.customer_service import ensure_seed_companies
 from .services.registry import (
     get_business_domain_service,
@@ -47,9 +51,29 @@ from .services.seed_service import (
 
 
 @asynccontextmanager
+def _wire_execution_gate() -> None:
+    """Point mcp_server's execution gate at the records this service
+    owns: each company's Admin-saved engagement scope and the story ->
+    company links recorded at intake. Exported as environment variables
+    too, so an MCP server process started for an agent run inherits the
+    same two directories. An explicit environment setting wins."""
+    wiring = {
+        "JDE_COMPANY_SCOPE_DIR": os.path.join(settings.data_dir, "engagement_scope"),
+        "JDE_STORY_COMPANY_DIR": os.path.join(settings.data_dir, "customer_links"),
+    }
+    for name, default in wiring.items():
+        os.environ.setdefault(name, os.path.abspath(default))
+    mcp_scope.COMPANY_SCOPE_DIR = os.environ["JDE_COMPANY_SCOPE_DIR"]
+    mcp_scope.STORY_COMPANY_DIR = os.environ["JDE_STORY_COMPANY_DIR"]
+
+
 async def _lifespan(app: FastAPI):
     # Idempotent -- safe on every restart, never duplicates existing
     # records or resets anything already there.
+    _wire_execution_gate()
+    interrupted = reconcile_interrupted_runs()
+    if any(interrupted.values()):
+        logger.warning("Marked runs interrupted by the restart as failed: %s", interrupted)
     ensure_schema()
     ensure_seed_companies()
     ensure_bootstrap_admin()

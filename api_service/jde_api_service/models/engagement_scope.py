@@ -1,28 +1,26 @@
 """
-EngagementScope -- the per-customer, human-authored configuration that
-answers "what is this engagement actually authorised to touch in JDE."
+EngagementScope -- the per-company, Admin-saved configuration that
+answers "what is this engagement actually authorised to touch in JDE,
+and who may approve it."
 
-This is api_service's own, customer-scoped counterpart to the single
-global scope.json the design document's Appendix D.2/E.2 describes and
-mcp_server/jde_mcp_server/scope.py enforces. It does NOT replace
-scope.json and does NOT change how mcp_server enforces engagement scope
--- that module stays exactly as it is (sibling package, unmodified).
-Today there is exactly one scope.json for the whole deployment, keyed
-by nothing; this model is the intended per-customer source of truth an
-operator would export into that file per engagement, once the MCP/AIS
-layer itself becomes multi-tenant -- a larger, explicitly out-of-scope
-change this increment does not attempt (see the ERP Landscape screen's
-own honesty note, surfaced via models/admin.py).
+This record IS what the execution gate enforces: mcp_server's scope.py
+reads the stored file for the story's own company (JDE_COMPANY_SCOPE_DIR,
+wired up in main.py). The stored document is snake_case and that file
+format is the contract between the two packages. Missing sections
+authorise nothing; a missing or unreadable approval policy blocks both
+approval and execution.
 
-Same "no configuration means no default permission" principle scope.py
-already applies: an EngagementScope with no approved_versions/
-authorized_object_types authorises nothing, and is shown as such rather
-than silently defaulted to something permissive.
+Two sections are reference only and are not read by the gate:
+functional_agent.never_touch_categories and the free-text approvers
+lists. Approval authority comes from company roles plus approval_policy.
 """
 
 from __future__ import annotations
 
-from typing import Optional
+from datetime import datetime
+from typing import Literal, Optional
+
+from pydantic import Field, field_validator
 
 from .base import ApiModel
 
@@ -53,6 +51,19 @@ class SpikeExperiment(ApiModel):
     # Stamped server-side from the authenticated session when saved.
     approved_by: Optional[str] = None
     approved_at: Optional[str] = None
+
+    @field_validator("expires_at")
+    @classmethod
+    def _dated(cls, value: str) -> str:
+        # The gate treats an unreadable or zone-less expiry as no expiry
+        # (allows nothing); refusing it here makes that visible on save.
+        try:
+            parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+        except ValueError:
+            raise ValueError("expires_at must be an ISO-8601 date-time")
+        if parsed.tzinfo is None:
+            raise ValueError("expires_at must include a timezone, e.g. 2026-10-31T17:00:00+01:00")
+        return value.strip()
 
 
 class FunctionalAgentScope(ApiModel):
@@ -88,12 +99,27 @@ class EnvironmentBinding(ApiModel):
     isolation_confirmed_at: Optional[str] = None
 
 
+ApproverRole = Literal["admin", "product_manager", "domain_owner"]
+
+
+class ApprovalPolicy(ApiModel):
+    """Who may approve an exact change for this company, and for how
+    long that approval stays valid. The gate (scope.require_approval_policy)
+    refuses any other version or field -- keep the two in step."""
+
+    policy_version: Literal[1] = 1
+    exact_change_approver_roles: list[ApproverRole] = Field(min_length=1)
+    approval_valid_hours: int = Field(default=24, ge=1, le=168)
+
+
 class EngagementScope(ApiModel):
     customer_id: str
     tools_release: str = ""
     environment: EnvironmentBinding = EnvironmentBinding()
     functional_agent: FunctionalAgentScope = FunctionalAgentScope()
     technical_agent: TechnicalAgentScope = TechnicalAgentScope()
+    # None = no policy: nobody can approve an exact change, nothing executes.
+    approval_policy: Optional[ApprovalPolicy] = None
     # 0 = never saved. Incremented on every save; the execution gate
     # stamps it onto change records as the scope revision used.
     revision: int = 0
@@ -114,5 +140,6 @@ class EngagementScopeUpdate(ApiModel):
     environment: EnvironmentBinding = EnvironmentBinding()
     functional_agent: FunctionalAgentScope = FunctionalAgentScope()
     technical_agent: TechnicalAgentScope = TechnicalAgentScope()
+    approval_policy: Optional[ApprovalPolicy] = None
     # The revision the client loaded; required once the scope exists.
     expected_revision: Optional[int] = None

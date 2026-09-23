@@ -80,7 +80,16 @@ def test_exact_change_surfaces_capability_status_and_executability(client, monke
         {"tool": "set_processing_option", "application": "P4210", "version": "CIQ0001", "option": "PDOCTYPE", "value": "SO"},
         "processing_option_update",
     )
-    approval_module.approve_change(record["change_id"], "Hendro", note="approved for the test")
+    # An Admin sets the company's approval policy -- without one nothing can be approved.
+    r = client.put(
+        "/admin/engagement-scope",
+        headers=headers(customer="vdb"),
+        json={"approvalPolicy": {"policyVersion": 1, "exactChangeApproverRoles": ["product_manager"], "approvalValidHours": 24}},
+    )
+    assert r.status_code == 200, r.text
+    approval_module.approve_change(
+        record["change_id"], "Hendro", company_id="vdb", approver_roles={"product_manager"}, note="approved for the test"
+    )
 
     r = client.get(f"/changes/{story_id}", headers=headers(customer="vdb"))
     assert r.status_code == 200
@@ -89,7 +98,7 @@ def test_exact_change_surfaces_capability_status_and_executability(client, monke
     assert ec["capabilityStatus"] == "needs_spike"
     # Approved at both the story and exact-change level, but the
     # capability itself is Needs spike with no matching spike
-    # experiment in this test's (nonexistent) scope.json -- so not
+    # experiment in this company's scope -- so not
     # executable, and the API must say so explicitly rather than
     # implying "approved" means "will execute."
     assert ec["capabilityExecutable"] is False

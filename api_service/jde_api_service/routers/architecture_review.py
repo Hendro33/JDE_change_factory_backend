@@ -7,8 +7,9 @@ moment Gate 1 clears, the same way /changes/{id}/enhance already
 starts Receive/Improve/Check. The manual trigger below exists only for
 retry after a failed run; a human should not normally need it.
 
-Gate 2 -- "Jade may execute this specific proposed change" -- reuses
-approval.py's existing, unmodified approve_change()/reject_change().
+Gate 2 -- "Jade may execute this specific proposed change" -- calls
+approval.py's approve_change()/reject_change(), passing the approver's
+company and roles from the authenticated session.
 This router does not create a second approval system: it resolves
 which pending change record belongs to this story (via
 approval.list_pending_changes(), the same read-only function
@@ -20,6 +21,7 @@ from __future__ import annotations
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 
 from jde_mcp_server import approval
+from jde_mcp_server.scope import ScopeViolation
 
 from ..config import settings
 from ..dependencies import AuthContext, require_customer_access, require_write_access
@@ -149,11 +151,26 @@ def approve_exact_change(
     change_id: str, payload: GovernanceDecisionInput, ctx: AuthContext = Depends(require_write_access)
 ) -> dict:
     """Gate 2 -- "Jade may execute this specific proposed change."
-    Reuses approval.approve_change() unmodified; this is the
-    authoritative approval record, not a copy of it."""
+    approval.approve_change() is the authoritative approval record, not
+    a copy of it. It refuses unless the company has an approval policy
+    and the caller holds a role that policy allows."""
     _require_queued_change(change_id, ctx.customer_id)
     record = _pending_change_record(change_id)
-    approval.approve_change(record["change_id"], ctx.identity.display_name, note=payload.note)
+    try:
+        # Authority comes from this company's approval policy and the
+        # approver's roles on this company -- both from the session.
+        approval.approve_change(
+            record["change_id"],
+            ctx.identity.display_name,
+            company_id=ctx.customer_id,
+            approver_roles=ctx.roles,
+            note=payload.note,
+        )
+    except approval.ApproverNotAuthorised as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
+    except (approval.ChangeApprovalError, ScopeViolation) as exc:
+        # No policy, no scope, wrong company or not pending: refused, never defaulted.
+        raise HTTPException(status_code=409, detail=str(exc))
     get_decision_feedback_service().record(
         change_id=change_id,
         customer_id=ctx.customer_id,
@@ -175,7 +192,10 @@ def reject_exact_change(
     if not payload.note:
         raise HTTPException(status_code=422, detail="a rejection must include a reason")
     record = _pending_change_record(change_id)
-    approval.reject_change(record["change_id"], ctx.identity.display_name, payload.note)
+    try:
+        approval.reject_change(record["change_id"], ctx.identity.display_name, payload.note, company_id=ctx.customer_id)
+    except approval.ChangeApprovalError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
     get_decision_feedback_service().record(
         change_id=change_id,
         customer_id=ctx.customer_id,

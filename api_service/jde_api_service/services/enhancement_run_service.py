@@ -24,6 +24,9 @@ class EnhancementRunService:
         doc = self._store.get(request_id)
         return EnhancementRun.model_validate(doc) if doc else None
 
+    def list_all(self) -> list[EnhancementRun]:
+        return [EnhancementRun.model_validate(doc) for doc in self._store.list_all()]
+
     def start(self, request_id: str) -> EnhancementRun:
         now = _now()
         run = EnhancementRun(request_id=request_id, stage="receiving", started_at=now, updated_at=now)

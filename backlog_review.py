@@ -18,8 +18,11 @@ Usage:
 
     python3 backlog_review.py list-changes
     python3 backlog_review.py show-change CHANGE_ID
-    python3 backlog_review.py approve-change CHANGE_ID "your name" ["optional note"]
-    python3 backlog_review.py reject-change CHANGE_ID "your name" "reason (required)"
+
+Exact changes are listed and shown here, but approved or rejected only
+in Jade (Governance > Architecture Review): that decision needs an
+authenticated approver whose role the company's approval policy
+allows, which a local script cannot establish.
 """
 
 import sys
@@ -108,15 +111,17 @@ def cmd_show_change(change_id: str):
     print(f"'{change_id}' isn't pending (already decided, or doesn't exist).")
 
 
-def cmd_approve_change(change_id: str, approved_by: str, note: str = ""):
-    approval.approve_change(change_id, approved_by, note=note)
-    print(f"Approved change {change_id} by {approved_by}. It can now execute -- if the")
-    print("operation is called exactly as approved, and the PreToolUse hook also clears it.")
+EXACT_CHANGE_DECISIONS_MOVED = (
+    "Exact-change decisions need an authenticated approver whose role the company's approval policy allows. This local tool has no login, so it cannot make them: approve or reject the change in Jade (Governance > Architecture Review)."
+)
 
 
-def cmd_reject_change(change_id: str, approved_by: str, note: str):
-    approval.reject_change(change_id, approved_by, note)
-    print(f"Rejected change {change_id} by {approved_by}: {note}")
+def cmd_approve_change(*_args):
+    raise approval.ChangeApprovalError(EXACT_CHANGE_DECISIONS_MOVED)
+
+
+def cmd_reject_change(*_args):
+    raise approval.ChangeApprovalError(EXACT_CHANGE_DECISIONS_MOVED)
 
 
 if __name__ == "__main__":

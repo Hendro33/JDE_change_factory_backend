@@ -90,8 +90,10 @@ def propose_change(story_id: str, operation: dict, capability_id: str, environme
     the Functional Agent intends to execute against an already-approved
     story (Section 15.3), and the catalogue capability it is exercising
     (capability_catalog.json's capability_id -- Functional Agent design
-    update Section 5.2). Fails closed if capability_id is unknown, or if
-    'environment' isn't a confirmed-isolated DEV (scope.json). Returns a
+    update Section 5.2). Fails closed if capability_id is unknown, if
+    'environment' isn't DEV, or if the story isn't linked to a company
+    (the company is taken from the story's intake record, never from
+    this call). Returns a
     pending change record with a change_id -- this does NOT approve
     anything. A human approves it separately via backlog_review.py
     before set_processing_option will accept the matching change_id."""

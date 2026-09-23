@@ -127,11 +127,10 @@ def get_customer_profile(ctx: AuthContext = Depends(require_customer_access)) ->
 # ERP / JDE Landscape
 # ---------------------------------------------------------------------
 _SCOPE_SHARED_NOTE = (
-    "mcp_server's JDE (AIS) connection and its scope.json engagement file are still a single, global "
-    "configuration shared by every customer in this deployment -- they are not yet customer-specific. The "
-    "Engagement Scope below is this customer's own intended configuration; it is the source an operator would "
-    "export into scope.json for this engagement, but it is not yet wired into mcp_server's live enforcement. "
-    "Making the JDE connection and scope genuinely per-customer is a larger change, out of scope here."
+    "The Engagement Scope below is this company's own and is what the execution gate enforces for its "
+    "stories: approved versions, dated spike experiments, the DEV environment binding and the approval "
+    "policy. The JDE (AIS) connection itself is still one deployment-wide setting shared by every company; "
+    "making it per-company is a later step."
 )
 
 

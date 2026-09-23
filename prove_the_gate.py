@@ -6,9 +6,8 @@ anything else with a real story.
     python3 prove_the_gate.py
 
 It proves, in order, using its own throwaway story IDs and a temporary
-test scope (your real scope.json is backed up and restored afterwards,
-so this is safe to run before you've filled it in for real, and safe
-to re-run any time):
+test company whose scope and story links live in a temporary directory
+(nothing of yours is read or changed, so it is safe to re-run any time):
 
   1. A story that hasn't been approved cannot be written to.
   2. An approved story with no approved change still cannot be written to.
@@ -21,8 +20,14 @@ to re-run any time):
   8. A change proposed for a non-DEV environment is refused.
   9. A capability at Needs spike cannot execute as an ordinary write --
      even with an otherwise-valid story/change/scope approval.
- 10. The SAME Needs-spike capability CAN execute once (and only once)
-     scope.json explicitly approves it as a bounded spike experiment.
+ 10. The SAME Needs-spike capability CAN execute once the company's
+     scope explicitly approves it as a dated spike experiment.
+ 11. An expired spike experiment allows nothing.
+ 12. A story not linked to a company cannot even be proposed.
+ 13. A company with no saved scope cannot approve anything.
+ 14. With no approval policy, nobody can approve an exact change.
+ 15. An approver whose role the policy does not allow is refused.
+ 16. An approval past its policy-set validity cannot execute or run tests.
 
 If every line says PASS, the safety model this whole project depends
 on is actually working on your machine, not just described in a
@@ -31,8 +36,9 @@ document.
 
 import json
 import os
-import shutil
 import sys
+import tempfile
+import time
 
 os.environ["JDE_MCP_MOCK_MODE"] = "true"
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "mcp_server"))
@@ -60,15 +66,34 @@ def _clean_test_files() -> None:
                     os.remove(os.path.join(d, fn))
 
 
-print("Setting up a temporary test scope (your real scope.json, if any, is untouched)...")
-had_scope = os.path.exists("scope.json")
-if had_scope:
-    shutil.copy("scope.json", "scope.json.bak-before-gate-test")
+print("Setting up a temporary test company (nothing of yours is read or changed)...")
+_tmp = tempfile.TemporaryDirectory(prefix="jade-gate-test-")
+SCOPE_DIR = os.path.join(_tmp.name, "engagement_scope")
+LINK_DIR = os.path.join(_tmp.name, "customer_links")
+os.makedirs(SCOPE_DIR)
+os.makedirs(LINK_DIR)
+# Set before jde_mcp_server is imported below, which reads them once.
+os.environ["JDE_COMPANY_SCOPE_DIR"] = SCOPE_DIR
+os.environ["JDE_STORY_COMPANY_DIR"] = LINK_DIR
+COMPANY = "GATE-TEST-CO"
+APPROVER_ROLES = {"product_manager"}
+
+
+def write_scope(scope: dict) -> None:
+    with open(os.path.join(SCOPE_DIR, f"{COMPANY}.json"), "w", encoding="utf-8") as f:
+        json.dump(scope, f, indent=2)
+
+
+def link(story_id: str, company: str = COMPANY) -> None:
+    with open(os.path.join(LINK_DIR, f"{story_id}.json"), "w", encoding="utf-8") as f:
+        json.dump({"story_id": story_id, "customer_id": company}, f)
+
 
 test_scope = {
-    "customer": "GATE-TEST",
+    "customer_id": COMPANY,
     "tools_release": "TEST",
-    "scope_revision": "GATE-TEST-1",
+    "revision": 1,
+    "approval_policy": {"policy_version": 1, "exact_change_approver_roles": ["product_manager"], "approval_valid_hours": 24},
     "environment": {
         "dev_environment_id": "DV900TEST",
         "dev_path_code": "TEST",
@@ -120,14 +145,17 @@ test_scope = {
     },
     "technical_agent": {"authorized_object_types": [], "reserved_product_code": "56", "naming_prefix": "TST", "approvers": []},
 }
-with open("scope.json", "w", encoding="utf-8") as f:
-    json.dump(test_scope, f, indent=2)
+write_scope(test_scope)
+for sid in ("GATE-TEST-1", "GATE-TEST-2", "GATE-TEST-3", "GATE-TEST-4"):
+    link(sid)
 
 _clean_test_files()
 
 try:
     from jde_mcp_server.ais_client import client
-    from jde_mcp_server.approval import ChangeApprovalError, approve_change, propose_change
+    from jde_mcp_server.approval import ApproverNotAuthorised, ChangeApprovalError, approve_change, propose_change
+    from jde_mcp_server import approval as approval_module
+    from jde_mcp_server.scope import ScopeViolation
     from jde_mcp_server.backlog import (
         StoryNotApproved,
         approve,
@@ -159,7 +187,7 @@ try:
         check("still cannot be written to", True)
 
     print("\n3. Approving the change, then trying a DIFFERENT value than what was approved...")
-    approve_change(change["change_id"], "Gate Test Runner", note="approving for the gate test")
+    approve_change(change["change_id"], "Gate Test Runner", company_id=COMPANY, approver_roles=APPROVER_ROLES, note="approving for the gate test")
     try:
         client.set_processing_option("GATE-TEST-1", change["change_id"], "P4210", "TESTVER01", "PDOCTYPE", "SV")
         check("a tampered operation is refused", False)
@@ -206,14 +234,14 @@ try:
         "application": "P4210", "version": "TESTVER02", "option": "PDOCTYPE", "value": "SO",
     }
     change2 = propose_change("GATE-TEST-3", op2, "processing_option_update")
-    approve_change(change2["change_id"], "Gate Test Runner", note="approving for the gate test")
+    approve_change(change2["change_id"], "Gate Test Runner", company_id=COMPANY, approver_roles=APPROVER_ROLES, note="approving for the gate test")
     try:
         client.set_processing_option("GATE-TEST-3", change2["change_id"], "P4210", "TESTVER02", "PDOCTYPE", "SO")
         check("a fully-approved change on a Needs-spike capability is still refused without a spike experiment", False)
     except CapabilityError:
         check("a fully-approved change on a Needs-spike capability is still refused without a spike experiment", True)
 
-    print("\n10. The SAME operation, once scope.json approves it as a bounded spike experiment...")
+    print("\n10. The SAME operation, once the company scope approves it as a dated spike experiment...")
     test_scope["functional_agent"]["spike_experiments"].append({
         "capability_id": "processing_option_update",
         "capability_revision": "r1",
@@ -226,23 +254,84 @@ try:
         "expires_at": "2099-01-01T00:00:00Z",
         "note": "prove_the_gate.py step 10 -- approving the same target as a spike experiment",
     })
-    with open("scope.json", "w", encoding="utf-8") as f:
-        json.dump(test_scope, f, indent=2)
+    write_scope(test_scope)
     try:
         result = client.set_processing_option("GATE-TEST-3", change2["change_id"], "P4210", "TESTVER02", "PDOCTYPE", "SO")
         check("the same operation succeeds once explicitly approved as a spike experiment", result.get("tool") == "set_processing_option")
     except Exception as e:  # noqa: BLE001
         check(f"the same operation succeeds once explicitly approved as a spike experiment (unexpected error: {e})", False)
 
+    print("\n11. The same spike experiment, once its expiry has passed...")
+    test_scope["functional_agent"]["spike_experiments"][-1]["expires_at"] = "2020-01-01T00:00:00Z"
+    write_scope(test_scope)
+    try:
+        client.set_processing_option("GATE-TEST-3", change2["change_id"], "P4210", "TESTVER02", "PDOCTYPE", "SO")
+        check("an expired spike experiment allows nothing", False)
+    except CapabilityError:
+        check("an expired spike experiment allows nothing", True)
+
+    print("\n12. A story that is not linked to any company...")
+    propose_to_backlog("GATE-TEST-UNLINKED", "gate test story (no company)", {"financial_impact": "Low"}, "Low")
+    approve("GATE-TEST-UNLINKED", "Gate Test Runner", "approving for the gate test")
+    try:
+        propose_change("GATE-TEST-UNLINKED", {**operation, "story_id": "GATE-TEST-UNLINKED"}, "processing_option_update")
+        check("an unattributed story cannot even be proposed", False)
+    except ScopeViolation:
+        check("an unattributed story cannot even be proposed", True)
+
+    print("\n13. A story belonging to a company with no saved scope...")
+    propose_to_backlog("GATE-TEST-OTHERCO", "gate test story (other company)", {"financial_impact": "Low"}, "Low")
+    approve("GATE-TEST-OTHERCO", "Gate Test Runner", "approving for the gate test")
+    link("GATE-TEST-OTHERCO", "GATE-TEST-OTHER-CO")
+    other = propose_change("GATE-TEST-OTHERCO", {**operation, "story_id": "GATE-TEST-OTHERCO"}, "processing_option_update")
+    try:
+        approve_change(other["change_id"], "Gate Test Runner", company_id="GATE-TEST-OTHER-CO", approver_roles=APPROVER_ROLES)
+        check("another company's scope never stands in for this one", False)
+    except ScopeViolation:
+        check("another company's scope never stands in for this one", True)
+
+    print("\n14. With no approval policy saved for the company...")
+    propose_to_backlog("GATE-TEST-4", "gate test story 4", {"financial_impact": "Low"}, "Low")
+    approve("GATE-TEST-4", "Gate Test Runner", "approving for the gate test")
+    op4 = {**operation, "story_id": "GATE-TEST-4"}
+    change4 = propose_change("GATE-TEST-4", op4, "processing_option_update")
+    saved_policy = test_scope.pop("approval_policy")
+    write_scope(test_scope)
+    try:
+        approve_change(change4["change_id"], "Gate Test Runner", company_id=COMPANY, approver_roles=APPROVER_ROLES)
+        check("nobody can approve an exact change", False)
+    except ScopeViolation:
+        check("nobody can approve an exact change", True)
+    test_scope["approval_policy"] = saved_policy
+    write_scope(test_scope)
+
+    print("\n15. An approver whose role the policy does not allow...")
+    try:
+        approve_change(change4["change_id"], "Gate Test Runner", company_id=COMPANY, approver_roles={"domain_owner"})
+        check("an approver without an allowed role is refused", False)
+    except ApproverNotAuthorised:
+        check("an approver without an allowed role is refused", True)
+
+    print("\n16. An approval past its validity window...")
+    approve_change(change4["change_id"], "Gate Test Runner", company_id=COMPANY, approver_roles=APPROVER_ROLES)
+    rec = approval_module._load(change4["change_id"])
+    rec["expires_at"] = time.time() - 1
+    approval_module._save(change4["change_id"], rec)
+    try:
+        client.set_processing_option("GATE-TEST-4", change4["change_id"], "P4210", "TESTVER01", "PDOCTYPE", "SO")
+        check("an expired approval cannot execute", False)
+    except ChangeApprovalError:
+        check("an expired approval cannot execute", True)
+    try:
+        client.run_orchestration("GATE-TEST-4", change4["change_id"], "", {})
+        check("an expired approval cannot run its test either", False)
+    except ChangeApprovalError:
+        check("an expired approval cannot run its test either", True)
+
 finally:
-    print("\nCleaning up test data and restoring your scope.json...")
+    print("\nCleaning up test data...")
     _clean_test_files()
-    if had_scope:
-        shutil.move("scope.json.bak-before-gate-test", "scope.json")
-    else:
-        os.remove("scope.json")
-        print("(No scope.json existed before this test, so none was left behind.")
-        print(" Copy scope.example.json to scope.json and fill it in before running real stories.)")
+    _tmp.cleanup()
 
 print()
 if failures == 0:

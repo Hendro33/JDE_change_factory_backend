@@ -20,15 +20,22 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import tempfile
 import time
-from typing import Optional
+from typing import Iterable, Optional
 
 from .backlog import require_approved, BacklogError
 from . import capability_catalog
-from .scope import check_environment_binding, find_spike_experiment, scope_revision
+from .scope import (
+    check_environment_binding,
+    company_for_story,
+    find_spike_experiment,
+    load_company_scope,
+    require_approval_policy,
+    scope_revision,
+)
 
 CHANGE_DIR = os.environ.get("JDE_CHANGE_DIR", "./changes")
-DEFAULT_EXPIRY_SECONDS = int(os.environ.get("JDE_CHANGE_APPROVAL_EXPIRY_SECONDS", str(24 * 3600)))
 
 
 class ChangeApprovalError(RuntimeError):
@@ -36,6 +43,11 @@ class ChangeApprovalError(RuntimeError):
     expired, or otherwise fails closed. Distinct from StoryNotApproved
     (backlog.py) and ScopeViolation (scope.py) -- all three can apply to
     the same call, and none substitutes for another."""
+
+
+class ApproverNotAuthorised(ChangeApprovalError):
+    """The approver's company roles are not ones the company's approval
+    policy allows to approve an exact change."""
 
 
 def _canonical(operation: dict) -> str:
@@ -62,8 +74,19 @@ def _load(change_id: str) -> Optional[dict]:
 
 
 def _save(change_id: str, record: dict) -> None:
-    with open(_path(change_id), "w", encoding="utf-8") as f:
-        json.dump(record, f, indent=2)
+    # Temp file + rename: an interrupted write never leaves a truncated record.
+    path = _path(change_id)
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".tmp-", suffix=".json")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(record, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+        raise
 
 
 # ---------------------------------------------------------------------
@@ -89,13 +112,16 @@ def propose_change(story_id: str, operation: dict, capability_id: str, environme
 
     Only the catalogue-only, engagement-independent checks run here
     (capability_id is real; environment is literally "DEV") -- the full
-    scope.json-backed environment isolation check and the capability's
+    company-scope-backed environment isolation check and the capability's
     CURRENT executability both belong at require_exact_change instead
     (immediately before the write itself), not here: a change can sit
-    pending for a while, and re-approving it against a scope.json that
+    pending for a while, and re-approving it against a company scope that
     hasn't even been written yet for a brand-new engagement shouldn't be
     impossible, only executing against JDE without one should be."""
     require_approved(story_id)  # can't propose a change against a story nobody approved
+    # The company comes from the story's intake link, never from the
+    # caller. An unattributed story cannot even be proposed.
+    company_id = company_for_story(story_id)
     cap = capability_catalog.require_capability(capability_id)  # raises CapabilityError if unknown
     if environment != "DEV":
         raise ChangeApprovalError(
@@ -108,6 +134,7 @@ def propose_change(story_id: str, operation: dict, capability_id: str, environme
     record = {
         "change_id": change_id,
         "story_id": story_id,
+        "company_id": company_id,
         "operation": operation,
         "change_hash": _hash(operation),
         "environment": environment,
@@ -118,13 +145,14 @@ def propose_change(story_id: str, operation: dict, capability_id: str, environme
         "approved_by": None,
         "approved_at": None,
         "expires_at": None,
+        "approver_authority": None,
         "decision_note": None,
         # "Record the versions used for each run" (design update Section
         # 1) -- stamped at propose time so an approver sees exactly which
         # catalogue/scope revisions this proposal was checked against,
         # not whatever happens to be current when someone looks later.
         "catalog_revision": capability_catalog.catalog_revision(),
-        "scope_revision": scope_revision(),
+        "scope_revision": scope_revision(company_id),
     }
     _save(change_id, record)
     return record
@@ -148,30 +176,104 @@ def list_pending_changes() -> list[dict]:
     return out
 
 
-def approve_change(change_id: str, approved_by: str, expiry_seconds: int = DEFAULT_EXPIRY_SECONDS, note: str = "") -> dict:
+def _load_for_company(change_id: str, company_id: str) -> dict:
     record = _load(change_id)
     if record is None:
         raise ChangeApprovalError(f"no such change: {change_id}")
+    if not record.get("company_id") or record["company_id"] != company_id:
+        # Same answer as a missing record: another company's change is not
+        # something this caller can see, let alone decide on.
+        raise ChangeApprovalError(f"no such change for company {company_id}: {change_id}")
+    return record
+
+
+def approve_change(
+    change_id: str,
+    approved_by: str,
+    *,
+    company_id: str,
+    approver_roles: Iterable[str],
+    note: str = "",
+) -> dict:
+    """company_id and approver_roles come from the approver's
+    authenticated session (api_service), never from an agent. The
+    company's approval policy decides whether those roles may approve
+    and how long the approval stays valid; no policy, an unreadable
+    policy or no matching role all refuse."""
+    record = _load_for_company(change_id, company_id)
+    if record["status"] != "pending":
+        raise ChangeApprovalError(f"change {change_id} is {record['status']}, not pending -- only a pending change can be approved")
+    scope = load_company_scope(company_id)
+    policy = require_approval_policy(scope)
+    held = set(approver_roles)
+    matched = sorted(held & set(policy["exact_change_approver_roles"]))
+    if not matched:
+        raise ApproverNotAuthorised(
+            f"{approved_by} does not hold a role this company's approval policy allows to approve an "
+            f"exact change (allowed: {', '.join(policy['exact_change_approver_roles'])}; held: "
+            f"{', '.join(sorted(held)) or 'none'})."
+        )
+    now = time.time()
     record.update({
         "status": "approved",
         "approved_by": approved_by,
-        "approved_at": time.time(),
-        "expires_at": time.time() + expiry_seconds,
+        "approved_at": now,
+        "expires_at": now + policy["approval_valid_hours"] * 3600,
+        "approver_authority": {
+            "roles": matched,
+            "policy_version": policy["policy_version"],
+            "scope_revision": str(scope.get("revision", "unknown")),
+        },
         "decision_note": note,
     })
     _save(change_id, record)
     return record
 
 
-def reject_change(change_id: str, approved_by: str, note: str) -> dict:
+def reject_change(change_id: str, approved_by: str, note: str, *, company_id: str) -> dict:
     if not note:
         raise ChangeApprovalError("a change rejection must include a reason")
-    record = _load(change_id)
-    if record is None:
-        raise ChangeApprovalError(f"no such change: {change_id}")
+    record = _load_for_company(change_id, company_id)
+    if record["status"] != "pending":
+        raise ChangeApprovalError(f"change {change_id} is {record['status']}, not pending -- only a pending change can be rejected")
     record.update({"status": "rejected", "approved_by": approved_by, "approved_at": time.time(), "decision_note": note})
     _save(change_id, record)
     return record
+
+
+def _require_live_approval(change_id: str) -> tuple[dict, dict]:
+    """Everything about an approval that must still be true at the
+    moment of execution, re-derived from source rather than trusted from
+    the record: approved and unexpired; still the same company as the
+    story's intake link; that company's scope and approval policy still
+    readable; and the approver's recorded roles still allowed by the
+    CURRENT policy. Returns (record, company scope)."""
+    record = _load(change_id)
+    if record is None:
+        raise ChangeApprovalError(f"no change record for {change_id} -- propose_change and get it approved first")
+    if record["status"] != "approved":
+        raise ChangeApprovalError(f"change {change_id} is not approved (status: {record['status']})")
+    if not record.get("expires_at"):
+        raise ChangeApprovalError(f"change {change_id} has no approval expiry -- re-approve it")
+    if time.time() > record["expires_at"]:
+        raise ChangeApprovalError(f"change {change_id} approval expired at {record['expires_at']} -- propose it again")
+    company_id = company_for_story(record["story_id"])
+    if record.get("company_id") != company_id:
+        raise ChangeApprovalError(
+            f"change {change_id} was recorded for company {record.get('company_id')!r} but its story now "
+            f"belongs to {company_id!r} -- refusing."
+        )
+    scope = load_company_scope(company_id)
+    policy = require_approval_policy(scope)
+    authority = record.get("approver_authority") or {}
+    if not set(authority.get("roles") or []) & set(policy["exact_change_approver_roles"]):
+        raise ChangeApprovalError(
+            f"change {change_id} was not approved by a role the company's current approval policy allows "
+            f"({', '.join(policy['exact_change_approver_roles'])}) -- re-approve it."
+        )
+    # Defense in depth: re-check the underlying story is still approved too.
+    require_approved(record["story_id"])
+    return record, scope
 
 
 # ---------------------------------------------------------------------
@@ -179,33 +281,22 @@ def reject_change(change_id: str, approved_by: str, note: str) -> dict:
 # doing anything in JDE.
 # ---------------------------------------------------------------------
 def require_exact_change(change_id: str, operation: dict) -> dict:
-    record = _load(change_id)
-    if record is None:
-        raise ChangeApprovalError(f"no change record for {change_id} -- propose_change and get it approved first")
-    if record["status"] != "approved":
-        raise ChangeApprovalError(f"change {change_id} is not approved (status: {record['status']})")
-    if record["expires_at"] and time.time() > record["expires_at"]:
-        raise ChangeApprovalError(f"change {change_id} approval expired at {record['expires_at']} -- propose it again")
+    """Returns the approved record; the caller re-reads the company's
+    scope via record["company_id"] for its own scope checks."""
+    record, scope = _require_live_approval(change_id)
     if _hash(operation) != record["change_hash"]:
         raise ChangeApprovalError(
             "the operation about to execute does not match the exact change a human approved "
             "-- refusing (fail-closed). This is not a false positive to work around: something "
             "about the operation changed after approval, and that is exactly what this check exists to catch."
         )
-    # Defense in depth: re-check the underlying story is still approved too,
-    # not just that the change record says so.
-    require_approved(record["story_id"])
 
     # Design update Section 3/5.2: re-check the capability's CURRENT
     # status and the environment's CURRENT isolation binding
     # immediately before writing -- both can have changed since this
-    # change was proposed or even since it was approved (a capability
-    # can be Suspended, or DEV isolation un-confirmed, after approval
-    # but before execution). Sourced from the APPROVED RECORD's own
-    # capability_id/capability_revision (set once, at propose_change
-    # time), never from the caller-supplied 'operation' -- the write
-    # tool passing 'operation' (e.g. set_processing_option) has no
-    # reason to know or restate which capability governs it.
+    # change was proposed or even since it was approved. Sourced from
+    # the APPROVED RECORD's own capability binding, never from the
+    # caller-supplied 'operation'.
     capability_id = record.get("capability_id")
     capability_revision = record.get("capability_revision")
     if not capability_id or not capability_revision:
@@ -214,9 +305,11 @@ def require_exact_change(change_id: str, operation: dict) -> dict:
             "this can only happen to a change proposed before the capability "
             "catalogue existed; re-propose it so it binds to a capability."
         )
-    check_environment_binding(record["environment"])
+    check_environment_binding(scope, record["environment"])
     spike = find_spike_experiment(
+        scope,
         capability_id,
+        capability_revision,
         operation.get("application", ""),
         operation.get("version", ""),
         operation.get("option", ""),
@@ -237,11 +330,7 @@ def require_change_covers_test(change_id: str, test_orchestration_name: str) -> 
     that same one -- not a full separate Test Specification artefact
     and approval flow, which would be more machinery than this pilot's
     one test mechanism (run_orchestration) justifies (Section 18)."""
-    record = _load(change_id)
-    if record is None:
-        raise ChangeApprovalError(f"no change record for {change_id}")
-    if record["status"] != "approved":
-        raise ChangeApprovalError(f"change {change_id} is not approved (status: {record['status']})")
+    record, _scope = _require_live_approval(change_id)
     expected = record["operation"].get("test_orchestration")
     if expected != test_orchestration_name:
         raise ChangeApprovalError(
@@ -249,5 +338,4 @@ def require_change_covers_test(change_id: str, test_orchestration_name: str) -> 
             f"(expected '{expected}') -- refusing (fail-closed). Running a different test than "
             "the one a human saw approved would defeat the point of binding them together."
         )
-    require_approved(record["story_id"])
     return record

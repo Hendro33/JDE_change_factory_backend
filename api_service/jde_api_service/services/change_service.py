@@ -237,14 +237,16 @@ def _change_from_story(
                 capability_status = cap.get("validation", {}).get("status")
                 try:
                     spike = mcp_scope.find_spike_experiment(
+                        mcp_scope.load_company_scope(customer_id),
                         capability_id,
+                        change_record.get("capability_revision", ""),
                         op.get("application", ""),
                         op.get("version", ""),
                         op.get("option", ""),
                         change_record.get("environment", "DEV"),
                     )
                 except mcp_scope.ScopeViolation:
-                    spike = None  # no scope.json for this engagement yet -- can't be spike-approved
+                    spike = None  # no saved scope for this company yet -- can't be spike-approved
                 capability_executable = capability_status == "validated" or (
                     capability_status == "needs_spike" and spike is not None
                 )

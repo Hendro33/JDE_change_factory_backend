@@ -44,7 +44,7 @@ def test_erp_landscape_never_exposes_credentials(client):
     dumped = str(body).lower()
     for forbidden in ("password", "username", "token"):
         assert forbidden not in dumped
-    assert "not yet customer-specific" in body["scopeGloballySharedNote"]
+    assert "deployment-wide" in body["scopeGloballySharedNote"]
 
 
 def test_engagement_scope_is_customer_scoped_and_editable(client):

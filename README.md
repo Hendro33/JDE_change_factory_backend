@@ -19,17 +19,19 @@ phases with a hard gate between each (Section 3.5), and every write
 also has to clear this engagement's own scope file (Appendix D/E) on
 top of that.** Phase 3 (the Architect and build agents) cannot write to
 JDE or run a test for a story that hasn't been through Phase 2, and it
-cannot write to anything this engagement hasn't explicitly authorised
-in scope.json, even for an approved story. None of this is a
+cannot write to anything the story's own company hasn't explicitly
+authorised in its engagement scope, even for an approved story. None of this is a
 suggestion in a prompt — it's enforced in `backlog.py` and `scope.py`,
 which the write and test-execution tools check before doing anything.
 Discovery stays unrestricted throughout, since it's read-only and
 Phase 1 genuinely needs it too.
 
-**Before you can run a real story, copy `scope.example.json` to
-`scope.json` and fill it in** — there is no "no restrictions
-configured" default; `set_processing_option` refuses to run at all
-without a scope file present.
+**Before you can run a real story, the story's company needs a saved
+engagement scope and approval policy** (Jade: Admin > ERP / JDE
+Landscape; the stored format is shown in `scope.example.json`) — there
+is no "no restrictions configured" default; `set_processing_option`
+refuses to run at all without them, and only a person whose role the
+policy allows can approve an exact change.
 
 ## The three phases, and where each one lives
 
@@ -59,8 +61,8 @@ prove_the_gate.py                Run this first -- proves every safety control
                                 actually works, in one command (GETTING_STARTED.md)
 GETTING_STARTED.md               Start here if this is your first time -- a literal,
                                 step-by-step script from unzipping to a first test
-scope.example.json               Template for the per-engagement scope file (Appendix D.2/E.2) --
-                                copy to scope.json and fill in before any write tool will run
+scope.example.json               Shape of one company's stored engagement scope (Appendix D.2/E.2),
+                                which the execution gate enforces -- normally edited in Jade
 .claude/
   agents/
     receive-agent.md            Section 5.3.1 -- no JDE access
