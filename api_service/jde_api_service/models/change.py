@@ -86,6 +86,29 @@ class ImplementationSpecification(ApiModel):
     validation_approach: str = ""
 
 
+class Reconciliation(ApiModel):
+    at: str
+    verified_by: str
+    # "automated read (mock JDE)" or "human-verified in JDE"
+    source: str
+    outcome: str
+    observed_value: Optional[str] = None
+    note: str = ""
+
+
+class ExecutionStatus(ApiModel):
+    """Whether the approved write (and its test) actually happened -- see
+    mcp_server/jde_mcp_server/execution.py for the states."""
+
+    write_state: str = "ready"
+    test_state: str = "ready"
+    attempts: int = 0
+    last_attempt_at: Optional[str] = None
+    last_detail: str = ""
+    before_value: Optional[str] = None
+    reconciliations: list[Reconciliation] = []
+
+
 class ExactChange(ApiModel):
     tool: str
     application: str
@@ -103,6 +126,35 @@ class ExactChange(ApiModel):
     capability_id: Optional[str] = None
     capability_status: Optional[Literal["validated", "needs_spike", "restricted", "human_implementation", "suspended"]] = None
     capability_executable: Optional[bool] = None
+    execution: ExecutionStatus = ExecutionStatus()
+
+
+class ReconcileWriteInput(ApiModel):
+    # Only used when the value cannot be read automatically (live mode,
+    # until Experiment A records the response shape): the value a person
+    # read in JDE itself.
+    observed_value: Optional[str] = None
+    note: str = ""
+
+
+class ReconcileTestInput(ApiModel):
+    ran: bool
+    note: str
+
+
+class PreflightCheck(ApiModel):
+    check: str
+    ok: bool
+    detail: str = ""
+
+
+class PreflightResult(ApiModel):
+    change_id: str
+    mode: str
+    executable: bool
+    write_state: str = "ready"
+    test_state: str = "ready"
+    checks: list[PreflightCheck]
 
 
 class ApprovalRecord(ApiModel):

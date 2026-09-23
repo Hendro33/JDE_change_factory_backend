@@ -37,6 +37,25 @@ from .scope import (
 
 CHANGE_DIR = os.environ.get("JDE_CHANGE_DIR", "./changes")
 
+# The only operations Jade can execute, by capability. Every other
+# capability in the catalogue can be analysed and proposed for Human
+# Implementation, but has no execution adapter: proposing it as an
+# executable change is refused rather than left to fail later.
+EXECUTION_TOOLS = {"processing_option_update": "set_processing_option"}
+
+
+def require_supported_operation(capability_id: str, operation: dict) -> None:
+    tool = EXECUTION_TOOLS.get(capability_id)
+    if tool is None:
+        raise ChangeApprovalError(
+            f"capability {capability_id!r} has no execution adapter in Jade -- it can be proposed for Human "
+            "Implementation, not as an executable change"
+        )
+    if operation.get("tool") != tool:
+        raise ChangeApprovalError(
+            f"capability {capability_id!r} executes only through {tool!r}, not {operation.get('tool')!r}"
+        )
+
 
 class ChangeApprovalError(RuntimeError):
     """Raised whenever an exact-change approval is missing, mismatched,
@@ -123,6 +142,7 @@ def propose_change(story_id: str, operation: dict, capability_id: str, environme
     # caller. An unattributed story cannot even be proposed.
     company_id = company_for_story(story_id)
     cap = capability_catalog.require_capability(capability_id)  # raises CapabilityError if unknown
+    require_supported_operation(capability_id, operation)
     if environment != "DEV":
         raise ChangeApprovalError(
             f"'{environment}' is not DEV. All JDE access and execution use "
@@ -169,7 +189,7 @@ def list_pending_changes() -> list[dict]:
         return []
     out = []
     for fn in sorted(os.listdir(CHANGE_DIR)):
-        if fn.endswith(".json"):
+        if fn.endswith(".json") and not fn.startswith("."):  # skip in-flight temp files
             rec = _load(fn[:-5])
             if rec and rec["status"] == "pending":
                 out.append(rec)
@@ -283,8 +303,17 @@ def _require_live_approval(change_id: str) -> tuple[dict, dict]:
 def require_exact_change(change_id: str, operation: dict) -> dict:
     """Returns the approved record; the caller re-reads the company's
     scope via record["company_id"] for its own scope checks."""
+    from . import execution  # imported here: execution builds on this module
+
     record, scope = _require_live_approval(change_id)
-    if _hash(operation) != record["change_hash"]:
+    # An earlier attempt that is in flight, applied, or of unknown outcome
+    # blocks this one: no blind retry, no second application.
+    execution.require_ready(record, execution.WRITE)
+    # The write is compared with the approved operation minus its test
+    # binding: the test name is enforced separately, by
+    # require_change_covers_test, and the write tool never sends it.
+    approved_write = {k: v for k, v in record["operation"].items() if k != "test_orchestration"}
+    if _canonical(operation) != _canonical(approved_write):
         raise ChangeApprovalError(
             "the operation about to execute does not match the exact change a human approved "
             "-- refusing (fail-closed). This is not a false positive to work around: something "
@@ -305,6 +334,7 @@ def require_exact_change(change_id: str, operation: dict) -> dict:
             "this can only happen to a change proposed before the capability "
             "catalogue existed; re-propose it so it binds to a capability."
         )
+    require_supported_operation(capability_id, operation)
     check_environment_binding(scope, record["environment"])
     spike = find_spike_experiment(
         scope,
@@ -330,7 +360,17 @@ def require_change_covers_test(change_id: str, test_orchestration_name: str) -> 
     that same one -- not a full separate Test Specification artefact
     and approval flow, which would be more machinery than this pilot's
     one test mechanism (run_orchestration) justifies (Section 18)."""
+    from . import execution
+
     record, _scope = _require_live_approval(change_id)
+    # The test verifies the write, so the write must be known to be in JDE,
+    # and an earlier test attempt must not be in flight or of unknown outcome.
+    if execution.effective_state(record, execution.WRITE) != "applied":
+        raise execution.ExecutionBlocked(
+            f"change {change_id}: the write is not known to be applied "
+            f"(state: {execution.effective_state(record, execution.WRITE)}), so its test cannot run yet"
+        )
+    execution.require_ready(record, execution.TEST)
     expected = record["operation"].get("test_orchestration")
     if expected != test_orchestration_name:
         raise ChangeApprovalError(
@@ -339,3 +379,65 @@ def require_change_covers_test(change_id: str, test_orchestration_name: str) -> 
             "the one a human saw approved would defeat the point of binding them together."
         )
     return record
+
+
+def preflight(change_id: str) -> dict:
+    """What the gate would decide for this change right now, check by
+    check, without executing anything or recording an attempt. Every
+    check that can be evaluated is reported, so a person sees all the
+    reasons at once instead of one refusal at a time."""
+    from . import backlog, execution, scope as scope_module
+    from .ais_client import FSR_SET_PROCESSING_OPTION, require_bound_environment
+    from .config import settings
+
+    checks: list[dict] = []
+
+    def check(name: str, fn) -> object:
+        try:
+            result = fn()
+        except Exception as exc:  # noqa: BLE001 -- reported, never raised
+            checks.append({"check": name, "ok": False, "detail": str(exc)})
+            return None
+        checks.append({"check": name, "ok": True, "detail": ""})
+        return result if result is not None else True
+
+    record = _load(change_id)
+    if record is None:
+        return {"change_id": change_id, "executable": False, "mode": "unknown",
+                "checks": [{"check": "Change record exists", "ok": False, "detail": f"no change record {change_id}"}]}
+    op = record.get("operation", {})
+    check("Story approved (Gate 2)", lambda: backlog.require_approved(record["story_id"]))
+    live = check("Exact change approved, unexpired, same company, approver authority current", lambda: _require_live_approval(change_id))
+    scope = live[1] if isinstance(live, tuple) else None
+    check("Operation supported for this capability", lambda: require_supported_operation(record.get("capability_id", ""), op))
+    if scope is not None:
+        check("DEV environment bound and isolation confirmed", lambda: scope_module.check_environment_binding(scope, record["environment"]))
+        entry = check("Target is in the company's approved versions",
+                      lambda: scope_module.check_functional_scope(scope, op.get("application", ""), op.get("version", ""), op.get("option", "")))
+        if isinstance(entry, dict):
+            check("Value is one of the allowed values", lambda: scope_module.check_allowed_value(entry, str(op.get("value", ""))))
+        spike = scope_module.find_spike_experiment(
+            scope, record.get("capability_id", ""), record.get("capability_revision", ""),
+            op.get("application", ""), op.get("version", ""), op.get("option", ""), record["environment"],
+        )
+        check("Capability executable (validated, or inside a current spike window)",
+              lambda: capability_catalog.require_executable(
+                  record.get("capability_id", ""), record.get("capability_revision", ""), record["environment"],
+                  spike_experiment_approved=spike is not None))
+        check("AIS connection points at the bound DEV environment", lambda: require_bound_environment(scope))
+    check("Version is not Oracle-owned (XJDE/ZJDE)", lambda: scope_module.reject_if_oracle_owned_version(op.get("version", "")))
+    check("No earlier attempt in flight, applied or of unknown outcome", lambda: execution.require_ready(record, execution.WRITE))
+    if not settings.mock_mode:
+        def fsr_recorded() -> None:
+            if FSR_SET_PROCESSING_OPTION is None:
+                raise RuntimeError("FSR_SET_PROCESSING_OPTION is not recorded yet (Experiment A prerequisite A-P5)")
+
+        check("Live write payload (FSR) recorded and reviewed", fsr_recorded)
+    return {
+        "change_id": change_id,
+        "mode": "mock" if settings.mock_mode else "live",
+        "executable": all(c["ok"] for c in checks),
+        "write_state": execution.effective_state(record, execution.WRITE),
+        "test_state": execution.effective_state(record, execution.TEST),
+        "checks": checks,
+    }

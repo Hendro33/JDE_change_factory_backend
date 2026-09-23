@@ -20,12 +20,14 @@ from __future__ import annotations
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 
-from jde_mcp_server import approval
-from jde_mcp_server.scope import ScopeViolation
+from jde_mcp_server import approval, execution
+from jde_mcp_server.ais_client import LiveReadUnavailable, client as ais
+from jde_mcp_server.scope import ScopeViolation, load_company_scope, require_approval_policy
 
 from ..config import settings
 from ..dependencies import AuthContext, require_customer_access, require_write_access
 from ..models.architecture_review import ArchitectureReviewRun, AskAboutSolutionInput
+from ..models.change import PreflightResult, ReconcileTestInput, ReconcileWriteInput
 from ..models.domain_review import GovernanceDecisionInput
 from ..services.architecture_driver import run_architecture_review
 from ..services.conversation_driver import ConversationError, ask_about_solution
@@ -208,3 +210,85 @@ def reject_exact_change(
     change = get_change_service().get_for_customer(change_id, ctx.customer_id)
     assert change is not None
     return change.model_dump(mode="json", by_alias=True)
+
+
+# ---------------------------------------------------------------------
+# Execution state: preflight and reconciliation of unknown outcomes
+# (mcp_server/jde_mcp_server/execution.py)
+# ---------------------------------------------------------------------
+def _change_record_for(story_id: str) -> dict:
+    from ..services.change_service import _latest_change_record_for
+
+    record = _latest_change_record_for(story_id)
+    if record is None:
+        raise HTTPException(status_code=409, detail=f"no exact change has been proposed for {story_id}")
+    return record
+
+
+def _require_policy_approver(ctx: AuthContext) -> None:
+    """Reconciling decides whether a change may run again, so it needs the
+    same authority as approving it: a role the company's policy allows."""
+    try:
+        policy = require_approval_policy(load_company_scope(ctx.customer_id))
+    except ScopeViolation as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    if not (set(ctx.roles) & set(policy["exact_change_approver_roles"])):
+        raise HTTPException(status_code=403, detail="reconciling needs a role the company's approval policy allows")
+
+
+@router.get("/changes/{change_id}/execution/preflight", response_model=PreflightResult)
+def execution_preflight(change_id: str, ctx: AuthContext = Depends(require_customer_access)) -> PreflightResult:
+    """What the execution gate would decide right now, check by check.
+    Read-only: nothing is sent to JDE and no attempt is recorded."""
+    _require_queued_change(change_id, ctx.customer_id)
+    return PreflightResult.model_validate(approval.preflight(_change_record_for(change_id)["change_id"]))
+
+
+@router.post("/changes/{change_id}/execution/reconcile")
+def reconcile_write(
+    change_id: str, payload: ReconcileWriteInput, ctx: AuthContext = Depends(require_write_access)
+) -> dict:
+    """Settle an unknown write outcome by checking the ACTUAL target value.
+    Where Jade can read it (mock mode today), it reads it itself and any
+    typed value is ignored; otherwise the person states the value they
+    read in JDE, with a note, and that is recorded as human-verified."""
+    _require_queued_change(change_id, ctx.customer_id)
+    _require_policy_approver(ctx)
+    record = _change_record_for(change_id)
+    if record.get("company_id") != ctx.customer_id:
+        raise HTTPException(status_code=404, detail=f"no such change: {change_id}")
+    op = record["operation"]
+    try:
+        observed = ais.read_processing_option_value(op["application"], op["version"], op["option"])
+        source = "automated read (mock JDE)"
+    except LiveReadUnavailable as exc:
+        if payload.observed_value is None or not payload.note.strip():
+            raise HTTPException(status_code=422, detail=f"{exc} Provide observedValue and a note.")
+        observed, source = payload.observed_value, "human-verified in JDE"
+    try:
+        outcome = execution.reconcile_write(
+            record["change_id"], observed_value=observed, source=source,
+            verified_by=ctx.identity.display_name, note=payload.note,
+        )
+    except approval.ChangeApprovalError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    return {"outcome": outcome, "observedValue": observed, "source": source}
+
+
+@router.post("/changes/{change_id}/execution/reconcile-test")
+def reconcile_test(
+    change_id: str, payload: ReconcileTestInput, ctx: AuthContext = Depends(require_write_access)
+) -> dict:
+    _require_queued_change(change_id, ctx.customer_id)
+    _require_policy_approver(ctx)
+    record = _change_record_for(change_id)
+    if record.get("company_id") != ctx.customer_id:
+        raise HTTPException(status_code=404, detail=f"no such change: {change_id}")
+    try:
+        outcome = execution.reconcile_test(
+            record["change_id"], ran=payload.ran, verified_by=ctx.identity.display_name, note=payload.note
+        )
+    except approval.ChangeApprovalError as exc:
+        raise HTTPException(status_code=409 if isinstance(exc, execution.ExecutionBlocked) else 422, detail=str(exc))
+    return {"outcome": outcome}
+

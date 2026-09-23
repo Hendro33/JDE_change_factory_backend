@@ -33,7 +33,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 from .. import config as _config  # noqa: F401  (forces the mcp_server sys.path bootstrap)
-from jde_mcp_server import backlog, approval, capability_catalog
+from jde_mcp_server import backlog, approval, capability_catalog, execution
 from jde_mcp_server import config as mcp_config
 from jde_mcp_server import scope as mcp_scope
 
@@ -44,6 +44,8 @@ from ..models.change import (
     Change,
     EvidenceRecord,
     ExactChange,
+    ExecutionStatus,
+    Reconciliation,
     TestStep,
     UserStory,
 )
@@ -125,7 +127,7 @@ def _all_change_records() -> list[dict[str, Any]]:
         return []
     out = []
     for fn in sorted(os.listdir(approval.CHANGE_DIR)):
-        if fn.endswith(".json"):
+        if fn.endswith(".json") and not fn.startswith("."):  # skip in-flight temp files
             with open(os.path.join(approval.CHANGE_DIR, fn), encoding="utf-8") as f:
                 out.append(json.load(f))
     return out
@@ -213,6 +215,28 @@ def _parse_legacy_backlog_story(raw: str) -> Optional[UserStory]:
     )
 
 
+def _execution_status(change_record: dict) -> ExecutionStatus:
+    write = (change_record.get("execution") or {}).get(execution.WRITE) or {}
+    attempts = write.get("attempts") or []
+    last = attempts[-1] if attempts else {}
+    return ExecutionStatus(
+        write_state=execution.effective_state(change_record, execution.WRITE),
+        test_state=execution.effective_state(change_record, execution.TEST),
+        attempts=len(attempts),
+        last_attempt_at=_iso(last.get("started_at")),
+        last_detail=last.get("detail", "") or "",
+        before_value=next((a.get("before_value") for a in reversed(attempts) if a.get("before_value") is not None), None),
+        reconciliations=[
+            Reconciliation(
+                at=_iso(r["at"]) or "", verified_by=r["verified_by"], source=r["source"], outcome=r["outcome"],
+                observed_value=r.get("observed_value"), note=r.get("note", ""),
+            )
+            for kind in (execution.WRITE, execution.TEST)
+            for r in ((change_record.get("execution") or {}).get(kind) or {}).get("reconciliations", [])
+        ],
+    )
+
+
 def _change_from_story(
     record: dict[str, Any],
     customer_id: str,
@@ -261,6 +285,7 @@ def _change_from_story(
             capability_id=capability_id,
             capability_status=capability_status,
             capability_executable=capability_executable,
+            execution=_execution_status(change_record),
         )
         if change_record.get("status") in ("approved", "rejected"):
             change_approval = ApprovalRecord(

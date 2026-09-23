@@ -25,3 +25,6 @@ scope.*.json
 .env.local
 
 .DS_Store
+
+# Mock mode's stand-in for JDE values (ais_client.MOCK_STATE_FILE)
+mock_jde_state.json

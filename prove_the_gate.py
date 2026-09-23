@@ -28,6 +28,8 @@ test company whose scope and story links live in a temporary directory
  14. With no approval policy, nobody can approve an exact change.
  15. An approver whose role the policy does not allow is refused.
  16. An approval past its policy-set validity cannot execute or run tests.
+ 17. An applied change never runs a second time.
+ 18. A write whose outcome is unknown blocks any retry until reconciled.
 
 If every line says PASS, the safety model this whole project depends
 on is actually working on your machine, not just described in a
@@ -62,7 +64,7 @@ def _clean_test_files() -> None:
     for d in ("backlog", "changes", "evidence"):
         if os.path.isdir(d):
             for fn in os.listdir(d):
-                if fn.startswith("GATE-TEST"):
+                if fn.lstrip(".").startswith("GATE-TEST"):  # includes per-change lock files
                     os.remove(os.path.join(d, fn))
 
 
@@ -75,6 +77,7 @@ os.makedirs(LINK_DIR)
 # Set before jde_mcp_server is imported below, which reads them once.
 os.environ["JDE_COMPANY_SCOPE_DIR"] = SCOPE_DIR
 os.environ["JDE_STORY_COMPANY_DIR"] = LINK_DIR
+os.environ["JDE_MOCK_JDE_STATE_FILE"] = os.path.join(_tmp.name, "mock_jde_state.json")
 COMPANY = "GATE-TEST-CO"
 APPROVER_ROLES = {"product_manager"}
 
@@ -261,11 +264,13 @@ try:
     except Exception as e:  # noqa: BLE001
         check(f"the same operation succeeds once explicitly approved as a spike experiment (unexpected error: {e})", False)
 
-    print("\n11. The same spike experiment, once its expiry has passed...")
+    print("\n11. A new approved change on the same target, once the spike's expiry has passed...")
     test_scope["functional_agent"]["spike_experiments"][-1]["expires_at"] = "2020-01-01T00:00:00Z"
     write_scope(test_scope)
+    change2b = propose_change("GATE-TEST-3", op2, "processing_option_update")
+    approve_change(change2b["change_id"], "Gate Test Runner", company_id=COMPANY, approver_roles=APPROVER_ROLES)
     try:
-        client.set_processing_option("GATE-TEST-3", change2["change_id"], "P4210", "TESTVER02", "PDOCTYPE", "SO")
+        client.set_processing_option("GATE-TEST-3", change2b["change_id"], "P4210", "TESTVER02", "PDOCTYPE", "SO")
         check("an expired spike experiment allows nothing", False)
     except CapabilityError:
         check("an expired spike experiment allows nothing", True)
@@ -329,6 +334,43 @@ try:
         check("an expired approval cannot run its test either", True)
 
 finally:
+    from jde_mcp_server import ais_client as ais_module, execution
+    import httpx
+
+    print("\n17. Running an already-applied change again...")
+    try:
+        client.set_processing_option("GATE-TEST-1", change["change_id"], "P4210", "TESTVER01", "PDOCTYPE", "SO")
+        check("an applied change never runs a second time", False)
+    except execution.ExecutionBlocked:
+        check("an applied change never runs a second time", True)
+
+    print("\n18. A write interrupted after it was sent (outcome unknown), then retried...")
+    propose_to_backlog("GATE-TEST-5", "gate test story 5", {"financial_impact": "Low"}, "Low")
+    approve("GATE-TEST-5", "Gate Test Runner", "approving for the gate test")
+    link("GATE-TEST-5")
+    op5 = {**operation, "story_id": "GATE-TEST-5"}
+    change5 = propose_change("GATE-TEST-5", op5, "processing_option_update")
+    approve_change(change5["change_id"], "Gate Test Runner", company_id=COMPANY, approver_roles=APPROVER_ROLES)
+    real_submit = ais_module._mock_submit
+
+    def timed_out(*args):
+        raise httpx.ReadTimeout("no response (gate test)")
+
+    ais_module._mock_submit = timed_out
+    try:
+        client.set_processing_option("GATE-TEST-5", change5["change_id"], "P4210", "TESTVER01", "PDOCTYPE", "SO")
+    except httpx.ReadTimeout:
+        pass
+    finally:
+        ais_module._mock_submit = real_submit
+    check("the interrupted write is recorded as unknown",
+          execution.effective_state(approval_module._load(change5["change_id"])) == "unknown")
+    try:
+        client.set_processing_option("GATE-TEST-5", change5["change_id"], "P4210", "TESTVER01", "PDOCTYPE", "SO")
+        check("a blind retry is refused until the target is reconciled", False)
+    except execution.ExecutionBlocked:
+        check("a blind retry is refused until the target is reconciled", True)
+
     print("\nCleaning up test data...")
     _clean_test_files()
     _tmp.cleanup()

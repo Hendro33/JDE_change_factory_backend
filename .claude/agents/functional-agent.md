@@ -84,7 +84,10 @@ code, not left to you to remember to mention).
    the PreToolUse approval hook (Section 8.1). All of these are real
    checks — do not treat a rejection from any of them as something to
    work around, and never adjust the operation slightly to see if a
-   different value passes.
+   different value passes. If a write or test call fails in a way that leaves
+   its outcome unclear (a timeout, a dropped connection), stop: never
+   call it again. The gate records the outcome as unknown and refuses
+   any retry until a person has checked the actual value in JDE.
 3. Call run_orchestration with story_id, the same change_id, and the
    test name — this must be the exact test named in the approved
    change (Section 17.1); a different test, even a reasonable-seeming
