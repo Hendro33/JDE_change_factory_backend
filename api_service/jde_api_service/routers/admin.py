@@ -169,6 +169,22 @@ def get_erp_landscape(ctx: AuthContext = Depends(require_customer_access)) -> Er
     )
 
 
+def _jde_discovery_row(company_id: str) -> IntegrationStatus:
+    from ..discovery import profile_service
+
+    v = profile_service.view(company_id)
+    if not v.configured or v.config is None:
+        return IntegrationStatus(name="JD Edwards discovery (Architect)", connected=False,
+                                 detail="Not configured -- see the JDE section below")
+    mode = "SIMULATION" if v.config.connection_mode == "simulation" else "live"
+    state = "enabled" if v.discovery_enabled else ("disabled" if v.disabled else "off until verified and enabled")
+    return IntegrationStatus(
+        name="JD Edwards discovery (Architect)",
+        connected=v.discovery_enabled and v.config.connection_mode == "live",
+        detail=f"{mode}, {v.config.environment}, profile revision {v.revision}: discovery {state}",
+    )
+
+
 def _discovery_summary(company_id: str):
     from ..discovery import profile_service
     from ..models.admin import DiscoveryProfileSummary
@@ -362,12 +378,13 @@ def list_integrations(ctx: AuthContext = Depends(require_customer_access)) -> li
         jira_detail = f"Connected to project {jira_config.project_key}"
 
     return [
+        _jde_discovery_row(ctx.customer_id),
         IntegrationStatus(
-            name="JD Edwards (AIS)",
+            name="JD Edwards execution gate",
             connected=ais_live,
             detail=(
-                "Live AIS connection configured" if ais_live
-                else "Running in mock mode -- see ERP / JDE Landscape for connection status"
+                "Live AIS connection configured (separate from discovery)" if ais_live
+                else "Mock mode -- no JDE writes are possible; separate from discovery"
             ),
         ),
         IntegrationStatus(name="Jira Service Management", connected=jira_live, detail=jira_detail),

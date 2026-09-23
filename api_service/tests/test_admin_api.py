@@ -133,7 +133,9 @@ def test_integrations_status_is_honest_about_what_is_not_connected(client):
     r = client.get("/admin/integrations", headers=headers())
     assert r.status_code == 200
     by_name = {i["name"]: i for i in r.json()}
-    assert by_name["JD Edwards (AIS)"]["connected"] is False  # mock mode in tests
+    assert by_name["JD Edwards execution gate"]["connected"] is False  # mock mode in tests
+    # Discovery is its own row, and a simulation is never reported as connected.
+    assert by_name["JD Edwards discovery (Architect)"]["connected"] is False
     assert by_name["Topdesk"]["connected"] is False
     assert by_name["Slack / Teams approvals"]["connected"] is False
 
