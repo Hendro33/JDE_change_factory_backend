@@ -19,6 +19,23 @@
     ],
     "approval_valid_hours": 24
   },
+  "_comment_mechanisms_allowed": "Enforced. The JDE access mechanisms this company allows. A write uses ais_form_service_request, a test uses ais_orchestration (see the capability's enforcement contract in capability_catalog.json). A mechanism not listed blocks the operation.",
+  "mechanisms_allowed": [
+    "ais_form_service_request",
+    "ais_orchestration"
+  ],
+  "_comment_test_scope": "Enforced. The only orchestrations Jade may run as a post-change test, each with its declared side effects. The capability permits only none / creates_dev_transaction in a test; posting, payment, outbound_integration and batch_run are refused. An undeclared test, or one with no side effects declared, cannot run.",
+  "test_scope": {
+    "approved_tests": [
+      {
+        "orchestration": "<e.g. ORCH_CREATE_TEST_SO>",
+        "side_effects": [
+          "creates_dev_transaction"
+        ],
+        "note": "<what the test proves>"
+      }
+    ]
+  },
   "functional_agent": {
     "approved_versions": [
       {
@@ -26,6 +43,8 @@
         "capability_revision": "r1",
         "application": "P4210",
         "version": "<customer-named custom version, never XJDE/ZJDE>",
+        "option_category": "document_and_order_types",
+        "_comment_option_category": "Enforced, required. One of the capability's option_categories in capability_catalog.json. Protected categories (pricing, tax, gl_posting_and_aai, security_and_authorisation, payments_and_banking, outbound_integration) are never written, whatever this file says.",
         "options": [
           "PDOCTYPE"
         ],
@@ -51,12 +70,14 @@
         "approved_at": "<stamped by Jade>"
       }
     ],
+    "_comment_never_touch_categories": "Enforced. Option categories (from the capability's closed list) this company never lets Jade write, on top of the capability's protected ones.",
     "never_touch_categories": [
-      "<e.g. tax calculation processing options>",
-      "<e.g. GL posting edit codes>",
-      "<e.g. AAI-related options>"
+      "workflow_and_status"
     ],
-    "_comment_reference_only": "never_touch_categories and approvers are recorded for people and are NOT read by the gate; approval authority comes from approval_policy plus company roles.",
+    "never_touch_notes": [
+      "<free-text guidance, e.g. 'ask Finance before touching credit-check options'>"
+    ],
+    "_comment_reference_only": "never_touch_notes and approvers are recorded for people and are NOT read by the gate: a free-text label is not enforcement. Approval authority comes from approval_policy plus company roles.",
     "approvers": [
       "<name and role -- reference only>"
     ]

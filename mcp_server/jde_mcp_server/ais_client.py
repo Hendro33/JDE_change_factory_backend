@@ -24,7 +24,17 @@ import httpx
 
 from .config import settings
 from .backlog import require_approved
-from .scope import reject_if_oracle_owned_version, check_functional_scope, check_allowed_value, load_company_scope
+from .scope import (
+    ScopeViolation,
+    check_allowed_value,
+    check_functional_scope,
+    check_mechanism,
+    check_option_category,
+    check_test_boundary,
+    load_company_scope,
+    reject_if_oracle_owned_version,
+)
+from . import capability_catalog
 from .approval import require_exact_change, require_change_covers_test
 from . import execution
 
@@ -192,6 +202,17 @@ class AISClient:
         scope = load_company_scope(record["company_id"])
         scope_entry = check_functional_scope(scope, application, version, option)
         check_allowed_value(scope_entry, value)
+        # The capability's enforcement contract: the approved target must be
+        # approved FOR this capability, through an allowed mechanism, in an
+        # option category that is declared and not protected.
+        enforcement = capability_catalog.require_enforcement(record["capability_id"])
+        if scope_entry.get("capability_id") != record["capability_id"]:
+            raise ScopeViolation(
+                f"{application}/{version}/{option} is approved for capability {scope_entry.get('capability_id')!r}, "
+                f"not {record['capability_id']!r}"
+            )
+        check_mechanism(scope, enforcement["mechanism"])
+        check_option_category(scope, scope_entry, enforcement)
         require_bound_environment(scope)
 
         if settings.mock_mode:
@@ -263,7 +284,9 @@ class AISClient:
     def run_orchestration(self, story_id: str, change_id: str, name: str, payload: dict) -> dict[str, Any]:
         require_approved(story_id)
         record = require_change_covers_test(change_id, name)
-        require_bound_environment(load_company_scope(record["company_id"]))
+        scope = load_company_scope(record["company_id"])
+        check_test_boundary(scope, name, capability_catalog.require_enforcement(record["capability_id"]))
+        require_bound_environment(scope)
         if settings.mock_mode:
             attempt = execution.begin(change_id, execution.TEST)
             execution.finish(change_id, execution.TEST, attempt, "completed", "mock orchestration")

@@ -20,20 +20,43 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal, Optional
 
-from pydantic import Field, field_validator
+from jde_mcp_server import capability_catalog
+from pydantic import Field, field_validator, model_validator
 
 from .base import ApiModel
+
+Mechanism = Literal["ais_form_service_request", "ais_orchestration"]
+TestSideEffect = Literal["none", "creates_dev_transaction", "posting", "payment", "outbound_integration", "batch_run"]
+
+
+def _known_category(value: str) -> str:
+    value = value.strip()
+    if value and value not in capability_catalog.known_option_categories():
+        raise ValueError(
+            f"unknown option category {value!r}; use one of {sorted(capability_catalog.known_option_categories())}"
+        )
+    return value
 
 
 class ApprovedVersion(ApiModel):
     # Which capability_catalog.json entry this target is enabled for. The
     # execution gate refuses an entry with no capability_id.
     capability_id: str = ""
+    # What kind of option this is, from the capability's closed list
+    # (capability_catalog.json enforcement.option_categories). Declared by
+    # the Admin who saves it; the gate refuses an undeclared, protected or
+    # never-touch category.
+    option_category: str = ""
     application: str
     version: str
     options: list[str] = []
     allowed_values: list[str] = []
     notes: str = ""
+
+    @field_validator("option_category")
+    @classmethod
+    def _category(cls, value: str) -> str:
+        return _known_category(value)
 
 
 class SpikeExperiment(ApiModel):
@@ -69,11 +92,42 @@ class SpikeExperiment(ApiModel):
 class FunctionalAgentScope(ApiModel):
     approved_versions: list[ApprovedVersion] = []
     spike_experiments: list[SpikeExperiment] = []
-    # Reference only -- recorded for humans, NOT read by the execution
-    # gate (which enforces approved_versions and the catalogue's own
-    # restrictions). Kept because Appendix D asks for them.
+    # ENFORCED: option categories (closed list) this company never lets
+    # Jade write, on top of those the capability itself protects.
     never_touch_categories: list[str] = []
+    # Reference only, not read by the gate: free-text notes. Earlier
+    # builds stored free text in never_touch_categories; on load, any
+    # value that is not a known category is moved here, visibly, rather
+    # than silently treated as enforced.
+    never_touch_notes: list[str] = []
     approvers: list[str] = []
+
+    @model_validator(mode="before")
+    @classmethod
+    def _split_free_text(cls, data):
+        if isinstance(data, dict):
+            key = "never_touch_categories" if "never_touch_categories" in data else "neverTouchCategories"
+            values = data.get(key) or []
+            known = capability_catalog.known_option_categories()
+            notes_key = "never_touch_notes" if key == "never_touch_categories" else "neverTouchNotes"
+            data = {**data, key: [v for v in values if v in known],
+                    notes_key: [*(data.get(notes_key) or []), *[v for v in values if v not in known]]}
+        return data
+
+
+class ApprovedTest(ApiModel):
+    """A test the company allows Jade to run in DEV, with the side effects
+    it has, from a closed list. The gate refuses a test that is not listed
+    here, declares nothing, or declares a side effect the capability does
+    not permit (posting, payments, outbound integrations, batch runs)."""
+
+    orchestration: str
+    side_effects: list[TestSideEffect] = Field(min_length=1)
+    note: str = ""
+
+
+class TestScope(ApiModel):
+    approved_tests: list[ApprovedTest] = []
 
 
 class TechnicalAgentScope(ApiModel):
@@ -120,6 +174,9 @@ class EngagementScope(ApiModel):
     technical_agent: TechnicalAgentScope = TechnicalAgentScope()
     # None = no policy: nobody can approve an exact change, nothing executes.
     approval_policy: Optional[ApprovalPolicy] = None
+    # ENFORCED: the execution mechanisms this company allows. Empty allows none.
+    mechanisms_allowed: list[Mechanism] = []
+    test_scope: TestScope = TestScope()
     # 0 = never saved. Incremented on every save; the execution gate
     # stamps it onto change records as the scope revision used.
     revision: int = 0
@@ -141,5 +198,7 @@ class EngagementScopeUpdate(ApiModel):
     functional_agent: FunctionalAgentScope = FunctionalAgentScope()
     technical_agent: TechnicalAgentScope = TechnicalAgentScope()
     approval_policy: Optional[ApprovalPolicy] = None
+    mechanisms_allowed: list[Mechanism] = []
+    test_scope: TestScope = TestScope()
     # The revision the client loaded; required once the scope exists.
     expected_revision: Optional[int] = None

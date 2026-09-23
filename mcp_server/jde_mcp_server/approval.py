@@ -37,26 +37,6 @@ from .scope import (
 
 CHANGE_DIR = os.environ.get("JDE_CHANGE_DIR", "./changes")
 
-# The only operations Jade can execute, by capability. Every other
-# capability in the catalogue can be analysed and proposed for Human
-# Implementation, but has no execution adapter: proposing it as an
-# executable change is refused rather than left to fail later.
-EXECUTION_TOOLS = {"processing_option_update": "set_processing_option"}
-
-
-def require_supported_operation(capability_id: str, operation: dict) -> None:
-    tool = EXECUTION_TOOLS.get(capability_id)
-    if tool is None:
-        raise ChangeApprovalError(
-            f"capability {capability_id!r} has no execution adapter in Jade -- it can be proposed for Human "
-            "Implementation, not as an executable change"
-        )
-    if operation.get("tool") != tool:
-        raise ChangeApprovalError(
-            f"capability {capability_id!r} executes only through {tool!r}, not {operation.get('tool')!r}"
-        )
-
-
 class ChangeApprovalError(RuntimeError):
     """Raised whenever an exact-change approval is missing, mismatched,
     expired, or otherwise fails closed. Distinct from StoryNotApproved
@@ -67,6 +47,23 @@ class ChangeApprovalError(RuntimeError):
 class ApproverNotAuthorised(ChangeApprovalError):
     """The approver's company roles are not ones the company's approval
     policy allows to approve an exact change."""
+
+
+def require_supported_operation(capability_id: str, operation: dict) -> dict:
+    """The capability must have a complete enforcement contract in the
+    catalogue (capability_catalog.require_enforcement), and the operation
+    must use the one tool that contract names. Returns the contract.
+    Every other capability can be analysed and proposed for Human
+    Implementation, but not as an executable change."""
+    try:
+        enforcement = capability_catalog.require_enforcement(capability_id)
+    except capability_catalog.CapabilityError as exc:
+        raise ChangeApprovalError(f"capability {capability_id!r} has no execution adapter in Jade: {exc}") from exc
+    if operation.get("tool") != enforcement["tool"]:
+        raise ChangeApprovalError(
+            f"capability {capability_id!r} executes only through {enforcement['tool']!r}, not {operation.get('tool')!r}"
+        )
+    return enforcement
 
 
 def _canonical(operation: dict) -> str:
@@ -420,6 +417,16 @@ def preflight(change_id: str) -> dict:
                       lambda: scope_module.check_functional_scope(scope, op.get("application", ""), op.get("version", ""), op.get("option", "")))
         if isinstance(entry, dict):
             check("Value is one of the allowed values", lambda: scope_module.check_allowed_value(entry, str(op.get("value", ""))))
+        enforcement = check("Capability has a complete enforcement contract",
+                            lambda: capability_catalog.require_enforcement(record.get("capability_id", "")))
+        if isinstance(enforcement, dict):
+            check("Mechanism allowed by the company", lambda: scope_module.check_mechanism(scope, enforcement["mechanism"]))
+            if isinstance(entry, dict):
+                check("Option category declared, not protected, not never-touch",
+                      lambda: scope_module.check_option_category(scope, entry, enforcement))
+            if op.get("test_orchestration"):
+                check("Test is approved, its mechanism allowed, its side effects permitted",
+                      lambda: scope_module.check_test_boundary(scope, op["test_orchestration"], enforcement))
         spike = scope_module.find_spike_experiment(
             scope, record.get("capability_id", ""), record.get("capability_revision", ""),
             op.get("application", ""), op.get("version", ""), op.get("option", ""), record["environment"],

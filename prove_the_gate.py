@@ -30,6 +30,11 @@ test company whose scope and story links live in a temporary directory
  16. An approval past its policy-set validity cannot execute or run tests.
  17. An applied change never runs a second time.
  18. A write whose outcome is unknown blocks any retry until reconciled.
+ 19. A write is refused when the company has not allowed its mechanism.
+ 20. A write is refused when the target's option category is protected
+     or on the company's never-touch list (free-text notes do not count).
+ 21. A test is refused unless it is an approved test whose declared side
+     effects the capability permits.
 
 If every line says PASS, the safety model this whole project depends
 on is actually working on your machine, not just described in a
@@ -97,6 +102,10 @@ test_scope = {
     "tools_release": "TEST",
     "revision": 1,
     "approval_policy": {"policy_version": 1, "exact_change_approver_roles": ["product_manager"], "approval_valid_hours": 24},
+    "mechanisms_allowed": ["ais_form_service_request", "ais_orchestration"],
+    "test_scope": {"approved_tests": [
+        {"orchestration": "ORCH_GATE_TEST", "side_effects": ["creates_dev_transaction"], "note": "prove_the_gate.py fixture"},
+    ]},
     "environment": {
         "dev_environment_id": "DV900TEST",
         "dev_path_code": "TEST",
@@ -111,6 +120,7 @@ test_scope = {
                 "capability_revision": "r1",
                 "application": "P4210",
                 "version": "TESTVER01",
+                "option_category": "document_and_order_types",
                 "options": ["PDOCTYPE"],
                 "allowed_values": ["SO"],
                 "notes": "prove_the_gate.py test entry -- not a real version",
@@ -120,6 +130,7 @@ test_scope = {
                 "capability_revision": "r1",
                 "application": "P4210",
                 "version": "TESTVER02",
+                "option_category": "document_and_order_types",
                 "options": ["PDOCTYPE"],
                 "allowed_values": ["SO"],
                 "notes": "prove_the_gate.py test entry for the Needs-spike gate (deliberately NOT in spike_experiments yet)",
@@ -370,6 +381,60 @@ finally:
         check("a blind retry is refused until the target is reconciled", False)
     except execution.ExecutionBlocked:
         check("a blind retry is refused until the target is reconciled", True)
+
+    def _write_blocked(story: str) -> bool:
+        propose_to_backlog(story, f"gate test {story}", {"financial_impact": "Low"}, "Low")
+        approve(story, "Gate Test Runner", "approving for the gate test")
+        link(story)
+        ch = propose_change(story, {**operation, "story_id": story}, "processing_option_update")
+        approve_change(ch["change_id"], "Gate Test Runner", company_id=COMPANY, approver_roles=APPROVER_ROLES)
+        try:
+            client.set_processing_option(story, ch["change_id"], "P4210", "TESTVER01", "PDOCTYPE", "SO")
+            return False
+        except ScopeViolation:
+            return True
+
+    print("\n19. A write whose mechanism the company has not allowed...")
+    test_scope["mechanisms_allowed"] = ["ais_orchestration"]
+    write_scope(test_scope)
+    check("a write is refused when its mechanism is not allowed", _write_blocked("GATE-TEST-6"))
+    test_scope["mechanisms_allowed"] = ["ais_form_service_request", "ais_orchestration"]
+
+    print("\n20. A write to a protected or never-touch option category...")
+    entry = test_scope["functional_agent"]["approved_versions"][0]
+    entry["option_category"] = "pricing"
+    write_scope(test_scope)
+    check("a protected option category is refused", _write_blocked("GATE-TEST-7"))
+    entry["option_category"] = "document_and_order_types"
+    test_scope["functional_agent"]["never_touch_categories"] = ["document_and_order_types"]
+    write_scope(test_scope)
+    check("a never-touch option category is refused", _write_blocked("GATE-TEST-8"))
+    test_scope["functional_agent"]["never_touch_categories"] = []
+    test_scope["functional_agent"]["never_touch_notes"] = ["document types (free text only)"]
+    write_scope(test_scope)
+    check("free-text notes are not enforcement: they neither block nor unblock", not _write_blocked("GATE-TEST-9"))
+
+    print("\n21. A test that is not approved, or whose side effects are not permitted...")
+    for story, tests in (
+        ("GATE-TEST-10", []),
+        ("GATE-TEST-11", [{"orchestration": "ORCH_GATE_TEST", "side_effects": ["posting"]}]),
+    ):
+        test_scope["test_scope"]["approved_tests"] = tests
+        write_scope(test_scope)
+        propose_to_backlog(story, f"gate test {story}", {"financial_impact": "Low"}, "Low")
+        approve(story, "Gate Test Runner", "approving for the gate test")
+        link(story)
+        ch = propose_change(story, {**operation, "story_id": story, "test_orchestration": "ORCH_GATE_TEST"},
+                            "processing_option_update")
+        approve_change(ch["change_id"], "Gate Test Runner", company_id=COMPANY, approver_roles=APPROVER_ROLES)
+        client.set_processing_option(story, ch["change_id"], "P4210", "TESTVER01", "PDOCTYPE", "SO")
+        try:
+            client.run_orchestration(story, ch["change_id"], "ORCH_GATE_TEST", {})
+            ok = False
+        except ScopeViolation:
+            ok = True
+        label = "an unapproved test is refused" if not tests else "a test with a forbidden side effect is refused"
+        check(label, ok)
 
     print("\nCleaning up test data...")
     _clean_test_files()

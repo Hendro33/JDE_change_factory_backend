@@ -1,6 +1,6 @@
 {
   "_comment": "Functional Agent Capability Catalogue -- design update Section 2/3. Version-controlled source: promote a capability only by editing this file and getting the change reviewed by a designated functional owner AND technical validator (Section 2, 'the agent cannot certify its own capabilities'). Every entry below defaults to needs_spike; nothing here has been declared Validated by this file's authorship alone -- see each entry's validation.technical_validation for exactly what has, and has not, actually been demonstrated.",
-  "catalog_revision": "2026-09-21.1",
+  "catalog_revision": "2026-09-23.1",
 
   "capabilities": [
     {
@@ -71,6 +71,27 @@
         "validation_date": null,
         "approver": null,
         "revalidation_triggers": ["FSR_SET_PROCESSING_OPTION populated from a real spike", "a real DEV AIS endpoint configured", "Tools Release change", "scope.py/approval.py/capability_catalog.py gating logic changes"]
+      },
+      "enforcement": {
+        "_comment": "What the execution gate enforces for this capability (capability_catalog.require_enforcement). Only a capability with a complete enforcement block can execute; the prose elsewhere in this entry is descriptive and is never enforced.",
+        "tool": "set_processing_option",
+        "mechanism": "ais_form_service_request",
+        "target": "one processing option on a customer-owned version (never XJDE/ZJDE), listed in the company's approved versions with a declared option category",
+        "option_categories": {
+          "defaults_and_display": {"protected": false},
+          "document_and_order_types": {"protected": false},
+          "workflow_and_status": {"protected": false},
+          "pricing": {"protected": true},
+          "tax": {"protected": true},
+          "gl_posting_and_aai": {"protected": true},
+          "security_and_authorisation": {"protected": true},
+          "payments_and_banking": {"protected": true},
+          "outbound_integration": {"protected": true}
+        },
+        "test": {
+          "mechanism": "ais_orchestration",
+          "permitted_side_effects": ["none", "creates_dev_transaction"]
+        }
       }
     },
 

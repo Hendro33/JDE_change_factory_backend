@@ -55,14 +55,19 @@ def _full_scope(spike_expires_at: str | None = "2099-01-01T00:00:00+00:00", poli
         },
         "functionalAgent": {
             "approvedVersions": [{
-                "capabilityId": "processing_option_update", "application": "P4210", "version": "CIQ0001",
-                "options": ["PDOCTYPE"], "allowedValues": ["SO"],
+                "capabilityId": "processing_option_update", "optionCategory": "document_and_order_types",
+                "application": "P4210", "version": "CIQ0001", "options": ["PDOCTYPE"], "allowedValues": ["SO"],
             }],
             "spikeExperiments": spikes,
         },
     }
     if policy is not None:
         body["approvalPolicy"] = policy
+    # Enforced capability boundaries (capability_catalog enforcement contract).
+    body["mechanismsAllowed"] = ["ais_form_service_request", "ais_orchestration"]
+    body["testScope"] = {"approvedTests": [
+        {"orchestration": "ORCH_SO", "sideEffects": ["creates_dev_transaction"], "note": "creates one DEV sales order"},
+    ]}
     return body
 
 

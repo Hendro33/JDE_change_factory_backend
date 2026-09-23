@@ -83,6 +83,8 @@ class EngagementScopeService:
                 functional_agent=functional,
                 technical_agent=payload.technical_agent,
                 approval_policy=payload.approval_policy,
+                mechanisms_allowed=payload.mechanisms_allowed,
+                test_scope=payload.test_scope,
                 revision=revision,
                 updated_at=now,
                 updated_by=actor,

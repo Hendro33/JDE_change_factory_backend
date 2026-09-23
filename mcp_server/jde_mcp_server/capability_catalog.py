@@ -103,6 +103,60 @@ def require_capability(capability_id: str) -> dict:
     return cap
 
 
+# Closed vocabularies the enforcement contracts and company scopes use.
+MECHANISMS = {"ais_form_service_request", "ais_orchestration"}
+TEST_SIDE_EFFECTS = {"none", "creates_dev_transaction", "posting", "payment", "outbound_integration", "batch_run"}
+
+
+def _validated_enforcement(cap: dict) -> dict:
+    """The capability's enforcement contract, or CapabilityError if it is
+    missing or incomplete. A restriction that exists only as prose in the
+    catalogue is not enforcement, so such a capability cannot execute."""
+    cid = cap.get("capability_id", "?")
+    enf = cap.get("enforcement")
+    if not isinstance(enf, dict):
+        raise CapabilityError(
+            f"capability '{cid}' has no enforcement contract: its target, mechanism and protected-category "
+            "restrictions exist only as documentation, so it cannot execute"
+        )
+    problems = []
+    if not enf.get("tool"):
+        problems.append("tool")
+    if enf.get("mechanism") not in MECHANISMS:
+        problems.append("mechanism")
+    if not enf.get("target"):
+        problems.append("target")
+    cats = enf.get("option_categories")
+    if not isinstance(cats, dict) or not cats or any(not isinstance(v, dict) or not isinstance(v.get("protected"), bool) for v in cats.values()):
+        problems.append("option_categories")
+    test = enf.get("test") or {}
+    if test.get("mechanism") not in MECHANISMS or not test.get("permitted_side_effects") or not set(test["permitted_side_effects"]) <= TEST_SIDE_EFFECTS:
+        problems.append("test")
+    if problems:
+        raise CapabilityError(f"capability '{cid}' has an incomplete enforcement contract ({', '.join(problems)}), so it cannot execute")
+    return enf
+
+
+def require_enforcement(capability_id: str) -> dict:
+    return _validated_enforcement(require_capability(capability_id))
+
+
+def executable_capabilities() -> dict[str, dict]:
+    """capability_id -> enforcement contract, for every capability that has
+    a complete one. Today: processing_option_update only."""
+    out = {}
+    for cap in list_capabilities():
+        try:
+            out[cap["capability_id"]] = _validated_enforcement(cap)
+        except CapabilityError:
+            continue
+    return out
+
+
+def known_option_categories() -> set[str]:
+    return {c for enf in executable_capabilities().values() for c in enf["option_categories"]}
+
+
 def require_executable(capability_id: str, capability_revision: str, environment: str, *, spike_experiment_approved: bool = False) -> dict:
     """The real gate. Called from approval.py's require_exact_change
     (i.e. immediately before every write), never trusted to the model

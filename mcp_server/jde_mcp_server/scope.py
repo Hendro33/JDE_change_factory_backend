@@ -321,3 +321,65 @@ def require_approval_policy(scope: dict) -> dict:
             f"{MAX_APPROVAL_VALID_HOURS}; got {hours!r} -- refusing."
         )
     return policy
+
+
+# ---------------------------------------------------------------------
+# Capability boundaries (capability_catalog enforcement contracts).
+# Each check compares a closed, machine-readable value in the company's
+# scope with the capability's contract. Free-text notes are never read
+# here: a restriction that exists only as a label is not enforcement.
+# ---------------------------------------------------------------------
+
+def check_mechanism(scope: dict, mechanism: str) -> None:
+    allowed = scope.get("mechanisms_allowed") or []
+    if mechanism not in allowed:
+        raise ScopeViolation(
+            f"company {scope.get('customer_id', '?')} has not allowed the {mechanism!r} mechanism "
+            f"(allowed: {', '.join(allowed) or 'none'}). An Admin must allow it explicitly."
+        )
+
+
+def check_option_category(scope: dict, entry: dict, enforcement: dict) -> str:
+    """The approved option must carry a declared category that the
+    capability knows, that the capability does not protect, and that the
+    company has not marked never-touch."""
+    category = (entry.get("option_category") or "").strip()
+    target = f"{entry.get('application')}/{entry.get('version')}"
+    categories = enforcement["option_categories"]
+    if not category:
+        raise ScopeViolation(
+            f"the approved entry {target} has no declared option category -- an option must be classified "
+            "before Jade may write it"
+        )
+    if category not in categories:
+        raise ScopeViolation(f"option category {category!r} on {target} is not one this capability knows")
+    if categories[category]["protected"]:
+        raise ScopeViolation(
+            f"option category {category!r} is protected for this capability: Jade never writes it, "
+            "whatever the company's scope says"
+        )
+    never = (scope.get("functional_agent") or {}).get("never_touch_categories") or []
+    if category in never:
+        raise ScopeViolation(f"company {scope.get('customer_id', '?')} marks option category {category!r} as never-touch")
+    return category
+
+
+def check_test_boundary(scope: dict, test_name: str, enforcement: dict) -> dict:
+    """The test run is an action in JDE: its mechanism must be allowed, it
+    must be one of the company's approved tests, and every side effect it
+    declares must be one the capability permits."""
+    test_contract = enforcement["test"]
+    check_mechanism(scope, test_contract["mechanism"])
+    approved = (scope.get("test_scope") or {}).get("approved_tests") or []
+    test = next((t for t in approved if t.get("orchestration") == test_name), None)
+    if test is None:
+        raise ScopeViolation(f"test {test_name!r} is not one of this company's approved tests")
+    effects = test.get("side_effects") or []
+    if not effects:
+        raise ScopeViolation(f"approved test {test_name!r} declares no side effects; it must, before it can run")
+    forbidden = sorted(set(effects) - set(test_contract["permitted_side_effects"]))
+    if forbidden:
+        raise ScopeViolation(
+            f"test {test_name!r} declares side effects this capability does not permit in a test: {', '.join(forbidden)}"
+        )
+    return test
