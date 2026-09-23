@@ -53,53 +53,76 @@ correctness — but removing the password afterward means it can never
 be read back out of the dashboard or reused if the account is ever
 deleted.
 
-## Backup
+## Backup and restore
 
-Proportionate to a prototype: no automated backup job, just a manual
-copy you can run before anything risky (a schema change, a platform
-migration) or on whatever cadence you're comfortable with.
+Proportionate to a single-process pilot: no automated job, one script that takes a **consistent** backup of SQLite and all JSON records together, and restores it.
 
-Using Render's shell (Dashboard → the service → **Shell**), or `render
-ssh <service>` from the CLI:
+### What "consistent" means here
+
+Jade keeps state in two places: SQLite (`api_data/jde.sqlite3`: users, sessions, memberships and roles, domain assignments, Jira settings and encrypted tokens, company settings, sign-in failures) and JSON files (`api_data/*` records such as company scopes, story links and domain reviews, plus `backlog/`, `changes/` with exact-change approvals and their execution attempts, and `evidence/`). A backup must capture both at the same moment, or a restore could pair an approval with a membership that did not exist when it was given.
+
+`scripts/jade_backup.py backup` therefore:
+
+1. **Pauses writes** by creating the flag file `JDE_WRITE_PAUSE_FILE` (default `<JDE_API_DATA_DIR>/WRITE_PAUSED`). While it exists, the API answers every POST/PUT/PATCH/DELETE with **503 + Retry-After** ("nothing was changed"). Reads keep working, and the execution gate refuses to start any JDE write or test attempt.
+2. Waits `--settle-seconds` (default 2) for requests already in flight.
+3. **Refuses** (exit 2, no archive) if an agent run or a JDE attempt is in progress, because those write outside a request.
+4. Copies SQLite with its online-backup API, never a raw file copy, and copies every JSON location.
+5. Writes `manifest.json`, which holds:
+   - a sha256 for every file;
+   - table row counts;
+   - a summary of the security-relevant state: memberships with roles and revisions, every exact change with status, approver id, expiry, and write and test state, scope revisions, and the validity of each evidence chain;
+   - the **ids** of the credential keys the stored tokens need. The key itself is never included.
+6. Removes the pause flag, even if the backup failed.
+
+The pause usually lasts a few seconds. A browser that saves during it gets a readable 503 and can simply retry.
+
+### Taking a backup
+
+In Render's shell (Dashboard → service → **Shell**), which has the service's environment:
 
 ```bash
-# Inside the service's shell -- /data is the mounted disk.
-# 1. A consistent copy of the SQLite database. Copying the live file with
-#    tar can capture a half-written page; SQLite's own backup cannot.
-mkdir -p /tmp/jde-backup
-python3 -c "import sqlite3; sqlite3.connect('/data/api_data/jde.sqlite3').backup(sqlite3.connect('/tmp/jde-backup/jde.sqlite3'))"
-# 2. Everything else (JSON stores, backlog, changes, evidence), plus that copy.
-tar czf /tmp/jde-backup-$(date +%Y%m%d-%H%M).tar.gz -C /data --exclude=./api_data/jde.sqlite3 . -C /tmp/jde-backup jde.sqlite3
-rm -rf /tmp/jde-backup
+python3 scripts/jade_backup.py backup --out /tmp/jade-$(date +%Y%m%d-%H%M).tar.gz
+python3 scripts/jade_backup.py verify --archive /tmp/jade-YYYYMMDD-HHMM.tar.gz
 ```
 
-The JSON files are each written atomically (temp file, then rename), so each file in the archive is whole. A change made while the archive is being written may be in it or not. For a backup that must match one exact moment, take it outside working hours. Render's daily disk snapshot is the second layer.
+The archive contains password and session hashes, and Jira tokens encrypted under `JDE_CREDENTIAL_KEY`. Encrypt it before it leaves the platform (for example `age -r <recipient> -o jade.tar.gz.age jade.tar.gz`), download it to durable storage off the platform, and delete it from `/tmp`. Render's daily disk snapshot is a second layer, but it is not paused, so it is not guaranteed to be consistent across SQLite and JSON.
 
-The archive contains password and session hashes, and Jira tokens encrypted under the current `JDE_CREDENTIAL_KEY` (the key itself is never in it). Encrypt the archive before it leaves the platform, for example `age -r <recipient> -o backup.tar.gz.age backup.tar.gz`, and keep the credential key separately (see "Credential encryption key").
+### Restoring
 
-Then download `/tmp/jde-backup-*.tar.gz` via Render's shell file
-transfer (or `render ssh <service> -- cat /tmp/jde-backup-*.tar.gz > local-backup.tar.gz` piped through the CLI) to somewhere durable off
-the platform — your own machine, or object storage. Delete it from
-`/tmp` afterward; it's a full copy of every company's data, including
-Jira tokens.
-
-## Restore
-
-1. Provision the disk (a fresh Render service from this same
-   `render.yaml`, or the existing one after clearing `/data`).
-2. Upload the backup archive into the service (Render's shell file
-   transfer, or `render ssh` piping it in).
-3. From the service's shell:
+1. Upload the archive into the service (Render's shell file transfer, or `render ssh` piping it in).
+2. Make sure `JDE_CREDENTIAL_KEY` (or `JDE_CREDENTIAL_KEY_PREVIOUS`) holds the key the archive needs. `verify` prints `credential_key_ids_needed` and whether the current environment can read them. See "Recovering the matching credential key" below.
+3. Run:
    ```bash
-   rm -rf /data/*        # only if restoring into a non-empty disk
-   tar xzf jde-backup-YYYYMMDD-HHMM.tar.gz -C /data
-   mv /data/jde.sqlite3 /data/api_data/jde.sqlite3
+   python3 scripts/jade_backup.py restore --archive /tmp/jade-YYYYMMDD-HHMM.tar.gz --replace-existing
    ```
-   Set `JDE_CREDENTIAL_KEY` to the key that was current when the backup was taken. Otherwise the stored Jira tokens show as unreadable and must be re-entered.
-4. Restart the service so it picks up the restored files. Schema
-   migrations (`persistence/db.py`'s `ensure_schema()`) run
-   automatically on startup and are safe to run again against an
-   already-migrated database — they no-op past what's already applied.
+   The restore runs these steps in order:
+   - It verifies every checksum before touching anything. A damaged or altered archive is refused.
+   - It pauses writes.
+   - It moves the current data aside to `<dir>.pre-restore-<timestamp>`. Nothing is deleted.
+   - It restores all locations and runs SQLite's `integrity_check`.
+   - It re-summarises the restored state and compares it with the manifest.
+
+   It prints a report with `matches_backup`, `sqlite_integrity` and `credentials_readable`, and exits non-zero unless the integrity check and the state comparison both pass. Without `--replace-existing` it only restores into empty locations.
+4. **Restart the service**, so nothing keeps pre-restore state in memory. On start, schema migrations run (they are idempotent), and any JDE attempt that was in flight at backup time is marked *unknown*. Backups refuse to run while an attempt is in flight, so there should be none.
+5. When you are satisfied, delete the `*.pre-restore-*` directories.
+
+`tests/test_backup_restore.py` exercises all of this end to end:
+- backup, followed by further changes, followed by restore;
+- after a restart, the restored state is checked: memberships and revisions, pending, approved, applied and unknown changes, whether a restored approval is usable, the Jira token and the evidence chains;
+- the 503 and refused dispatch during a backup, and no backup while an attempt is in flight;
+- a tampered archive is refused;
+- a key mismatch is reported, then fixed by supplying the old key.
+
+### Recovering the matching credential key
+
+The key is deliberately **not** in the backup: whoever holds the archive alone cannot read the Jira tokens. Recover it separately:
+
+1. When a key is created or rotated, store it in the team password manager as `Jade JDE_CREDENTIAL_KEY <key id>`. The key id is the first 8 hex characters of its SHA-256; print it in the service shell with `python3 -c "import sys; sys.path[:0]=['api_service']; from jde_api_service.services import credential_crypto; print(credential_crypto.current_key_id())"`.
+2. `verify` or `restore` reports `credential_key_ids_needed`. Look up the entry with that id in the password manager.
+3. Set that key as `JDE_CREDENTIAL_KEY`. If the service should keep its newer key, set it as `JDE_CREDENTIAL_KEY_PREVIOUS` instead, and the next start re-encrypts the tokens under the current key. Then restart.
+4. If the key cannot be recovered, only the Jira tokens are lost. Integrations shows Jira as **Unavailable (cannot be decrypted)** and sync is refused. There is no fallback to simulated data. Each company's Admin re-enters its token.
+
+Keep every retired key in the password manager until no retained backup still lists its id.
 
 ## Credential encryption key
 
@@ -115,8 +138,8 @@ python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().
 ```
 
 - **Without the key**, saving a credential is refused, so nothing is ever stored in plaintext. The Integrations screen shows that encryption is unavailable.
-- **Backups** (below) contain only ciphertext. A restore needs the key that was current when the backup was taken. Keep old keys in the password manager until no backup still needs them.
-- **Lost key:** only the stored tokens are lost. Set a new key; each company's Admin then re-enters its Jira token. Integrations shows the old ones as "unreadable", and Jade falls back to mock Jira for them.
+- **Backups** (above) contain only ciphertext. A restore needs the key that was current when the backup was taken. Keep old keys in the password manager until no backup still needs them.
+- **Lost key:** only the stored tokens are lost. Set a new key; each company's Admin then re-enters its Jira token. Until then Integrations shows the old ones as "unreadable" and Jira as Unavailable for that company; sync is refused (no fallback to simulated Jira).
 - **Rotation:**
   1. Set the new key as `JDE_CREDENTIAL_KEY`, and the old one as `JDE_CREDENTIAL_KEY_PREVIOUS`.
   2. Redeploy. On start, every token is re-encrypted under the new key.

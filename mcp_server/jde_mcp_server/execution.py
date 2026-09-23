@@ -114,6 +114,11 @@ def begin(
     reconcile and other attempts take -- so nothing that changes between
     the caller's own checks and this moment can be used stale."""
     with _locked(change_id):
+        pause_file = os.environ.get("JDE_WRITE_PAUSE_FILE")
+        if pause_file and os.path.exists(pause_file):
+            raise ExecutionBlocked(
+                f"change {change_id}: writes are paused for a backup or restore -- nothing was sent; try again shortly"
+            )
         if revalidate is not None:
             revalidate()
         record = approval._load(change_id)

@@ -35,6 +35,7 @@ from .persistence.db import db_path, ensure_schema
 from .persistence.revisions import RevisionConflict, RevisionRequired
 from jde_mcp_server import scope as mcp_scope
 
+from .services import write_pause
 from .services.bootstrap_service import ensure_bootstrap_admin
 from .services.run_recovery import reconcile_interrupted_runs
 from .services.customer_service import ensure_seed_companies
@@ -64,6 +65,8 @@ def _wire_execution_gate() -> None:
         # Read-only: the gate re-checks the approver's CURRENT roles here
         # immediately before dispatch (mcp_server authority.py).
         "JDE_AUTH_DB_PATH": db_path(),
+        # Present while a backup or restore holds writes (services/write_pause.py).
+        "JDE_WRITE_PAUSE_FILE": write_pause.pause_file(),
     }
     for name, default in wiring.items():
         os.environ.setdefault(name, os.path.abspath(default))
@@ -97,6 +100,25 @@ app = FastAPI(
     version="0.1.0",
     lifespan=_lifespan,
 )
+
+_MUTATING = {"POST", "PUT", "PATCH", "DELETE"}
+
+
+@app.middleware("http")
+async def _refuse_writes_while_paused(request: Request, call_next):
+    """Registered before CORS, so CORS wraps it and the 503 carries CORS
+    headers the browser can read."""
+    if request.method in _MUTATING:
+        paused = write_pause.status()
+        if paused is not None:
+            return JSONResponse(
+                status_code=503,
+                headers={"Retry-After": "30"},
+                content={"detail": f"Jade is briefly paused for maintenance ({paused.get('reason', 'backup')}); "
+                                   "nothing was changed -- try again in a moment."},
+            )
+    return await call_next(request)
+
 
 app.add_middleware(
     CORSMiddleware,
