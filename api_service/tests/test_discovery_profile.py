@@ -148,9 +148,9 @@ def test_environment_verification_fails_on_a_mismatch(client):
 
     save_profile(client)
     save_credential(client)
-    transport.simulated_estate("vdb")["defaultconfig"]["toolsRelease"] = "9.2.5.1"
+    transport.simulated_estate("vdb")["session"]["apps_release"] = "E910"
     r = client.post("/admin/jde/test-connection", headers=headers("vdb")).json()
-    assert r["outcome"] == "failed" and "toolsRelease" in r["detail"]
+    assert r["outcome"] == "failed" and "application release" in r["detail"] and "E910" in r["detail"]
     h = r["profile"]["health"]
     assert (h["reachability"]["state"], h["authentication"]["state"], h["environment"]["state"]) == ("ok", "ok", "failed")
     assert h["approved_read"]["state"] == "unknown"
@@ -162,3 +162,83 @@ def test_capability_status_is_explicit(client):
     assert status["source_code"] == status["event_rules"] == status["object_specifications"] == "unavailable"
     assert status["udc_values"] == status["processing_option_values"] == "supported"
     assert status["version_list"] == "unverified"  # not approved, never sample-read
+
+
+# ---------------------------------------------------------------------
+# Environment verification against the documented AIS contract
+# ---------------------------------------------------------------------
+def _env_check(client) -> dict:
+    return client.get("/admin/jde/profile", headers=headers("vdb")).json()["health"]["environment"]
+
+
+def test_server_defaults_alone_never_verify_the_environment(client):
+    """defaultconfig reports the server's DEFAULT environment. Even when it
+    equals the expected one, it is not evidence of the session: if the
+    token response does not state the session context, the check stays
+    unverified and discovery cannot be enabled."""
+    from jde_api_service.discovery import transport
+
+    save_profile(client)
+    save_credential(client)
+    transport.simulated_estate("vdb")["defaultconfig"]["defaultEnvironment"] = "JDV920"  # matches the profile
+    transport.simulated_estate("vdb")["session"]["report_context"] = False
+    r = client.post("/admin/jde/test-connection", headers=headers("vdb")).json()
+    assert r["outcome"] == "failed"
+    env = _env_check(client)
+    assert env["state"] == "unknown"
+    missing = " ".join(env["facets"]["missing_evidence"])
+    assert "session environment" in missing and "session role" in missing and "application release" in missing
+    assert env["facets"]["server_defaults"]["used_as_evidence"] is False
+    rev = client.get("/admin/jde/profile", headers=headers("vdb")).json()["revision"]
+    assert client.post("/admin/jde/enable", headers=headers("vdb"), json={"expectedRevision": rev}).status_code == 409
+
+
+def test_the_session_response_is_the_evidence_not_the_server_default(client):
+    from jde_api_service.discovery import transport
+
+    save_profile(client)
+    save_credential(client)
+    transport.simulated_estate("vdb")["defaultconfig"]["defaultEnvironment"] = "JPD920"  # server default: PROD
+    r = client.post("/admin/jde/test-connection", headers=headers("vdb")).json()
+    assert r["outcome"] == "ok", r
+    env = _env_check(client)
+    items = {i["item"]: i for i in env["facets"]["items"]}
+    assert items["session environment"]["status"] == "verified"
+    assert items["session environment"]["source"] == "AIS token response"
+    assert items["application release"]["status"] == "verified"
+    assert {items["Tools release"]["status"], items["path code"]["status"],
+            items["OCM data-source routing and isolation"]["status"]} == {"attested"}
+    assert any("JPD920" in n for n in env["facets"]["notes"])
+
+
+def test_a_session_granted_a_different_environment_is_a_mismatch(client):
+    from jde_api_service.discovery import transport
+
+    save_profile(client)
+    save_credential(client)
+    real = transport.SimulatedAisEndpoint.authenticate
+
+    def falls_back(self, username, password, environment, role):
+        s = real(self, username, password, environment, role)
+        s.context["environment"] = "JPD920"  # AIS put the session somewhere else
+        return s
+
+    transport.SimulatedAisEndpoint.authenticate = falls_back
+    try:
+        r = client.post("/admin/jde/test-connection", headers=headers("vdb")).json()
+    finally:
+        transport.SimulatedAisEndpoint.authenticate = real
+    assert r["outcome"] == "failed" and "session reports 'JPD920'" in r["detail"]
+
+
+def test_without_a_cnc_attestation_tools_release_and_path_code_stay_unverified(client):
+    save_profile(client, runtimeAttestationConfirmed=False, runtimeAttestationEvidence="")
+    save_credential(client)
+    r = client.post("/admin/jde/test-connection", headers=headers("vdb")).json()
+    assert r["outcome"] == "failed"
+    env = _env_check(client)
+    assert env["state"] == "unknown"
+    missing = " ".join(env["facets"]["missing_evidence"])
+    assert "Tools release" in missing and "path code" in missing
+    view = client.get("/admin/jde/profile", headers=headers("vdb")).json()
+    assert any("attested the Tools release and path code" in b for b in view["enableBlockers"])

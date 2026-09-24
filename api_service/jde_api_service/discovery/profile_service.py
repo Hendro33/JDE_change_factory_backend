@@ -143,13 +143,14 @@ def credential_storage(profile: dict) -> str:
     return "encrypted"
 
 
-def record_check(company_id: str, check: str, state: str, detail: str, *, capability_id: Optional[str] = None) -> None:
+def record_check(company_id: str, check: str, state: str, detail: str, *, capability_id: Optional[str] = None,
+                 facets: Optional[dict] = None) -> None:
     with connection(immediate=True) as conn:
         row = _row(conn, company_id)
         if row is None:
             return
-        entry = {"state": state, "checked_at": _now(), "detail": detail[:300],
-                 "profile_revision": row["revision"], "material_hash": row["material_hash"]}
+        entry = {"state": state, "checked_at": _now(), "detail": detail[:600],
+                 "profile_revision": row["revision"], "material_hash": row["material_hash"], "facets": facets or {}}
         if capability_id:
             checks = json.loads(row["capability_checks"] or "{}")
             checks[capability_id] = entry
@@ -167,7 +168,7 @@ def _current(entry: Optional[dict], profile: dict) -> CheckResult:
     if entry.get("material_hash") != profile["material_hash"]:
         state = "stale"
     return CheckResult(state=state, checked_at=entry.get("checked_at"), detail=entry.get("detail", ""),
-                       profile_revision=entry.get("profile_revision"))
+                       profile_revision=entry.get("profile_revision"), facets=entry.get("facets") or {})
 
 
 def health(profile: dict) -> dict[str, CheckResult]:
@@ -226,6 +227,9 @@ def enable_blockers(profile: dict) -> list[str]:
         out.append("the customer/CNC has not confirmed the network route and isolation (with evidence)")
     if not config.privilege_confirmed or not config.privilege_statement.strip():
         out.append("the customer has not confirmed the JDE identity is narrowly privileged (read-only role)")
+    if not config.runtime_attestation_confirmed or not config.runtime_attestation_evidence.strip():
+        out.append("the CNC has not attested the Tools release and path code the environment runs on "
+                   "(the AIS contract does not report them)")
     if not config.approved_reads:
         out.append("no approved read operations")
     if config.discovery_window is None:

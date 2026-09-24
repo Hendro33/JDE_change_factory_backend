@@ -35,6 +35,8 @@ import httpx
 from . import capabilities
 from .capabilities import AUTH_ENDPOINTS, ReadPlan
 
+# Documented defaultconfig fields Jade keeps (server-level defaults).
+DEFAULTCONFIG_KEYS = ("aisVersion", "defaultEnvironment", "defaultRole", "defaultJasServer")
 LIVE_ENABLED_ENV = "JDE_DISCOVERY_LIVE_ENABLED"
 ALLOWED_HOSTS_ENV = "JDE_DISCOVERY_ALLOWED_HOSTS"
 SIMULATION_LABEL = "SIMULATION -- simulated AIS endpoint, not the customer's JDE"
@@ -53,6 +55,25 @@ class AuthenticationFailed(TransportError):
 
 class DestinationNotAllowed(TransportError):
     pass
+
+
+@dataclass
+class Session:
+    """An authenticated AIS session. `context` is what the token-request
+    response itself states about THIS session (documented v2 response:
+    top-level environment, role, jasserver, username; userInfo.appsRelease).
+    A key the response did not contain is absent -- never filled in from
+    the profile or from server defaults."""
+
+    token: str
+    context: dict[str, Any] = field(default_factory=dict)
+
+
+def session_context_from_token_response(data: dict[str, Any]) -> dict[str, Any]:
+    user = data.get("userInfo") or {}
+    out = {"environment": data.get("environment"), "role": data.get("role"), "jasserver": data.get("jasserver"),
+           "username": data.get("username") or user.get("username"), "apps_release": user.get("appsRelease")}
+    return {k: v for k, v in out.items() if v not in (None, "")}
 
 
 @dataclass
@@ -111,8 +132,15 @@ def reset_breaker(company_id: str) -> None:
 _DEFAULT_ESTATE: dict[str, Any] = {
     "reachable": True,
     "accept_credentials": True,
-    "defaultconfig": {"environment": "JDV920", "applicationRelease": "9.2", "toolsRelease": "9.2.8.2",
-                      "pathCode": "DV920", "aisVersion": "simulated"},
+    # Shaped like the documented defaultconfig response: SERVER defaults
+    # only. It says nothing about which environment a session actually uses.
+    "defaultconfig": {"aisVersion": "simulated-ais", "defaultEnvironment": "JDV920", "defaultRole": "*ALL",
+                      "defaultJasServer": "http://sim-jas.invalid:8080", "capabilityList": ["dataservice", "poservice"]},
+    # What the simulated token-request response reports about the session
+    # (documented keys). report_context False simulates an AIS that omits
+    # them; granted_* restricts what the simulated user may log in to.
+    "session": {"report_context": True, "apps_release": "E920", "jasserver": "http://sim-jas.invalid:8080",
+                "granted_environments": None, "granted_roles": None},
     "tables": {
         "F0005": [
             {"DRSY": "00", "DRRT": "DT", "DRKY": "SO", "DRDL01": "Sales Order", "DRSPHD": ""},
@@ -183,14 +211,22 @@ class SimulatedAisEndpoint:
         self._estate()
         return "simulated endpoint answered"
 
-    def authenticate(self, username: str, password: str, environment: str, role: str) -> str:
+    def authenticate(self, username: str, password: str, environment: str, role: str) -> Session:
         self.calls.append(AUTH_ENDPOINTS["token_request"])
         estate = self._estate()
         if not (username and password) or not estate["accept_credentials"]:
             raise AuthenticationFailed("simulated AIS refused the credential")
-        return "simulated-token"
+        s = estate["session"]
+        if (s["granted_environments"] is not None and environment not in s["granted_environments"]) or (
+                s["granted_roles"] is not None and role not in s["granted_roles"]):
+            raise AuthenticationFailed("simulated AIS refused the requested environment or role")
+        if not s["report_context"]:
+            return Session("simulated-token", {})
+        return Session("simulated-token", session_context_from_token_response({
+            "username": username, "environment": environment, "role": role, "jasserver": s["jasserver"],
+            "userInfo": {"token": "simulated-token", "appsRelease": s["apps_release"]}}))
 
-    def logout(self, token: str) -> None:
+    def logout(self, token) -> None:
         self.calls.append(AUTH_ENDPOINTS["logout"])
 
     def read(self, plan: ReadPlan, token: str) -> ReadResult:
@@ -198,7 +234,8 @@ class SimulatedAisEndpoint:
         self.calls.append((plan.method, plan.path))
         estate = self._estate()
         if plan.endpoint == "defaultconfig":
-            return ReadResult([dict(estate["defaultconfig"])], meta={"endpoint": "defaultconfig"})
+            return ReadResult([{k: estate["defaultconfig"].get(k) for k in DEFAULTCONFIG_KEYS if k in estate["defaultconfig"]}],
+                              meta={"endpoint": "defaultconfig"})
         if plan.endpoint == "poservice":
             key = f"{plan.body['applicationName']}|{plan.body['version']}"
             values = estate["processing_options"].get(key)
@@ -279,7 +316,7 @@ class LiveAisTransport:
         self._send(method, path)
         return "endpoint answered over verified TLS"
 
-    def authenticate(self, username: str, password: str, environment: str, role: str) -> str:
+    def authenticate(self, username: str, password: str, environment: str, role: str) -> Session:
         method, path = AUTH_ENDPOINTS["token_request"]
         data = self._send(method, path, body={"username": username, "password": password,
                                               "environment": environment, "role": role,
@@ -287,21 +324,22 @@ class LiveAisTransport:
         token = ((data.get("userInfo") or {}).get("token")) or data.get("token")
         if not token:
             raise AuthenticationFailed("AIS returned no session token")
-        return token
+        return Session(token, session_context_from_token_response(data))
 
-    def logout(self, token: str) -> None:
+    def logout(self, session) -> None:
+        token = session.token if isinstance(session, Session) else session
         method, path = AUTH_ENDPOINTS["logout"]
         try:
             self._send(method, path, token=token, body={"token": token})
         except TransportError:
             pass  # the session expires on its own; never retried
 
-    def read(self, plan: ReadPlan, token: str) -> ReadResult:
+    def read(self, plan: ReadPlan, session) -> ReadResult:
         capabilities.assert_read_semantics(plan)
+        token = session.token if isinstance(session, Session) else session
         data = self._send(plan.method, plan.path, token=token, body=plan.body)
         if plan.endpoint == "defaultconfig":
-            return ReadResult([{k: data.get(k) for k in ("environment", "applicationRelease", "toolsRelease",
-                                                         "pathCode", "aisVersion") if k in data}],
+            return ReadResult([{k: data.get(k) for k in DEFAULTCONFIG_KEYS if k in data}],
                               meta={"endpoint": "defaultconfig", "shape": "unverified"})
         if plan.endpoint == "poservice":
             options = data.get("processingOptions") or {}

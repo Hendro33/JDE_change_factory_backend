@@ -257,11 +257,11 @@ def _dispatch(profile: dict, plan: capabilities.ReadPlan) -> tuple[transport.Rea
         username, password = profile_service.credential(profile["company_id"])
     except credential_crypto.CredentialUnreadable as exc:
         raise DiscoveryBlocked(f"no usable discovery credential: {exc}") from exc
-    token = client.authenticate(username, password, config.environment, config.role)
+    session = client.authenticate(username, password, config.environment, config.role)
     try:
-        return client.read(plan, token), client.mode
+        return client.read(plan, session), client.mode
     finally:
-        client.logout(token)
+        client.logout(session)
 
 
 def execute_read(grant: DiscoveryGrant, capability_id: str, target: str = "", fields: Optional[list[str]] = None,
@@ -429,9 +429,9 @@ def test_connection(company_id: str, actor_user_id: str) -> tuple[str, str]:
             log("blocked", "no usable credential")
             return "failed", str(exc)
         try:
-            token = client.authenticate(username, password, config.environment, config.role)
+            session = client.authenticate(username, password, config.environment, config.role)
             profile_service.record_check(company_id, "authentication", "ok",
-                                         f"session opened for environment {config.environment}, role {config.role}")
+                                         f"session opened; requested environment {config.environment}, role {config.role}")
         except transport.TransportError as exc:
             profile_service.record_check(company_id, "authentication", "failed", str(exc))
             log("error", str(exc))
@@ -439,41 +439,111 @@ def test_connection(company_id: str, actor_user_id: str) -> tuple[str, str]:
         try:
             plan = capabilities.build_plan(capabilities.CAPABILITIES["environment_info"], "", [], [], 1,
                                            environment=config.environment)
-            info = (client.read(plan, token).records or [{}])[0]
+            server_defaults = (client.read(plan, session).records or [{}])[0]
         except transport.TransportError as exc:
-            profile_service.record_check(company_id, "environment", "failed", str(exc))
+            profile_service.record_check(company_id, "environment", "failed", f"server defaults unreadable: {exc}")
             log("error", str(exc))
-            return "failed", f"environment could not be read: {exc}"
+            return "failed", f"the AIS server defaults could not be read: {exc}"
         finally:
-            client.logout(token)
+            client.logout(session)
     finally:
         lock.release()
 
-    expected = {"environment": config.environment, "toolsRelease": config.expected_tools_release,
-                "applicationRelease": config.expected_application_release, "pathCode": config.path_code}
-    mismatches = [f"{k}: expected {v!r}, AIS reports {info.get(k)!r}" for k, v in expected.items()
-                  if info.get(k) is not None and str(info.get(k)) != v]
-    unknown = [k for k in expected if info.get(k) is None]
-    if mismatches:
-        profile_service.record_check(company_id, "environment", "failed", "; ".join(mismatches))
-        profile_service.record_check(company_id, "environment_info", "failed", "; ".join(mismatches),
-                                     capability_id="environment_info")
-        log("error", "environment mismatch", 1)
-        return "failed", "environment does not match the profile: " + "; ".join(mismatches)
-    if {"environment", "toolsRelease"} & set(unknown):
-        reason = ("AIS did not report " + ", ".join(sorted({"environment", "toolsRelease"} & set(unknown)))
-                  + "; the environment cannot be verified, so discovery stays off")
-        profile_service.record_check(company_id, "environment", "unknown", reason)
-        log("error", "environment not verifiable", 1)
-        return "failed", reason
-    detail = f"{client.mode}: environment {info.get('environment')}, Tools {info.get('toolsRelease')}"
-    if unknown:
-        detail += f" (not reported by AIS: {', '.join(unknown)})"
-    profile_service.record_check(company_id, "environment", "ok", detail)
-    profile_service.record_check(company_id, "environment_info", "ok", detail, capability_id="environment_info")
+    profile_service.record_check(company_id, "environment_info", "ok", "defaultconfig read (server defaults)",
+                                 capability_id="environment_info")
+    state, detail, facets = verify_environment(config, server_defaults, session.context, client.mode)
+    profile_service.record_check(company_id, "environment", state, detail, facets=facets)
+    if state != "ok":
+        log("error" if state == "failed" else "blocked", detail, 1)
+        return "failed", detail
     profile_service.clear_disabled(company_id)
     log("ok", "", 1)
     return "ok", detail
+
+
+def _release_digits(value: str) -> str:
+    return "".join(ch for ch in str(value) if ch.isdigit())
+
+
+def verify_environment(config: JdeProfileConfig, server_defaults: dict, session: dict, mode: str
+                       ) -> tuple[str, str, dict]:
+    """Environment verification against the documented AIS contract.
+
+    Four sources, never mixed up:
+      * expected      -- what the profile says (the Admin's intent);
+      * server defaults -- defaultconfig: the AIS server's DEFAULT environment
+        and role. Recorded, never used as evidence of the session;
+      * session context -- the token-request response for the session Jade
+        opened with an explicit environment and role: environment, role,
+        jasserver, userInfo.appsRelease;
+      * attested -- what the contract does not expose (Tools release, path
+        code, OCM data-source routing and isolation): the customer/CNC
+        statement recorded in the profile. Jade cannot verify it.
+    Anything the session does not state stays unverified and discovery
+    stays blocked, with the missing evidence named."""
+    items, missing, mismatch = [], [], []
+
+    def item(name: str, status: str, source: str, detail: str) -> None:
+        items.append({"item": name, "status": status, "source": source, "detail": detail})
+        if status == "missing":
+            missing.append(f"{name}: {detail}")
+        elif status == "mismatch":
+            mismatch.append(f"{name}: {detail}")
+
+    for key, label, expected in (("environment", "session environment", config.environment),
+                                 ("role", "session role", config.role)):
+        reported = session.get(key)
+        if reported is None:
+            item(label, "missing", "AIS token response",
+                 f"the token-request response did not state the session's {key}; it cannot be verified")
+        elif str(reported) != expected:
+            item(label, "mismatch", "AIS token response", f"expected {expected!r}, session reports {reported!r}")
+        else:
+            item(label, "verified", "AIS token response", f"session reports {reported!r}")
+    apps = session.get("apps_release")
+    exp_digits, got_digits = _release_digits(config.expected_application_release), _release_digits(apps or "")
+    if apps is None:
+        item("application release", "missing", "AIS token response (userInfo.appsRelease)",
+             "userInfo.appsRelease was not returned; the application release cannot be verified")
+    elif not (got_digits.startswith(exp_digits) or exp_digits.startswith(got_digits)):
+        item("application release", "mismatch", "AIS token response (userInfo.appsRelease)",
+             f"expected {config.expected_application_release!r}, session reports {apps!r}")
+    else:
+        item("application release", "verified", "AIS token response (userInfo.appsRelease)", f"session reports {apps!r}")
+    attested = config.runtime_attestation_confirmed and bool(config.runtime_attestation_evidence.strip())
+    for label, value in (("Tools release", config.expected_tools_release), ("path code", config.path_code)):
+        item(label, "attested" if attested else "missing", "customer/CNC attestation (not exposed by AIS)",
+             f"{value!r}: {config.runtime_attestation_evidence.strip()}" if attested else
+             f"no documented AIS response states the {label}; a CNC attestation is required")
+    routing = config.routing_isolation_confirmed and bool(config.isolation_evidence.strip())
+    item("OCM data-source routing and isolation", "attested" if routing else "missing",
+         "customer/CNC attestation (not observable through AIS)",
+         config.isolation_evidence.strip() if routing else "no customer/CNC attestation of OCM routing and isolation")
+    default_env = server_defaults.get("defaultEnvironment")
+    notes = ["defaultconfig describes server defaults only; it is recorded but never used as evidence of the session"]
+    if default_env and default_env != config.environment:
+        notes.append(f"the server's default environment is {default_env!r}; Jade always requests "
+                     f"{config.environment!r} explicitly and verifies it from the session response")
+    facets = {
+        "expected": {"environment": config.environment, "role": config.role,
+                     "application_release": config.expected_application_release,
+                     "tools_release": config.expected_tools_release, "path_code": config.path_code},
+        "server_defaults": {**server_defaults, "used_as_evidence": False},
+        "session_context": {**session, "source": "AIS v2 token-request response"},
+        "attested": {"runtime": config.runtime_attestation_evidence.strip() if attested else None,
+                     "ocm_routing_isolation": config.isolation_evidence.strip() if routing else None},
+        "items": items, "missing_evidence": missing, "notes": notes,
+        "mode": mode, "contract_basis": "Oracle AIS REST API v2 tokenrequest and defaultconfig (documented fields); "
+                                        "response shapes to be confirmed against the customer's release",
+    }
+    if mismatch:
+        return "failed", "environment does not match: " + "; ".join(mismatch), facets
+    if missing:
+        return "unknown", "environment not verifiable -- missing evidence: " + "; ".join(missing), facets
+    verified = [i["item"] for i in items if i["status"] == "verified"]
+    attested_items = [i["item"] for i in items if i["status"] == "attested"]
+    return "ok", (f"{mode}: verified from the session response: {', '.join(verified)}; "
+                  f"customer-attested: {', '.join(attested_items)}"), facets
 
 
 def sample_read(company_id: str, actor_user_id: str, capability_id: str) -> dict:

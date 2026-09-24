@@ -28,6 +28,8 @@ def profile_body(company: str = "vdb", **overrides) -> dict:
         "routingIsolationConfirmed": True,
         "privilegeStatement": "JADEDISC: read-only role limited to the listed tables",
         "privilegeConfirmed": True,
+        "runtimeAttestationConfirmed": True,
+        "runtimeAttestationEvidence": "CNC (Chris, ticket CNC-12): JDV920 runs path code DV920 on Tools 9.2.8.2",
         "approvedReads": [
             {"capabilityId": "udc_values", "targets": ["00/DT"], "fields": ["DRSY", "DRRT", "DRKY", "DRDL01"]},
             {"capabilityId": "object_librarian", "targets": ["P4210", "P554210", "B5542001"],
@@ -65,7 +67,6 @@ def save_credential(client, company: str = "vdb", password: str = "s3cret-Discov
 def verify_and_enable(client, company: str = "vdb") -> dict:
     from jde_api_service.discovery import transport
 
-    transport.simulated_estate(company)["defaultconfig"]["environment"] = ENVIRONMENTS.get(company, "JDV920")
     r = client.post("/admin/jde/test-connection", headers=headers(company))
     assert r.json()["outcome"] == "ok", r.text
     for read in client.get("/admin/jde/profile", headers=headers(company)).json()["config"]["approvedReads"]:

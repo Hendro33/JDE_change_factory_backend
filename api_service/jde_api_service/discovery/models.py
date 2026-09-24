@@ -104,6 +104,10 @@ class JdeProfileConfig(ApiModel):
     routing_isolation_confirmed: bool = False
     privilege_statement: str = ""
     privilege_confirmed: bool = False
+    # The documented AIS contract exposes neither the Tools release nor the
+    # path code a session runs on; the customer's CNC attests them.
+    runtime_attestation_confirmed: bool = False
+    runtime_attestation_evidence: str = ""
     approved_reads: list[ApprovedRead] = Field(default_factory=list)
     discovery_window: Optional[DiscoveryWindow] = None
     limits: RequestLimits = Field(default_factory=RequestLimits)
@@ -150,6 +154,9 @@ class CheckResult(ApiModel):
     checked_at: Optional[str] = None
     detail: str = ""
     profile_revision: Optional[int] = None
+    # Environment verification only: expected / server defaults / session
+    # context / attested, and each item's status with its source.
+    facets: dict[str, Any] = {}
 
 
 class CapabilityView(ApiModel):

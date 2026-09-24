@@ -65,9 +65,10 @@ class DiscoveryCapability:
 
 CAPABILITIES: dict[str, DiscoveryCapability] = {c.capability_id: c for c in (
     DiscoveryCapability(
-        "environment_info", "AIS environment information",
-        "The AIS server's default configuration: which JDE environment, application and Tools release it serves. "
-        "Used to confirm the environment is the expected DEV one.",
+        "environment_info", "AIS server defaults",
+        "The AIS server's documented defaultconfig: AIS version and the server's DEFAULT environment, role and "
+        "HTML server. These are server defaults -- not proof of the environment, release or data routing a "
+        "session actually uses.",
         "unverified", "configuration", target_kind="none", endpoint="defaultconfig",
     ),
     DiscoveryCapability(

@@ -265,10 +265,14 @@ def _ais_ok(requests: list):
     def handler(request: httpx.Request) -> httpx.Response:
         requests.append((request.method, request.url.path))
         if request.url.path.endswith("/tokenrequest"):
-            return httpx.Response(200, json={"userInfo": {"token": "live-token"}})
+            # Documented v2 token-request response fields.
+            return httpx.Response(200, json={"username": "JADEDISC", "environment": "JDV920", "role": "JADEDISC",
+                                             "jasserver": "https://jas.customer.example",
+                                             "userInfo": {"token": "live-token", "appsRelease": "E920"}})
         if request.url.path.endswith("/defaultconfig"):
-            return httpx.Response(200, json={"environment": "JDV920", "toolsRelease": "9.2.8.2",
-                                             "applicationRelease": "9.2", "pathCode": "DV920"})
+            # Documented defaultconfig: server defaults only.
+            return httpx.Response(200, json={"aisVersion": "9.2.8.2", "defaultEnvironment": "JPD920",
+                                             "defaultRole": "*ALL", "defaultJasServer": "https://jas.customer.example"})
         return httpx.Response(200, json={})
     return handler
 
