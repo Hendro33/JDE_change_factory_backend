@@ -43,12 +43,12 @@
       },
       "preconditions": {
         "required_records": "The target version must already exist and be a customer-named (non-template) version",
-        "expected_current_value": "Read via get_processing_options and recorded as the rollback value BEFORE any write, every time",
+        "expected_current_value": "Read via read_approved_target (the change's own target only) and recorded as the rollback value BEFORE any write, every time",
         "dependencies": "None beyond the version's existence",
         "locks_and_absence_checks": "Not implemented -- see recovery.concurrency_note; this is a known gap, not a claimed control"
       },
       "verification": {
-        "read_back_method": "get_processing_options re-read after the write, independent of the write call's own response",
+        "read_back_method": "read_approved_target re-read after the write, independent of the write call's own response",
         "behavioural_tests": "The named test Orchestration bound to the approved change (run_orchestration), never a substitute test",
         "negative_tests": "Wrong environment, wrong change_id, tampered value, XJDE/ZJDE target, out-of-scope option -- all covered by prove_the_gate.py",
         "evidence_requirements": "capture_evidence with prior value, new value, and test result, every time -- verify_evidence_chain before any sign-off"

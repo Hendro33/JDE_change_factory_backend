@@ -193,7 +193,7 @@ rollback_strategy: {latest_version.architect_decision.rollback_strategy}
 implementation sequence: {latest_version.implementation_spec.sequence}
 validation_approach: {latest_version.implementation_spec.validation_approach}"""
 
-    return f"""Use the architect subagent to answer a question about the solution already analysed for story {story_id}, exactly as its own instructions describe -- you already know this analysis from what follows; you have read-only discovery tools only (get_approved_story, get_object, get_version, get_processing_options) and no tools to propose or execute a change here, so never attempt to call propose_change or resolve_without_change.
+    return f"""Use the architect subagent to answer a question about the solution already analysed for story {story_id}, exactly as its own instructions describe -- you already know this analysis from what follows; you have get_approved_story only -- no JDE reads and no tools to propose or execute a change here; answer from the recorded analysis and its evidence baseline, so never attempt to call propose_change or resolve_without_change.
 
 story_id: {story_id}
 

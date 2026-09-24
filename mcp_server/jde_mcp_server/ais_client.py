@@ -139,42 +139,12 @@ class AISClient:
     def _headers(self) -> dict:
         return {"Content-Type": "application/json", "AIS-Auth-Token": self._ensure_token()}
 
-    # ---- discovery (Section 7.2, proven since Tools Release 9.1.4.6) -
-    # Deliberately NOT gated on story approval: Section 7.2 treats
-    # discovery as universally safe, and the Improve Agent (Section
-    # 5.3.2) needs it in Phase 1, long before a story reaches Phase 2
-    # approval. The gate applies to writes and test execution below,
-    # where an unapproved story could actually cause something to
-    # happen in JDE -- not to read-only lookups.
-    def get_processing_options(self, application: str, version: str) -> dict[str, Any]:
-        if settings.mock_mode:
-            return _mock_fixture("get_processing_options", application=application, version=version)
-        resp = self._http.get(
-            f"{settings.ais_base_url}/jderest/v3/processingOption/{application}/{version}",
-            headers=self._headers(),
-        )
-        resp.raise_for_status()
-        return resp.json()
-
-    def get_object(self, object_name: str) -> dict[str, Any]:
-        if settings.mock_mode:
-            return _mock_fixture("get_object", object_name=object_name)
-        resp = self._http.get(
-            f"{settings.ais_base_url}/jderest/v2/discovery/objects/{object_name}",
-            headers=self._headers(),
-        )
-        resp.raise_for_status()
-        return resp.json()
-
-    def get_version(self, application: str, version: str) -> dict[str, Any]:
-        if settings.mock_mode:
-            return _mock_fixture("get_version", application=application, version=version)
-        resp = self._http.get(
-            f"{settings.ais_base_url}/jderest/v2/discovery/objects/{application}/versions/{version}",
-            headers=self._headers(),
-        )
-        resp.raise_for_status()
-        return resp.json()
+    # ---- no unrestricted discovery --------------------------------------
+    # The former get_processing_options / get_object / get_version read any
+    # object through the execution connection with no company scope; they
+    # were removed. Governed discovery lives in api_service (discovery/),
+    # and the Functional Agent reads only its own change's target
+    # (approved_target.py -> read_processing_option_value below).
 
     # ---- the one validated functional write (Section 7.3) -----------
     # GATED, four separate ways, all of which must pass:

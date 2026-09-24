@@ -38,11 +38,12 @@ _SUBAGENT_TO_STAGE = {
     "check-agent": "checking",
 }
 
+# No JDE reads in Phase 1: intake refines the request as the requester
+# stated it; the Architect confirms objects later through governed,
+# company-scoped discovery (discovery/). The former unrestricted
+# get_object/get_version/get_processing_options tools no longer exist.
 _ALLOWED_TOOLS = [
     "Task",
-    "mcp__jde-change-factory__get_object",
-    "mcp__jde-change-factory__get_version",
-    "mcp__jde-change-factory__get_processing_options",
     "mcp__jde-change-factory__propose_to_backlog",
 ]
 

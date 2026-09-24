@@ -37,6 +37,7 @@ from .backlog import (
 )
 from .approval import propose_change as _propose_change, ChangeApprovalError
 from .design_baseline import get_design_baseline as _get_design_baseline
+from .approved_target import read_approved_target as _read_approved_target
 
 mcp = _MCPServerClass("jde-change-factory")
 
@@ -128,34 +129,21 @@ def get_capability_status(capability_id: str) -> dict:
 
 
 # ---------------------------------------------------------------------
-# Discovery (Section 7.2: proven, since Tools Release 9.1.4.6). NOT
-# gated on story approval -- the Improve Agent (Phase 1) needs these
-# long before any backlog approval exists, and Section 7.2 treats
-# discovery as universally safe. The gate lives on the write and
-# test-execution tools below, where an unapproved story could actually
-# cause something to happen in JDE.
+# No unrestricted JDE reads. The former get_object / get_version /
+# get_processing_options tools read any object from the execution AIS
+# connection with no company scope, so they are not exposed here at all.
+# JDE research goes through the Architect's governed discovery tools
+# (api_service discovery/, company-bound, validated before dispatch); the
+# Functional Agent reads only its own approved change's target, below.
 # ---------------------------------------------------------------------
 
 @mcp.tool()
-def get_object(object_name: str) -> dict:
-    """Look up a JDE object (application, table, business view, etc.) by
-    name. Read-only discovery -- safe to call freely, in any phase."""
-    return client.get_object(object_name)
-
-
-@mcp.tool()
-def get_version(application: str, version: str) -> dict:
-    """Look up a specific version of a JDE application. Read-only
-    discovery -- safe to call freely, in any phase."""
-    return client.get_version(application, version)
-
-
-@mcp.tool()
-def get_processing_options(application: str, version: str) -> dict:
-    """Read the current processing option values for a version, via the
-    AIS processingOption capability. Read-only -- safe to call freely,
-    in any phase."""
-    return client.get_processing_options(application, version)
+def read_approved_target(story_id: str, change_id: str) -> dict:
+    """The current value of the ONE target an approved (or pending) exact
+    change names -- nothing else can be read. For the Functional Agent's
+    pre-write confirmation and rollback value. In live mode this reports
+    that a live read is not implemented yet (read the value in JDE)."""
+    return _read_approved_target(story_id, change_id)
 
 
 # ---------------------------------------------------------------------
