@@ -7,6 +7,14 @@ from datetime import datetime, timedelta, timezone
 
 from .conftest import headers
 
+
+def sim_edit(company: str, reason: str, environment: str | None = None):
+    """Change the shared simulated DEV estate as an explicit, recorded test condition."""
+    from jde_mcp_server import sim_estate
+
+    return sim_estate.edit(company, environment or ENVIRONMENTS.get(company, "JDV920"), actor="test",
+                           reason=f"TEST CONDITION: {reason}")
+
 ENVIRONMENTS = {"vdb": "JDV920", "bwm": "JDVBWM"}
 
 

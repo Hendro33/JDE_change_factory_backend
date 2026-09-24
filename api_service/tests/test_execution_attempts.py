@@ -56,7 +56,7 @@ def test_an_applied_change_never_runs_twice(client):
 
     change = _ready_change(client, "S-EX-ONCE")
     result = _execute("S-EX-ONCE", change["change_id"])
-    assert result["request"]["previous_value"] == "MOCK-INITIAL"
+    assert result["request"]["previous_value"] == "S3"  # the shared simulated estate's value
     assert _state(change["change_id"]) == "applied"
     with pytest.raises(ExecutionBlocked, match="already been applied"):
         _execute("S-EX-ONCE", change["change_id"])
@@ -95,7 +95,7 @@ def test_a_write_interrupted_after_jde_applied_it_is_reconciled_as_applied(clien
     r = client.post("/changes/S-EX-TIMEOUT/execution/reconcile", headers=headers("vdb"), json={"note": "checked"})
     assert r.status_code == 200, r.text
     body = r.json()
-    assert (body["outcome"], body["observedValue"], body["source"]) == ("applied", "SO", "automated read (mock JDE)")
+    assert (body["outcome"], body["observedValue"], body["source"]) == ("applied", "SO", "automated read (simulated DEV estate)")
     assert _state(change["change_id"]) == "applied"
     with pytest.raises(ExecutionBlocked, match="already been applied"):
         _execute("S-EX-TIMEOUT", change["change_id"])
@@ -136,8 +136,12 @@ def test_a_target_changed_by_someone_else_is_diverged_and_never_runs(client, mon
 
     change = _ready_change(client, "S-EX-DIVERGED")
 
-    def someone_else_changed_it(application, version, option, value):
-        ais_client._write_mock_state({ais_client._mock_key(application, version, option): "SV"})
+    def someone_else_changed_it(target, value, change_id=""):
+        from jde_mcp_server import sim_estate
+
+        with sim_estate.edit(target.company_id, target.environment, actor="test",
+                             reason="TEST CONDITION: someone else changes the target") as estate:
+            sim_estate.set_processing_option(estate, target.application, target.version, target.option, "SV")
         raise httpx.ReadTimeout("no response")
 
     monkeypatch.setattr(ais_client, "_mock_submit", someone_else_changed_it)
@@ -155,7 +159,7 @@ def test_a_write_in_flight_during_a_restart_is_recorded_as_unknown(client):
     from jde_mcp_server import execution
 
     change = _ready_change(client, "S-EX-RESTART")
-    execution.begin(change["change_id"], execution.WRITE, before_value="MOCK-INITIAL")  # then the process dies
+    execution.begin(change["change_id"], execution.WRITE, before_value="S3")  # then the process dies
     with TestClient(app):  # restart
         pass
     assert _state(change["change_id"]) == "unknown"

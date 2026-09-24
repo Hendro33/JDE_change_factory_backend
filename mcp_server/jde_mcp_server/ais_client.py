@@ -16,9 +16,8 @@ Requests, Performing AIS Form Service Calls).
 from __future__ import annotations
 
 import json
-import os
 import time
-from typing import Any
+from typing import Any, NamedTuple
 
 import httpx
 
@@ -34,7 +33,7 @@ from .scope import (
     load_company_scope,
     reject_if_oracle_owned_version,
 )
-from . import capability_catalog
+from . import capability_catalog, sim_estate
 from .approval import require_exact_change, require_change_covers_test
 from . import execution
 
@@ -56,40 +55,58 @@ class LiveReadUnavailable(AISClientError):
     reads the value in JDE and records it."""
 
 
-# Mock mode's stand-in for JDE: the processing-option values mock writes
-# have set, so read-back and reconciliation behave like the real thing.
-MOCK_STATE_FILE = os.environ.get("JDE_MOCK_JDE_STATE_FILE", "./mock_jde_state.json")
-MOCK_INITIAL_VALUE = "MOCK-INITIAL"
+class SimTarget(NamedTuple):
+    """One processing option in the shared simulated DEV estate: which
+    company's estate, which environment, which target."""
+    company_id: str
+    environment: str
+    application: str
+    version: str
+    option: str
 
 
-def _mock_key(application: str, version: str, option: str) -> str:
-    return f"{application.upper()}|{version.upper()}|{option.upper()}"
+class SimTargetMissing(AISClientError):
+    """The approved target does not exist in the simulated DEV estate."""
 
 
-def _mock_state() -> dict:
-    if not os.path.exists(MOCK_STATE_FILE):
-        return {}
-    with open(MOCK_STATE_FILE, encoding="utf-8") as f:
-        return json.load(f)
+def sim_target(company_id: str, application: str, version: str, option: str) -> SimTarget:
+    """The target in the company's bound DEV environment (its engagement
+    scope). Mock mode reads and writes the SAME estate discovery reads."""
+    scope = load_company_scope(company_id)
+    environment = ((scope.get("environment") or {}).get("dev_environment_id") or "").strip()
+    if not environment:
+        raise AISClientError("the company's scope binds no DEV environment -- nothing to read or write")
+    return SimTarget(company_id, environment, application, version, option)
 
 
-def _mock_read(application: str, version: str, option: str) -> str:
-    return _mock_state().get(_mock_key(application, version, option), MOCK_INITIAL_VALUE)
+def _mock_read(target: SimTarget) -> str:
+    """The shared simulated estate's current value (tests may wrap this)."""
+    value = sim_estate.read_processing_option(target.company_id, target.environment, target.application,
+                                              target.version, target.option)
+    if value is None:
+        raise SimTargetMissing(f"{target.application}|{target.version} does not exist in the simulated DEV estate "
+                               f"{target.environment} for {target.company_id}")
+    return value
 
 
-def _write_mock_state(state: dict) -> None:
-    tmp = MOCK_STATE_FILE + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(state, f, indent=2)
-    os.replace(tmp, MOCK_STATE_FILE)
-
-
-def _mock_submit(application: str, version: str, option: str, value: str) -> None:
-    """The mock 'JDE side' of a write. Tests replace this to simulate a
-    request that fails before or after JDE applied it."""
-    state = _mock_state()
-    state[_mock_key(application, version, option)] = value
-    _write_mock_state(state)
+def _mock_submit(target: SimTarget, value: str, change_id: str = "") -> None:
+    """The simulated 'JDE side' of a write, against the shared estate. A
+    po_write fault (sim_estate.add_fault) is an explicit test condition;
+    tests may also replace this function."""
+    fault = None
+    with sim_estate.edit(target.company_id, target.environment, actor="simulated execution",
+                         reason=f"set_processing_option {target.application}|{target.version} {target.option} "
+                                f"for change {change_id or '?'}") as estate:
+        key = f"{target.application}|{target.version}"
+        fault = sim_estate.take_fault(estate, "po_write", key)
+        if fault is None or fault["mode"] == "timeout_after_apply":
+            sim_estate.set_processing_option(estate, target.application, target.version, target.option, value)
+    if fault is not None:
+        if fault["mode"] == "fail_before_send":
+            raise httpx.ConnectError(f"simulated: request never left (TEST CONDITION) {fault['message']}")
+        if fault["mode"] == "fail":
+            raise AISClientError(f"simulated error response (TEST CONDITION) {fault['message']}")
+        raise httpx.ReadTimeout(f"simulated {fault['mode']} (TEST CONDITION) {fault['message']}")
 
 
 def require_bound_environment(scope: dict) -> None:
@@ -190,17 +207,22 @@ class AISClient:
 
         # Checked now (so nothing is prepared for a refused operation) and
         # again inside the attempt lock, immediately before dispatch.
-        authorise()
+        record = authorise()
 
         if settings.mock_mode:
-            before = _mock_read(application, version, option)
+            target = sim_target(record["company_id"], application, version, option)
+            before = _mock_read(target)
             attempt = execution.begin(change_id, execution.WRITE, before_value=before, revalidate=authorise)
             try:
-                _mock_submit(application, version, option, value)
+                _mock_submit(target, value, change_id)
+            except httpx.ConnectError as exc:
+                execution.finish(change_id, execution.WRITE, attempt, "not_sent", f"{type(exc).__name__}: {exc}")
+                raise
             except Exception as exc:  # noqa: BLE001 -- anything after "sending" is an unknown outcome
                 execution.finish(change_id, execution.WRITE, attempt, "unknown", f"{type(exc).__name__}: {exc}")
                 raise
-            execution.finish(change_id, execution.WRITE, attempt, "applied", "mock JDE state updated")
+            execution.finish(change_id, execution.WRITE, attempt, "applied",
+                             f"simulated DEV estate {target.environment} updated")
             return _mock_fixture(
                 "set_processing_option",
                 application=application,
@@ -242,10 +264,11 @@ class AISClient:
         resp.raise_for_status()
         return resp.json()
 
-    def read_processing_option_value(self, application: str, version: str, option: str) -> str:
-        """The current value of one option, for reconciliation."""
+    def read_processing_option_value(self, company_id: str, application: str, version: str, option: str) -> str:
+        """The current value of one option in the company's bound DEV
+        environment, for the before-state, reconciliation and read-back."""
         if settings.mock_mode:
-            return _mock_read(application, version, option)
+            return _mock_read(sim_target(company_id, application, version, option))
         raise LiveReadUnavailable(
             "reading a single live processing-option value is not implemented yet: the AIS response shape "
             "must first be recorded against a real Tools release (Experiment A step A1). Read the value in "
@@ -271,7 +294,8 @@ class AISClient:
         if settings.mock_mode:
             attempt = execution.begin(change_id, execution.TEST, revalidate=authorise)
             execution.finish(change_id, execution.TEST, attempt, "completed", "mock orchestration")
-            return _mock_fixture("run_orchestration", name=name, payload=payload, result="PASS")
+            return _mock_fixture("run_orchestration", name=name, payload=payload, result="PASS",
+                                 simulation="the orchestration is not simulated: this PASS is a fixed mock answer")
         headers = self._headers()
         attempt = execution.begin(change_id, execution.TEST, revalidate=authorise)
         try:
@@ -307,7 +331,8 @@ def _mock_fixture(tool_name: str, **kwargs) -> dict[str, Any]:
     (subagents, hooks, evidence capture) can be built and demoed before
     real JDE access exists. Swap MOCK_MODE off once Section 10.2 steps
     1-2 are done."""
-    return {"mock": True, "tool": tool_name, "request": kwargs, "note": "MOCK_MODE response -- not real JDE data"}
+    return {"mock": True, "tool": tool_name, "request": kwargs, "label": sim_estate.SIMULATION_LABEL,
+            "note": "MOCK_MODE response against the simulated DEV estate -- not real JDE data"}
 
 
 client = AISClient()

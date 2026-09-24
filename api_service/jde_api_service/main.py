@@ -71,6 +71,9 @@ def _wire_execution_gate() -> None:
         # Each design's evidence baseline, for the Functional/Technical agents
         # (mcp_server get_design_baseline). Written by discovery/baseline.py.
         "JDE_DESIGN_BASELINE_DIR": os.path.join(settings.data_dir, "design_baselines"),
+        # The ONE simulated DEV estate discovery reads and simulated
+        # execution changes (mcp_server sim_estate.py).
+        "JDE_SIM_ESTATE_DIR": os.path.join(settings.data_dir, "sim_estate"),
     }
     for name, default in wiring.items():
         os.environ.setdefault(name, os.path.abspath(default))

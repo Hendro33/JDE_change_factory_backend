@@ -63,7 +63,7 @@ def test_a_write_reconciliation_records_target_observation_actor_time_and_eviden
         "environment": "DEV", "jde_environment": "JDV920",
         "application": "P4210", "version": "CIQ0001", "option": "PDOCTYPE", "approved_value": "SO",
     }
-    assert rec["observed"] == {"value": "SO", "before_value": "MOCK-INITIAL"}
+    assert rec["observed"] == {"value": "SO", "before_value": "S3"}  # the shared simulated estate's value
     assert rec["actor"] == {"userId": "u-hendro", "displayName": "Hendro"}
     assert dt.datetime.fromisoformat(rec["at"]).tzinfo is not None
     assert "automated read of P4210/CIQ0001/PDOCTYPE" in rec["evidenceReference"]

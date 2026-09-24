@@ -11,7 +11,7 @@ import sqlite3
 
 import pytest
 
-from ._discovery import profile_body, ready_company, save_credential, save_profile
+from ._discovery import profile_body, ready_company, save_credential, save_profile, sim_edit
 from .conftest import headers
 
 PASSWORD = "s3cret-Discovery-pw"
@@ -148,7 +148,8 @@ def test_environment_verification_fails_on_a_mismatch(client):
 
     save_profile(client)
     save_credential(client)
-    transport.simulated_estate("vdb")["session"]["apps_release"] = "E910"
+    with sim_edit("vdb", "set session.apps_release") as _est:
+        _est["session"]["apps_release"] = "E910"
     r = client.post("/admin/jde/test-connection", headers=headers("vdb")).json()
     assert r["outcome"] == "failed" and "application release" in r["detail"] and "E910" in r["detail"]
     h = r["profile"]["health"]
@@ -180,8 +181,10 @@ def test_server_defaults_alone_never_verify_the_environment(client):
 
     save_profile(client)
     save_credential(client)
-    transport.simulated_estate("vdb")["defaultconfig"]["defaultEnvironment"] = "JDV920"  # matches the profile
-    transport.simulated_estate("vdb")["session"]["report_context"] = False
+    with sim_edit("vdb", "set defaultconfig.defaultEnvironment") as _est:
+        _est["defaultconfig"]["defaultEnvironment"] = "JDV920"  # matches the profile
+    with sim_edit("vdb", "set session.report_context") as _est:
+        _est["session"]["report_context"] = False
     r = client.post("/admin/jde/test-connection", headers=headers("vdb")).json()
     assert r["outcome"] == "failed"
     env = _env_check(client)
@@ -198,7 +201,8 @@ def test_the_session_response_is_the_evidence_not_the_server_default(client):
 
     save_profile(client)
     save_credential(client)
-    transport.simulated_estate("vdb")["defaultconfig"]["defaultEnvironment"] = "JPD920"  # server default: PROD
+    with sim_edit("vdb", "set defaultconfig.defaultEnvironment") as _est:
+        _est["defaultconfig"]["defaultEnvironment"] = "JPD920"  # server default: PROD
     r = client.post("/admin/jde/test-connection", headers=headers("vdb")).json()
     assert r["outcome"] == "ok", r
     env = _env_check(client)

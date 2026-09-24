@@ -23,7 +23,7 @@ import json
 import claude_agent_sdk as sdk
 import pytest
 
-from ._discovery import ready_company, save_profile, upload_artifact
+from ._discovery import ready_company, save_profile, upload_artifact, sim_edit
 from .conftest import headers
 from .test_stage1_execution_safeguards import _approved_story
 
@@ -228,7 +228,8 @@ def test_acceptance_7_changed_evidence_creates_a_new_baseline_and_flags_the_desi
     assert r.json()["status"] == "current" and r.json()["baselineRevision"] == 2
 
     # The customer changes the processing option in DEV.
-    transport.simulated_estate("vdb")["processing_options"]["P4210|CIQ0001"]["PCREDCHK"] = "0"
+    with sim_edit("vdb", "set processing_options.P4210|CIQ0001.PCREDCHK") as _est:
+        _est["processing_options"]["P4210|CIQ0001"]["PCREDCHK"] = "0"
     r = client.post(f"/changes/{STORY}/architecture-review/refresh-evidence", headers=headers("vdb")).json()
     assert r["status"] == "needs_reassessment" and r["reassessment"][0]["kind"] == "observation_changed"
     history = _baselines(client)

@@ -27,7 +27,8 @@ def read_approved_target(story_id: str, change_id: str) -> dict:
     op = record["operation"]
     target = {"application": op.get("application"), "version": op.get("version"), "option": op.get("option")}
     try:
-        value = client.read_processing_option_value(target["application"], target["version"], target["option"])
+        value = client.read_processing_option_value(record["company_id"], target["application"], target["version"],
+                                                    target["option"])
     except LiveReadUnavailable as exc:
         return {"change_id": change_id, "target": target, "available": False, "reason": str(exc)}
     return {"change_id": change_id, "target": target, "available": True, "current_value": value,

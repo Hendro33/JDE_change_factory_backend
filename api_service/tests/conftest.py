@@ -36,9 +36,8 @@ def isolated_dirs(tmp_path, monkeypatch):
     monkeypatch.setattr(api_settings, "data_dir", str(api_data_dir))
     monkeypatch.setattr(backlog_module, "BACKLOG_DIR", str(backlog_dir))
     monkeypatch.setattr(approval_module, "CHANGE_DIR", str(change_dir))
-    from jde_mcp_server import ais_client as ais_client_module
-
-    monkeypatch.setattr(ais_client_module, "MOCK_STATE_FILE", str(tmp_path / "mock_jde_state.json"))
+    # The one shared simulated DEV estate: per test, never shared between runs.
+    monkeypatch.setenv("JDE_SIM_ESTATE_DIR", str(tmp_path / "sim_estate"))
     # The execution gate reads each company's saved scope and the
     # story -> company links from this service's own data directory
     # (main._wire_execution_gate does the same at startup).
@@ -58,7 +57,6 @@ def isolated_dirs(tmp_path, monkeypatch):
     # live discovery stays switched off unless a test turns it on.
     from jde_api_service.discovery import transport as discovery_transport
 
-    discovery_transport.reset_simulations()
     discovery_transport._breakers.clear()
     monkeypatch.delenv("JDE_DISCOVERY_LIVE_ENABLED", raising=False)
     monkeypatch.delenv("JDE_DISCOVERY_ALLOWED_HOSTS", raising=False)

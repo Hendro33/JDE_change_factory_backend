@@ -2,9 +2,12 @@
 How discovery reads reach an AIS server -- or a clearly labelled
 simulation of one.
 
-  * SimulatedAisEndpoint: an in-process stand-in with a small fixed estate
-    per company. Chosen ONLY when the profile's connection_mode is
-    "simulation"; every result it produces is labelled SIMULATION.
+  * SimulatedAisEndpoint: a stand-in that answers from the ONE shared
+    simulated DEV estate (jde_mcp_server.sim_estate) for the company and the
+    profile's environment -- the same estate simulated execution changes, so
+    an applied simulated change is visible to the next discovery read.
+    Chosen ONLY when the profile's connection_mode is "simulation"; every
+    result it produces is labelled SIMULATION.
   * LiveAisTransport: httpx with TLS verification, no redirects, a short
     timeout and a deployment-controlled destination allowlist. Chosen only
     when the profile says "live" AND the deployment enables live discovery
@@ -20,7 +23,6 @@ transport failures.
 
 from __future__ import annotations
 
-import copy
 import hashlib
 import json
 import os
@@ -32,8 +34,11 @@ from urllib.parse import urlparse
 
 import httpx
 
+from .. import config as _config  # noqa: F401 -- makes jde_mcp_server importable
 from . import capabilities
 from .capabilities import AUTH_ENDPOINTS, ReadPlan
+
+from jde_mcp_server import sim_estate  # noqa: E402
 
 # Documented defaultconfig fields Jade keeps (server-level defaults).
 DEFAULTCONFIG_KEYS = ("aisVersion", "defaultEnvironment", "defaultRole", "defaultJasServer")
@@ -129,60 +134,9 @@ def reset_breaker(company_id: str) -> None:
 # ---------------------------------------------------------------------
 # Simulation
 # ---------------------------------------------------------------------
-_DEFAULT_ESTATE: dict[str, Any] = {
-    "reachable": True,
-    "accept_credentials": True,
-    # Shaped like the documented defaultconfig response: SERVER defaults
-    # only. It says nothing about which environment a session actually uses.
-    "defaultconfig": {"aisVersion": "simulated-ais", "defaultEnvironment": "JDV920", "defaultRole": "*ALL",
-                      "defaultJasServer": "http://sim-jas.invalid:8080", "capabilityList": ["dataservice", "poservice"]},
-    # What the simulated token-request response reports about the session
-    # (documented keys). report_context False simulates an AIS that omits
-    # them; granted_* restricts what the simulated user may log in to.
-    "session": {"report_context": True, "apps_release": "E920", "jasserver": "http://sim-jas.invalid:8080",
-                "granted_environments": None, "granted_roles": None},
-    "tables": {
-        "F0005": [
-            {"DRSY": "00", "DRRT": "DT", "DRKY": "SO", "DRDL01": "Sales Order", "DRSPHD": ""},
-            {"DRSY": "00", "DRRT": "DT", "DRKY": "S3", "DRDL01": "Sales Order - Direct Ship", "DRSPHD": ""},
-            {"DRSY": "00", "DRRT": "DT", "DRKY": "SQ", "DRDL01": "Sales Quote", "DRSPHD": ""},
-        ],
-        "F983051": [
-            {"VRPID": "P4210", "VERS": "ZJDE0001", "JD": "Sales Order Entry (Oracle)", "VRCHKOUTSTS": "N"},
-            {"VRPID": "P4210", "VERS": "CIQ0001", "JD": "Sales Order Entry - Webshop", "VRCHKOUTSTS": "N"},
-        ],
-        "F9860": [
-            {"SIOBNM": "P4210", "SIFUNO": "APPL", "SISY": "42", "SIMD": "Sales Order Entry", "SIPKGNAME": ""},
-            {"SIOBNM": "P554210", "SIFUNO": "APPL", "SISY": "55", "SIMD": "Custom Sales Order Review", "SIPKGNAME": ""},
-            {"SIOBNM": "B5542001", "SIFUNO": "BSFN", "SISY": "55", "SIMD": "Custom Credit Check", "SIPKGNAME": ""},
-        ],
-        "F4211": [
-            {"DOCO": "10001", "DCTO": "SO", "LNID": "1.000", "LITM": "BIKE-100", "UORG": "2", "LTTR": "540", "NXTR": "560"},
-            {"DOCO": "10001", "DCTO": "SO", "LNID": "2.000", "LITM": "HELMET-7", "UORG": "1", "LTTR": "540", "NXTR": "560"},
-            {"DOCO": "10002", "DCTO": "S3", "LNID": "1.000", "LITM": "BIKE-200", "UORG": "1", "LTTR": "520", "NXTR": "540"},
-        ],
-    },
-    "processing_options": {
-        "P4210|CIQ0001": {"PDOCTYPE": "SO", "PLNTY": "S", "PCREDCHK": "1"},
-        "P4210|ZJDE0001": {"PDOCTYPE": "SO", "PLNTY": "S", "PCREDCHK": ""},
-    },
-}
-_estates: dict[str, dict[str, Any]] = {}
-_estate_lock = threading.Lock()
-
-
-def simulated_estate(company_id: str) -> dict[str, Any]:
-    """The mutable simulated estate for one company (tests and demos may
-    change it to simulate the customer changing their system)."""
-    with _estate_lock:
-        if company_id not in _estates:
-            _estates[company_id] = copy.deepcopy(_DEFAULT_ESTATE)
-        return _estates[company_id]
-
-
 def reset_simulations() -> None:
-    with _estate_lock:
-        _estates.clear()
+    """Tests only: forget every simulated estate in the current estate directory."""
+    sim_estate.reset()
 
 
 _OPS = {
@@ -196,16 +150,27 @@ class SimulatedAisEndpoint:
     mode = "simulation"
     label = SIMULATION_LABEL
 
-    def __init__(self, company_id: str, *, calls: Optional[list] = None) -> None:
+    def __init__(self, company_id: str, environment: str, *, calls: Optional[list] = None) -> None:
         self.company_id = company_id
+        self.environment = environment
         # Every (method, path) this endpoint received -- tests assert on it.
         self.calls = calls if calls is not None else []
 
     def _estate(self) -> dict[str, Any]:
-        estate = simulated_estate(self.company_id)
+        estate = sim_estate.load(self.company_id, self.environment)
         if not estate["reachable"]:
             raise TransportError("simulated endpoint unreachable")
         return estate
+
+    def _fault(self, target: str) -> None:
+        """An explicit test condition on this read (sim_estate.add_fault)."""
+        if sim_estate.peek_fault(self.company_id, self.environment, "discovery_read", target) is None:
+            return
+        with sim_estate.edit(self.company_id, self.environment, actor="simulated AIS",
+                             reason=f"test condition consumed: discovery_read {target}") as estate:
+            fault = sim_estate.take_fault(estate, "discovery_read", target)
+        if fault:
+            raise TransportError(f"simulated {fault['mode']} (TEST CONDITION){': ' + fault['message'] if fault['message'] else ''}")
 
     def check_reachability(self) -> str:
         self._estate()
@@ -238,6 +203,7 @@ class SimulatedAisEndpoint:
                               meta={"endpoint": "defaultconfig"})
         if plan.endpoint == "poservice":
             key = f"{plan.body['applicationName']}|{plan.body['version']}"
+            self._fault(key)
             values = estate["processing_options"].get(key)
             if values is None:
                 return ReadResult([], meta={"endpoint": "poservice", "found": False})
@@ -248,6 +214,7 @@ class SimulatedAisEndpoint:
                               meta={"endpoint": "poservice"})
         body = plan.body or {}
         table = body["targetName"]
+        self._fault(table)
         rows = estate["tables"].get(table)
         if rows is None:
             return ReadResult([], meta={"endpoint": "dataservice", "table": table, "found": False})
@@ -363,5 +330,5 @@ class LiveAisTransport:
 def transport_for(company_id: str, config, *, live_transport: Optional[httpx.BaseTransport] = None):
     """The transport the profile asks for -- never a substitute."""
     if config.connection_mode == "simulation":
-        return SimulatedAisEndpoint(company_id)
+        return SimulatedAisEndpoint(company_id, config.environment)
     return LiveAisTransport(company_id, config.ais_base_url, config.limits.timeout_seconds, transport=live_transport)

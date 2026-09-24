@@ -261,11 +261,11 @@ def reconcile_write(
         raise HTTPException(status_code=404, detail=f"no such change: {change_id}")
     op = record["operation"]
     try:
-        observed = ais.read_processing_option_value(op["application"], op["version"], op["option"])
-        source = "automated read (mock JDE)"
+        observed = ais.read_processing_option_value(record["company_id"], op["application"], op["version"], op["option"])
+        source = "automated read (simulated DEV estate)"
         evidence_reference = (
             f"automated read of {op['application']}/{op['version']}/{op['option']} = {observed!r} "
-            f"(mock JDE state)"
+            f"(SIMULATION: shared simulated DEV estate)"
         )
     except LiveReadUnavailable as exc:
         if payload.observed_value is None or not payload.note.strip() or not payload.evidence_reference.strip():

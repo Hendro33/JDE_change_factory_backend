@@ -85,7 +85,8 @@ os.makedirs(LINK_DIR)
 # Set before jde_mcp_server is imported below, which reads them once.
 os.environ["JDE_COMPANY_SCOPE_DIR"] = SCOPE_DIR
 os.environ["JDE_STORY_COMPANY_DIR"] = LINK_DIR
-os.environ["JDE_MOCK_JDE_STATE_FILE"] = os.path.join(_tmp.name, "mock_jde_state.json")
+# The one shared simulated DEV estate (discovery and execution), throwaway.
+os.environ["JDE_SIM_ESTATE_DIR"] = os.path.join(_tmp.name, "sim_estate")
 COMPANY = "GATE-TEST-CO"
 APPROVER_ROLES = {"product_manager"}
 APPROVER_ID = "u-gate-test"
@@ -190,6 +191,13 @@ test_scope = {
     "technical_agent": {"authorized_object_types": [], "reserved_product_code": "56", "naming_prefix": "TST", "approvers": []},
 }
 write_scope(test_scope)
+
+# The simulated DEV estate holds the two test versions (their before-state).
+from jde_mcp_server import sim_estate  # noqa: E402
+
+with sim_estate.edit(COMPANY, "DV900TEST", actor="gate proof", reason="seed the gate proof's test versions") as _est:
+    for _version in ("TESTVER01", "TESTVER02"):
+        _est["processing_options"][f"P4210|{_version}"] = {"PDOCTYPE": "S3"}
 for sid in ("GATE-TEST-1", "GATE-TEST-2", "GATE-TEST-3", "GATE-TEST-4"):
     link(sid)
 

@@ -17,7 +17,7 @@ import time
 import httpx
 import pytest
 
-from ._discovery import profile_body, ready_company, save_credential, save_profile
+from ._discovery import profile_body, ready_company, save_credential, save_profile, sim_edit
 from .conftest import headers
 from .test_stage1_execution_safeguards import _approved_story
 
@@ -30,8 +30,8 @@ def calls(monkeypatch):
     seen: list = []
     real_init = transport.SimulatedAisEndpoint.__init__
 
-    def init(self, company_id, *, calls=None):
-        real_init(self, company_id, calls=seen)
+    def init(self, company_id, environment, *, calls=None):
+        real_init(self, company_id, environment, calls=seen)
 
     monkeypatch.setattr(transport.SimulatedAisEndpoint, "__init__", init)
     return seen
@@ -95,8 +95,9 @@ def test_more_than_the_limit_is_never_returned_and_there_is_no_paging(client):
 
     ready_company(client)
     _approved_story("S-DP-3")
-    transport.simulated_estate("vdb")["tables"]["F4211"] = [
-        {"DOCO": str(i), "DCTO": "SO", "LNID": "1", "LTTR": "540"} for i in range(40)]
+    with sim_edit("vdb", "40 order lines in F4211") as _est:
+        _est["tables"]["F4211"] = [
+            {"DOCO": str(i), "DCTO": "SO", "LNID": "1", "LTTR": "540"} for i in range(40)]
     ev = service.execute_read(_grant("S-DP-3"), "table_browse", "F4211", ["DOCO"], [], 10)
     assert ev["record_count"] == 10 and ev["more_records_available"] is True
 

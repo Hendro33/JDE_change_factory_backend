@@ -12,7 +12,7 @@ Evidence limitations are explicit, never implied away.
 
 from __future__ import annotations
 
-from ._discovery import ready_company, upload_artifact
+from ._discovery import ready_company, upload_artifact, sim_edit
 from .conftest import headers
 from .test_architect_discovery import STORY, _baselines, _run
 from .test_stage1_execution_safeguards import _approved_story
@@ -49,7 +49,8 @@ def test_the_full_result_hash_detects_change_but_retains_nothing_unseen(client, 
     _approved_story(STORY)
     grant, _ = service.grant_for_story(STORY, "vdb", agent_run_id=None, actor_user_id="u-hendro")
     first = service.execute_read(grant, "processing_option_values", "P4210|CIQ0001")
-    transport.simulated_estate("vdb")["processing_options"]["P4210|CIQ0001"]["PCREDCHK"] = "9"
+    with sim_edit("vdb", "set processing_options.P4210|CIQ0001.PCREDCHK") as _est:
+        _est["processing_options"]["P4210|CIQ0001"]["PCREDCHK"] = "9"
     second = service.execute_read(grant, "processing_option_values", "P4210|CIQ0001")
     a, b = service.get_observation("vdb", first["observation_id"]), service.get_observation("vdb", second["observation_id"])
     # What the model saw -- and what Jade kept -- is identical: redacted structure only.
@@ -82,7 +83,8 @@ def test_refresh_records_new_observations_and_flags_without_regenerating_or_reap
     history_before = [v.model_dump() for v in get_architecture_review_service().get(STORY).history]
     first = _baselines(client)[0]
 
-    transport.simulated_estate("vdb")["processing_options"]["P4210|CIQ0001"]["PCREDCHK"] = "0"
+    with sim_edit("vdb", "set processing_options.P4210|CIQ0001.PCREDCHK") as _est:
+        _est["processing_options"]["P4210|CIQ0001"]["PCREDCHK"] = "0"
     r = client.post(f"/changes/{STORY}/architecture-review/refresh-evidence", headers=headers("vdb")).json()
 
     old_ids = {o["observation_id"] for o in first["manifest"]["observations"]}
