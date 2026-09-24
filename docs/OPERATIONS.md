@@ -214,6 +214,35 @@ Choose `full` only with the customer's written agreement.
 
 **Integration proof.** `scripts/prove_architect_discovery.py` runs the real Architect, and then the existing functional-agent (non-executing), through the Claude CLI against the simulated endpoint. The last recorded run is in `docs/proof/architect_discovery_run/`. It needs a Claude login; it is not part of CI.
 
+## Simulated DEV estate
+
+Discovery in simulation mode, and simulated execution (the Functional path's mock and the Technical simulation adapter), share one persisted estate per company and environment. It lives under `<JDE_API_DATA_DIR>/sim_estate/` (`JDE_SIM_ESTATE_DIR`).
+- Every change records who made it and why.
+- Drift, failures and timeouts exist only as explicit test conditions.
+- It is covered by backups like the rest of the data directory.
+- It never contains customer data and never contacts JDE.
+- An unknown target is refused, never invented.
+
+## Technical work (simulation only)
+
+The Technical Agent (`.claude/agents/technical-agent.md`, `technical/driver.py`) is started per story from Delivery → Technical Work, once a person has approved the Architect's design revision. Its packages are immutable revisions stored in SQLite; its workspaces are under `<JDE_API_DATA_DIR>/technical_workspaces/`.
+
+**Roles.**
+- The design and each exact package revision are approved by a role the company's approval policy allows.
+- Only a **`cnc_operator`** can record a CNC activation. That role is never granted by bootstrap: an Admin assigns it to a named person under Admin → Users.
+- Jade never deploys or promotes a package. The CNC does, and Jade records that it happened.
+
+**Company scope.** The company's engagement scope must authorise the object types (`technical_agent.authorized_object_types`). Objects must carry a customer system code 55–59, and `reserved_product_code` narrows that further if set.
+
+**Execution.**
+- Only the simulation adapter exists. The live adapter is unavailable by design: no mechanism for editing or importing a real JDE object is qualified.
+- No live execution path exists. Execution credentials are never given to any agent; the agent process blanks them.
+- A governed executor that retrieves credentials server-side, after checking the exact approved operation, is future work.
+
+**Unknown outcomes.** An unknown apply or build outcome blocks retry until someone reconciles it from the Technical Work screen. Reconciliation reads the simulated estate.
+
+**Integration proof.** `scripts/prove_technical_agent.py` runs the real Architect and the real Technical Agent through the Claude CLI against the simulated estate, with synthetic approvers. The last recorded run is in `docs/proof/technical_agent_run/`. It needs a Claude login and is not part of CI.
+
 ## Credential encryption key
 
 Jira API tokens are stored encrypted in SQLite (`services/credential_crypto.py`). The key is **never** on the disk:

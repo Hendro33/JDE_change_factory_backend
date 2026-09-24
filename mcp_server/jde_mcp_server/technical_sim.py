@@ -47,6 +47,12 @@ from . import sim_estate
 
 FORMAT = "jade_sim_er"
 FORMAT_LABEL = "jade_sim_er -- SYNTHETIC simulation format, not a JD Edwards export or specification format"
+GRAMMAR = ("jade_sim_er grammar: '// comment'; header 'OBJECT <name> FORM <form> SYSTEM <nn>'; declarations "
+           "'INPUT|OUTPUT <BC|VA|PO|GC> <Name> <NUMBER|STRING>' (the interface -- do not change it); "
+           "'EVENT <Name>' ... 'END EVENT'; 'IF <cond>' ... ['ELSE'] ... 'END IF' (IFs may nest); "
+           "assignment '<scope> <Name> = <value>'. A condition is comparisons joined by AND / OR (AND binds "
+           "tighter); operators are = != < > <= >= (no <>, no parentheses); values are \"strings\", numbers or "
+           "<scope> <Name>. Only OUTPUT variables can be assigned.")
 ADAPTER = "jade_simulation_adapter"
 ADAPTER_VERSION = "sim-1"
 

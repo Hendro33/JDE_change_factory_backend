@@ -252,7 +252,11 @@ def eligibility(package: dict) -> dict[str, Any]:
         if p not in " ".join(reasons):
             reasons.append(p)
     state = execution.effective_state(record, technical_gate.APPLY)
-    if state != "ready":
+    if state == "applied":
+        reasons = [r for r in reasons if "already been applied" not in r]
+        reasons.append("already applied under this approval -- the next milestones are build, the human CNC "
+                       "activation and verification; applying again needs a new revision and approval")
+    elif state != "ready":
         reasons.append(f"apply is {state}")
     return {"eligible": not reasons, "reasons": reasons}
 

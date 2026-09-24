@@ -82,6 +82,7 @@ class TechnicalAgentTools:
                                   "status": a["baseline_status"], "observations": manifest.get("observations"),
                                   "artifacts": manifest.get("artifacts"), "documents": manifest.get("documents"),
                                   "gaps": manifest.get("gaps"), "confidence_limitations": manifest.get("confidence_limitations")},
+            "format_notes": {technical_sim.FORMAT: technical_sim.GRAMMAR, "label": technical_sim.FORMAT_LABEL},
             "capability": {"capability_id": technical_gate.CAPABILITY_ID,
                            "formats": technical_gate.technical_enforcement().get("formats"),
                            "adapters": technical_gate.technical_enforcement().get("adapters")},
