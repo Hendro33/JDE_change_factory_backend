@@ -88,3 +88,25 @@ def test_the_full_simulated_lifecycle_with_separate_milestones(client, monkeypat
     assert verify_chain("S-TECH-2")["valid"] is True
     actions = [h["action"] for h in view["human_actions"]]
     assert actions[:1] == ["design_approval"] and "implementation_approved" in actions and "cnc_activation" in actions
+
+
+def test_eligibility_follows_the_next_milestone_and_never_calls_its_own_activation_drift(client, monkeypatch):
+    """Regression (found by the real-model run): after the CNC activation the
+    package's own change is not drift; the next milestone, verify, is eligible."""
+    ready_story(client, monkeypatch, "S-TECH-ELIG")
+    prepare("vdb", "S-TECH-ELIG")
+    approve_package(client, "S-TECH-ELIG", 1)
+
+    def elig():
+        return _view(client, "S-TECH-ELIG")["packages"][0]["eligibility"]
+
+    assert elig() == {"eligible": True, "next_milestone": "apply", "reasons": []}
+    milestone(client, "S-TECH-ELIG", 1, "apply")
+    assert elig()["next_milestone"] == "build" and elig()["eligible"] is True
+    milestone(client, "S-TECH-ELIG", 1, "build")
+    e = elig()
+    assert e["next_milestone"] == "cnc_activation" and not e["eligible"] and "CNC operator" in e["reasons"][0]
+    cnc(client, "S-TECH-ELIG", 1)
+    e = elig()
+    assert e == {"eligible": True, "next_milestone": "verify", "reasons": []}, e
+    assert not any("changed since approval" in r for r in e["reasons"])

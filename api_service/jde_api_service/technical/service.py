@@ -237,28 +237,49 @@ def change_for(package: dict) -> Optional[dict]:
     return approval._load(package["change_id"]) if package.get("change_id") else None
 
 
+def next_milestone(record: dict) -> Optional[str]:
+    apply_state = execution.effective_state(record, technical_gate.APPLY)
+    if apply_state != "applied":
+        return "apply"
+    build_state = execution.effective_state(record, technical_gate.BUILD)
+    if build_state != "built":
+        return "build"
+    if not record.get("cnc_activation"):
+        return "cnc_activation"
+    if execution.effective_state(record, technical_gate.VERIFY) != "completed":
+        return "verify"
+    return None
+
+
 def eligibility(package: dict) -> dict[str, Any]:
-    """Every reason this package revision may not be applied right now."""
-    reasons: list[str] = []
+    """Whether the package's NEXT milestone may run now, and every reason not.
+    Only application compares the target with its approved before-state: after
+    it, the package's own apply/activation changes the target by design, which
+    is not drift."""
     record = change_for(package)
     if record is None:
-        return {"eligible": False, "reasons": ["no exact change proposed for this revision"]}
+        return {"eligible": False, "next_milestone": None, "reasons": ["no exact change proposed for this revision"]}
+    nxt = next_milestone(record)
+    if nxt is None:
+        return {"eligible": False, "next_milestone": None, "reasons": ["every milestone is complete for this revision"]}
+    reasons: list[str] = []
+    gate_milestone = {"apply": technical_gate.APPLY, "build": technical_gate.BUILD, "cnc_activation": "cnc",
+                      "verify": technical_gate.VERIFY}[nxt]
     try:
-        technical_gate.authorise(record["change_id"], package, milestone=technical_gate.APPLY)
+        technical_gate.authorise(record["change_id"], package, milestone=gate_milestone)
     except Exception as exc:  # noqa: BLE001 -- reported, never raised
         reasons.append(str(exc))
-    others = binding.problems(record) if record.get("binding") else []
-    for p in others:
-        if p not in " ".join(reasons):
-            reasons.append(p)
-    state = execution.effective_state(record, technical_gate.APPLY)
-    if state == "applied":
-        reasons = [r for r in reasons if "already been applied" not in r]
-        reasons.append("already applied under this approval -- the next milestones are build, the human CNC "
-                       "activation and verification; applying again needs a new revision and approval")
-    elif state != "ready":
-        reasons.append(f"apply is {state}")
-    return {"eligible": not reasons, "reasons": reasons}
+    if record.get("binding"):
+        for p in binding.problems(record, read_current=nxt == "apply"):
+            if p not in " ".join(reasons):
+                reasons.append(p)
+    state = execution.effective_state(record, {"apply": technical_gate.APPLY, "build": technical_gate.BUILD,
+                                               "verify": technical_gate.VERIFY}.get(nxt, technical_gate.BUILD))
+    if nxt in ("apply", "build", "verify") and state not in ("ready",):
+        reasons.append(f"{nxt} is {state}")
+    if nxt == "cnc_activation":
+        reasons.append("awaiting a human CNC activation -- only a CNC operator can record it")
+    return {"eligible": not reasons, "next_milestone": nxt, "reasons": reasons}
 
 
 def approve_package(company_id: str, story_id: str, revision: int, *, actor_name: str, actor_user_id: str,
@@ -337,7 +358,8 @@ def work_view(company_id: str, story_id: str) -> dict[str, Any]:
             "created_at": p["created_at"], "created_by_run": p["created_by_run"], "superseded_by": p["superseded_by"],
             "content": p["content"], "approval": _approval_view(record),
             "eligibility": eligibility(p) if record and record.get("status") == "approved" else
-            {"eligible": False, "reasons": [f"exact implementation approval: {record.get('status') if record else 'none'}"]},
+            {"eligible": False, "next_milestone": "apply",
+             "reasons": [f"exact implementation approval: {record.get('status') if record else 'none'}"]},
         })
     env = (a or {}).get("target_environment") or ""
     estate = sim_estate.load(company_id, env) if env and technical_gate.mode() == "simulation" else None
