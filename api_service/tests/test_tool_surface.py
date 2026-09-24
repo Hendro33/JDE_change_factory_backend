@@ -124,3 +124,15 @@ def test_every_agent_driver_uses_the_restricted_runtime():
     for py in services.glob("*.py"):
         if py.name != "agent_runtime.py":
             assert "ClaudeAgentOptions(" not in py.read_text(), py.name
+
+
+def test_the_architect_is_told_every_catalogue_capability_id():
+    """propose_change fails closed on an unknown capability_id, so the
+    Architect's prompt carries the catalogue's ids rather than leaving it to guess."""
+    from jde_mcp_server import capability_catalog
+    from jde_api_service.services import architecture_driver
+
+    prompt = architecture_driver._build_prompt("S-X")
+    for cap in capability_catalog.list_capabilities():
+        assert cap["capability_id"] in prompt
+    assert '"tool": "set_processing_option"' in prompt

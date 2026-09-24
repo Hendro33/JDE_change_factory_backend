@@ -23,6 +23,13 @@ What it does, all in throwaway directories:
   4. Records: model and runtime configuration, the tool inventory the runtime
      reported, every tool call and result, the simulated endpoint's request
      log, the sanitised activity log, the design and its evidence manifest.
+     Then an explicit out-of-scope probe through the same runtime.
+  5. If the design proposed a change: approves it through the API and runs
+     the EXISTING functional-agent subagent, non-executing (every write,
+     orchestration and evidence tool removed from the runtime), to retrieve
+     the design revision, its baseline and the bound change.
+  6. Changes the value in the simulated DEV and presses Refresh Evidence:
+     new observations, the design flagged, nothing regenerated or re-approved.
 
 Writes <out>/trace.json and <out>/summary.md. Nothing contacts a customer JDE;
 nothing is written to any JDE.
@@ -44,7 +51,7 @@ from datetime import datetime, timedelta, timezone
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 parser = argparse.ArgumentParser()
-parser.add_argument("--out", default=os.path.join(ROOT, "docs", "evidence", "architect_discovery_run"))
+parser.add_argument("--out", default=os.path.join(ROOT, "docs", "proof", "architect_discovery_run"))
 args = parser.parse_args()
 
 DATA = tempfile.mkdtemp(prefix="jade-architect-proof-")
@@ -63,7 +70,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 from jde_api_service.config import settings  # noqa: E402
 from jde_api_service.discovery import transport  # noqa: E402
 from jde_api_service.main import app  # noqa: E402
-from jde_api_service.services import architecture_driver  # noqa: E402
+from jde_api_service.services import agent_runtime, architecture_driver  # noqa: E402
 
 COMPANY, STORY = "bwm", "S-PROOF-CREDIT-1"
 UNRESTRICTED = {"get_object", "get_version", "get_processing_options"}
@@ -140,6 +147,7 @@ def render_summary(r: dict) -> str:
         "",
     ]
     p = r["probe"]
+    lines += [f"- Probe runtime tool inventory: {(p['runtime'].get('init') or {}).get('tools')}", ""]
     presults = {t["id"]: t for t in p["trace"] if t["event"] == "tool_result"}
     for u in [t for t in p["trace"] if t["event"] == "tool_use"]:
         res = presults.get(u["id"], {})
@@ -148,6 +156,53 @@ def render_summary(r: dict) -> str:
         f"- Simulated endpoint requests during the probe: {p['simulated_endpoint_requests'] or 'NONE'}",
         f"- Activity rows (blocked, linked to run PROBE-OUT-OF-SCOPE): "
         f"{[(a['operation'], a['target'], a['outcome']) for a in p['activity']]}",
+        "",
+        "## Functional Agent hand-off (existing functional-agent entry point, non-executing)",
+        "",
+    ]
+    f = r["functional"]
+    if not f.get("bound_change_id"):
+        lines += ["- INCOMPLETE: this design revision proposed no change, so there was nothing to hand off.", ""]
+    else:
+        finit = f["runtime"].get("init") or {}
+        fresults = {t["id"]: t for t in f["trace"] if t["event"] == "tool_result"}
+        lines += [
+            f"- Change bound to design revision {(f['db_baseline'] or {}).get('designRevision')}: `{f['bound_change_id']}`; "
+            f"approval via the API: {f['approve']}",
+            f"- Runtime tool inventory: {finit.get('tools')}",
+            f"- Disallowed (removed from context): {f['runtime']['options']['disallowed_tools']}",
+            f"- Model: {finit.get('model')}; cost USD {f['runtime'].get('result', {}).get('total_cost_usd')}",
+            f"- Baseline in the database: {f['db_baseline']}",
+            "",
+            "| # | Tool | Input | Result (start) |",
+            "|---|---|---|---|",
+        ]
+        for i, u in enumerate([t for t in f["trace"] if t["event"] == "tool_use"], 1):
+            res = fresults.get(u["id"], {})
+            snippet = (res.get("content") or "").replace("|", "\\|").replace("\n", " ")[:200]
+            lines.append(f"| {i} | `{u['tool']}` | `{json.dumps(u['input'])[:120]}` | {'ERROR ' if res.get('is_error') else ''}{snippet} |")
+        lines += [
+            "",
+            f"- Change record before: {f['change_before']}",
+            f"- Change record after: {f['change_after']}; execution recorded: {f['execution_recorded']}",
+            "",
+            "Final report from the run:",
+            "",
+            *[f"> {line}" for line in (f["runtime"].get("final_text") or "").splitlines()],
+            "",
+        ]
+    rf = r["refresh"]
+    lines += [
+        "## Refresh Evidence after the DEV value changed (PCREDCHK set to '2' in the simulated DEV)",
+        "",
+        f"- Refresh: HTTP {rf['status_code']}; design revisions before/after: {rf['design_history_before']} / {rf['design_history_after']}",
+        f"- Change status before/after: {rf['change_status_before']} / {rf['change_status_after']}; approved_at unchanged: {rf['approved_at_unchanged']}",
+        *[f"- Baseline {b['baselineRevision']} ({b['trigger']}, design {b['designRevision']}): {b['status']}, "
+          f"sha256 `{b['manifestSha256'][:16]}`; reassessment {b['reassessment']}" for b in rf["baselines"]],
+        f"- New observations: {rf['new_observations']}",
+        f"- Change detection: {rf['refresh_changes']}",
+        f"- Note in the manifest: {rf['refresh_note']}",
+        f"- What the Functional Agent's get_design_baseline now returns: status {rf['downstream_status']}",
         "",
     ]
     return "\n".join(lines)
@@ -222,6 +277,10 @@ with TestClient(app) as client:
     enabled = ok(client.post("/admin/jde/enable", headers=H, json={"expectedRevision": rev}), "enable")
     setup["discovery_enabled"] = enabled["profile"]["discoveryEnabled"]
     setup["environment_check"] = enabled["profile"]["health"]["environment"]
+    # The DEV state the story describes: the webshop version does not run the
+    # credit check today (PCREDCHK blank), so over-limit orders are released.
+    transport.simulated_estate(COMPANY)["processing_options"]["P4210|CIQ0001"]["PCREDCHK"] = ""
+    setup["fixture"] = "simulated DEV: P4210|CIQ0001 PCREDCHK is blank (credit check off)"
     calls_before_run = len(endpoint_calls)
 
     # Engagement scope so a proposal (if the Architect makes one) is recorded.
@@ -354,7 +413,7 @@ with TestClient(app) as client:
         "2. mcp__jade-discovery__discovery_read with capability_id \"table_browse\", target \"F4211\", "
         "fields [\"DOCO\", \"UPRC\"] (approved table, unapproved price column).\n"
         "3. mcp__jade-discovery__discovery_read with capability_id \"source_code\", target \"P554210\".")
-    probe_options = sdk.ClaudeAgentOptions(
+    probe_options = agent_runtime.options(
         cwd=settings.repo_root, permission_mode="dontAsk", allowed_tools=architect_tools.ALLOWED_TOOLS,
         disallowed_tools=[f"mcp__jde-change-factory__{t}" for t in architecture_driver.PROJECT_SERVER_TOOLS],
         max_turns=8, mcp_servers={architect_tools.SERVER_NAME: probe_tools.sdk_server()})
@@ -370,6 +429,84 @@ with TestClient(app) as client:
     evidence = ok(client.get(f"/changes/{STORY}/architecture-review/evidence", headers=H), "evidence")
     activity = ok(client.get("/admin/jde/activity", headers=H), "activity")
     handoff = client.get(f"/changes/{STORY}/architecture-review/handoff", headers=H)
+
+    # ---- 5. Functional Agent hand-off, NON-EXECUTING ----------------------
+    # The existing entry point: the functional-agent subagent definition in
+    # .claude/agents, through the same restricted runtime. Every write,
+    # execution and evidence tool is removed from the runtime's context, so
+    # nothing can execute whatever the model does.
+    from jde_api_service.discovery import baseline as baseline_mod
+    from jde_mcp_server import approval as mcp_approval
+
+    package_path = os.path.join(baseline_mod.handoff_dir(), f"{STORY}.json")
+    bound_change = json.load(open(package_path)).get("change_id") if os.path.exists(package_path) else None
+    functional: dict = {"bound_change_id": bound_change, "db_baseline": None}
+    if evidence:
+        functional["db_baseline"] = {k: evidence[0][k] for k in ("baselineId", "designRevision", "manifestSha256", "status")}
+    change_keys = ("change_id", "status", "capability_id", "operation", "change_hash", "approved_by", "approved_at")
+    if bound_change:
+        approved = client.post(f"/changes/{STORY}/approve-change", headers=H,
+                               json={"note": "Gate 2 for the integration proof; nothing is executed"})
+        functional["approve"] = [approved.status_code, approved.text[:300] if approved.status_code != 200 else "approved"]
+        functional["change_before"] = {k: mcp_approval._load(bound_change).get(k) for k in change_keys}
+        f_allowed = ["Task"] + [f"mcp__jde-change-factory__{t}" for t in
+                                ("get_design_baseline", "get_capability_status", "read_approved_target")]
+        f_options = agent_runtime.options(
+            cwd=settings.repo_root, permission_mode="dontAsk", allowed_tools=f_allowed, max_turns=20,
+            disallowed_tools=[f"mcp__jde-change-factory__{t}" for t in architecture_driver.PROJECT_SERVER_TOOLS
+                              if f"mcp__jde-change-factory__{t}" not in f_allowed])
+        f_prompt = (
+            f"Use the functional-agent subagent for approved story {STORY} and change_id {bound_change}. This is a "
+            "NON-EXECUTING hand-off check: its write, orchestration and evidence tools are not available in this run. "
+            "Have it do only its Step zero and Start-up step 1: call get_design_baseline, check that the change_id it "
+            "was given is the design's bound change and is approved, call get_capability_status for that change's "
+            "capability, and read the approved target's current value with read_approved_target. Then report: design "
+            "revision, baseline id, manifest_sha256, baseline status, the bound change_id and its status, whether the "
+            "given change_id matches, the current target value, and the exact operation it WOULD execute -- and "
+            "whether it would proceed or stop, and why.")
+        f_trace: list[dict] = []
+        f_runtime: dict = {}
+
+        async def run_functional():
+            async for message in make_observer(f_trace, f_runtime)(prompt=f_prompt, options=f_options):
+                if type(message).__name__ == "ResultMessage":
+                    f_runtime["final_text"] = getattr(message, "result", None)
+
+        asyncio.run(run_functional())
+        after = mcp_approval._load(bound_change)
+        functional.update(runtime=f_runtime, trace=f_trace,
+                          change_after={k: after.get(k) for k in change_keys},
+                          execution_recorded=after.get("execution"))
+
+    # ---- 6. Refresh Evidence after DEV changed ----------------------------
+    # Someone changes the target in DEV; the reviewer presses Refresh Evidence.
+    history_before = len(get_architecture_review_service().get(STORY).history)
+    change_before_refresh = mcp_approval._load(bound_change) if bound_change else None
+    transport.simulated_estate(COMPANY)["processing_options"]["P4210|CIQ0001"]["PCREDCHK"] = "2"
+    refreshed = client.post(f"/changes/{STORY}/architecture-review/refresh-evidence", headers=H)
+    after_refresh = ok(client.get(f"/changes/{STORY}/architecture-review/evidence", headers=H), "evidence")
+    from jde_mcp_server.design_baseline import get_design_baseline as mcp_get_design_baseline
+
+    try:
+        downstream = mcp_get_design_baseline(STORY)
+    except Exception as exc:  # noqa: BLE001 -- recorded, e.g. no baseline because the run failed
+        downstream = {"status": f"unavailable: {exc}"}
+    change_after_refresh = mcp_approval._load(bound_change) if bound_change else None
+    refresh = {
+        "status_code": refreshed.status_code,
+        "baselines": [{k: b[k] for k in ("baselineId", "baselineRevision", "designRevision", "trigger", "status",
+                                         "manifestSha256", "reassessment")} for b in after_refresh],
+        "new_observations": [(o["observation_id"], o["target"], o["observed_at"])
+                             for o in (after_refresh[0]["manifest"]["observations"] if after_refresh else [])],
+        "refresh_changes": after_refresh[0]["manifest"].get("refresh_changes") if after_refresh else None,
+        "refresh_note": after_refresh[0]["manifest"].get("refresh_note") if after_refresh else None,
+        "design_history_before": history_before,
+        "design_history_after": len(get_architecture_review_service().get(STORY).history),
+        "change_status_before": (change_before_refresh or {}).get("status"),
+        "change_status_after": (change_after_refresh or {}).get("status"),
+        "approved_at_unchanged": (change_before_refresh or {}).get("approved_at") == (change_after_refresh or {}).get("approved_at"),
+        "downstream_status": downstream["status"],
+    }
 
 commits = {}
 for name, path in (("backend", ROOT), ("frontend", os.path.join(os.path.dirname(ROOT), "JDE_change_factory_frontend"))):
@@ -395,6 +532,8 @@ record = {
               "ledger_blocked": probe_tools.ledger.blocked},
     "baseline": evidence[0] if evidence else None,
     "handoff_status": handoff.status_code,
+    "functional": functional,
+    "refresh": refresh,
     "trace": trace,
 }
 blob = json.dumps(record, indent=2, default=str)

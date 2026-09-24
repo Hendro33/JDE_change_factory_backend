@@ -213,7 +213,10 @@ def get_design_baseline(story_id: str) -> dict:
     gaps). Call it before anything else. It is a snapshot: it does not
     authorise any write, and a status of needs_reassessment means the
     evidence changed after the design -- stop and send it back to the
-    Architect. Re-validate every live precondition you rely on."""
+    Architect. 'change' is the exact change this design revision proposed
+    and its current approval state: execute only that change_id, and only
+    when its status is approved. Re-validate every live precondition you
+    rely on."""
     return _get_design_baseline(story_id)
 
 

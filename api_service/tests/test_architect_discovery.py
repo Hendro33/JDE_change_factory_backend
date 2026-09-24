@@ -286,6 +286,39 @@ def test_acceptance_8_downstream_agents_receive_the_same_manifest(client, monkey
         get_design_baseline(STORY)
 
 
+def test_the_hand_off_names_the_exact_change_this_design_proposed(client, monkeypatch):
+    """The Functional Agent is given a change_id; the baseline it retrieves
+    must say which change its design proposed, so a change from another
+    design revision is recognisable."""
+    from jde_mcp_server import approval
+    from jde_mcp_server.design_baseline import get_design_baseline
+
+    ready_company(client, "vdb")
+    _approved_story(STORY)
+    proposed = {}
+
+    def script(tools):  # the Architect calls propose_change during its run
+        tools.read("udc_values", "00/DT")
+        proposed.update(approval.propose_change(STORY, {
+            "tool": "set_processing_option", "story_id": STORY, "application": "P4210", "version": "CIQ0001",
+            "option": "PCREDCHK", "value": "1"}, "processing_option_update"))
+        return {}
+
+    _run(monkeypatch, script)
+    first = get_design_baseline(STORY)
+    assert first["change"]["change_id"] == proposed["change_id"] and first["change"]["status"] == "pending"
+    assert first["change"]["operation"]["option"] == "PCREDCHK"
+    # A refresh of the same design keeps its change.
+    client.post(f"/changes/{STORY}/architecture-review/refresh-evidence", headers=headers("vdb"))
+    assert get_design_baseline(STORY)["change"]["change_id"] == proposed["change_id"]
+    # A later design revision that proposes nothing is not bound to the old change.
+    _run(monkeypatch, lambda tools: (tools.read("udc_values", "00/DT"), {})[1])
+    later = get_design_baseline(STORY)
+    assert later["design_revision"] == first["design_revision"] + 1
+    assert later["change"] == {"change_id": None, "status": "none",
+                               "detail": "this design revision proposed no executable change -- nothing to execute"}
+
+
 def test_the_baseline_grants_nothing_to_execution(client, monkeypatch):
     """Execution never reads the discovery baseline: an approved change is
     still refused for exactly the reasons the gate always had."""

@@ -16,6 +16,7 @@ import hashlib
 import json
 import os
 
+from . import approval
 from .backlog import require_approved
 from .scope import company_for_story
 
@@ -43,4 +44,21 @@ def get_design_baseline(story_id: str) -> dict:
     blob = json.dumps(package.get("evidence_manifest"), sort_keys=True)
     if hashlib.sha256(blob.encode()).hexdigest() != package.get("manifest_sha256"):
         raise DesignBaselineUnavailable("the design baseline's checksum does not verify -- refusing")
+    package["change"] = _bound_change(package.get("change_id"), company_id)
     return package
+
+
+def _bound_change(change_id, company_id: str) -> dict:
+    """The exact change this design revision proposed, with its CURRENT
+    approval state. The agent must execute only this change_id; a different
+    one, or one not approved, means stop."""
+    if not change_id:
+        return {"change_id": None, "status": "none",
+                "detail": "this design revision proposed no executable change -- nothing to execute"}
+    record = approval._load(change_id)
+    if record is None or record.get("company_id") != company_id:
+        return {"change_id": change_id, "status": "unavailable",
+                "detail": "the proposed change record is missing or belongs to another company -- refusing"}
+    return {key: record.get(key) for key in (
+        "change_id", "status", "capability_id", "capability_revision", "operation", "change_hash",
+        "approved_by", "approved_at", "expires_at")}

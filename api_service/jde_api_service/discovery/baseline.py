@@ -487,18 +487,28 @@ def handoff_dir() -> str:
 
 
 def write_handoff(company_id: str, story_id: str, baseline: dict, architect_decision: Optional[dict],
-                  implementation_spec: Optional[dict]) -> dict:
+                  implementation_spec: Optional[dict], change_id: Optional[str] = None) -> dict:
+    """change_id: the exact change this design revision proposed (None for a
+    design that proposed none). A refresh of the same design revision keeps
+    the change it already had."""
+    directory = handoff_dir()
+    path = os.path.join(directory, f"{story_id}.json")
+    if change_id is None and os.path.exists(path):
+        with open(path, encoding="utf-8") as f:
+            previous = json.load(f)
+        if previous.get("design_revision") == baseline["design_revision"]:
+            change_id = previous.get("change_id")
     package = {
         "company_id": company_id, "story_id": story_id, "baseline_id": baseline["baseline_id"],
         "design_revision": baseline["design_revision"], "baseline_revision": baseline["baseline_revision"],
         "manifest_sha256": baseline["manifest_sha256"], "status": baseline["status"],
         "architect_decision": architect_decision, "implementation_spec": implementation_spec,
         "evidence_manifest": baseline["manifest"], "reassessment": baseline["reassessment"], "note": HANDOFF_NOTE,
+        "change_id": change_id,
     }
-    directory = handoff_dir()
     os.makedirs(directory, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=directory, prefix=".handoff-")
     with os.fdopen(fd, "w", encoding="utf-8") as f:
         json.dump(package, f, indent=2, sort_keys=True)
-    os.replace(tmp, os.path.join(directory, f"{story_id}.json"))
+    os.replace(tmp, path)
     return package

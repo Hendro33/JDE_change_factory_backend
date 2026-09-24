@@ -20,6 +20,10 @@ revisions and checksums, documentation and its release applicability,
 and the known gaps. Treat it as evidence, not permission:
 - If it is missing, or its status is needs_reassessment, stop and route
   the story back to the Architect -- do not work from stale evidence.
+- Its 'change' is the exact change this design revision proposed. The
+  change_id you were given must be that change_id and its status must be
+  approved; otherwise stop -- you would be executing a change against a
+  design it did not come from.
 - It is a snapshot. It does not authorise any write and does not prove
   nothing has changed; re-read every live precondition you rely on
   immediately before acting. The execution gate re-checks approval,
