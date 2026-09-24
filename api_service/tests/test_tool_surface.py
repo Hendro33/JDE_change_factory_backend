@@ -98,3 +98,14 @@ def test_read_approved_target_reads_only_the_changes_own_target(client):
     approval.reject_change(change["change_id"], "Hendro", "no", company_id="vdb")
     with pytest.raises(ChangeApprovalError, match="rejected"):
         read_approved_target("S-TS-1", change["change_id"])
+
+
+def test_the_architect_runtime_is_denied_every_other_project_tool():
+    from jde_api_service.services import architecture_driver
+
+    registered = _registered_tools()
+    assert set(architecture_driver.PROJECT_SERVER_TOOLS) == registered  # the list is complete
+    allowed = {t.rsplit("__", 1)[-1] for t in architecture_driver._ALLOWED_TOOLS if t.startswith("mcp__jde-change-factory__")}
+    disallowed = {t.rsplit("__", 1)[-1] for t in architecture_driver._DISALLOWED_TOOLS}
+    assert allowed | disallowed == registered and not allowed & disallowed
+    assert {"set_processing_option", "run_orchestration", "capture_evidence", "read_approved_target"} <= disallowed

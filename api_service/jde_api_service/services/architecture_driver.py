@@ -42,6 +42,18 @@ _ALLOWED_TOOLS = [
     *architect_tools.ALLOWED_TOOLS,
 ]
 
+# Every other tool of the project's .mcp.json server is removed from the
+# Architect's context entirely (not merely denied by dontAsk): the Architect
+# never sees a write, test-execution or evidence-writing tool.
+# test_tool_surface.py pins this list against the server's registry.
+PROJECT_SERVER_TOOLS = [
+    "capture_evidence", "get_approved_story", "get_capability_status", "get_design_baseline", "propose_change",
+    "propose_to_backlog", "read_approved_target", "resolve_without_change", "run_orchestration",
+    "set_processing_option", "verify_evidence_chain",
+]
+_DISALLOWED_TOOLS = [f"mcp__jde-change-factory__{t}" for t in PROJECT_SERVER_TOOLS
+                     if f"mcp__jde-change-factory__{t}" not in _ALLOWED_TOOLS]
+
 _ROUTES = {"Functional Agent", "Technical Agent", "Mixed", "Human Implementation", "Resolve without Change"}
 
 # Named so Admin > Agents can read the same values this driver actually
@@ -194,6 +206,7 @@ async def run_architecture_review(
             cwd=repo_root,
             permission_mode=PERMISSION_MODE,
             allowed_tools=_ALLOWED_TOOLS,
+            disallowed_tools=_DISALLOWED_TOOLS,
             max_turns=MAX_TURNS,
             mcp_servers={architect_tools.SERVER_NAME: tools.sdk_server()},
         )
