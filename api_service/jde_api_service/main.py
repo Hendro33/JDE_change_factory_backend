@@ -86,10 +86,11 @@ async def _lifespan(app: FastAPI):
     # Idempotent -- safe on every restart, never duplicates existing
     # records or resets anything already there.
     _wire_execution_gate()
+    # Schema first: recovery reads tables a fresh database only gets here.
+    ensure_schema()
     interrupted = reconcile_interrupted_runs()
     if any(interrupted.values()):
         logger.warning("Marked runs interrupted by the restart as failed: %s", interrupted)
-    ensure_schema()
     reencrypted = get_jira_credentials_service().reencrypt_stored()
     if reencrypted:
         logger.info("Encrypted or re-keyed %d stored Jira credential(s)", reencrypted)

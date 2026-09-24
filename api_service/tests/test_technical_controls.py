@@ -440,3 +440,17 @@ def test_an_architect_answer_in_prose_is_kept_and_labelled_not_treated_as_a_desi
     run = service.get("S-TC-PROSE")
     assert run.stage == "failed" and run.error.startswith("UNSTRUCTURED RESULT (not a runtime error)")
     assert "contradicts the story's premise" in run.error
+
+
+def test_the_service_starts_on_a_fresh_database(isolated_dirs, tmp_path, monkeypatch):
+    """Regression: startup recovery must not read a table before the schema exists."""
+    from fastapi.testclient import TestClient
+
+    from jde_api_service.config import settings
+    from jde_api_service.main import app
+
+    fresh = tmp_path / "fresh_api_data"
+    monkeypatch.setattr(settings, "data_dir", str(fresh))
+    monkeypatch.setenv("JDE_AUTH_DB_PATH", str(fresh / "jde.sqlite3"))
+    with TestClient(app) as c:
+        assert c.get("/health").status_code == 200
