@@ -328,3 +328,42 @@ Final reply:
 > 16. `view_workspace_file`
 > 
 > The subagent's own closing observation: no shell, filesystem, or web-fetch tools, and no `jde-change-factory`-namespaced tools, are present — despite the working directory referencing a `jde_change_fa
+
+## Resumed verify step (after the eligibility fix)
+
+The final verify run above stopped because get_package_status reported the package's own CNC activation as drift (eligibility always evaluated 'apply'). That was a Jade bug; it was fixed (eligibility now follows the next milestone) and only the verify step was re-run by the real Technical Agent on the same throwaway data.
+
+- Backend commit: `bbd2f3b079f31e27df5dbed50e71ccf0d874666d`; model claude-sonnet-5; cost USD 0.042270800000000004; turns 1
+- Tools used: ['Agent', 'mcp__jade-technical__get_package_status', 'mcp__jade-technical__run_verification_tests']
+- PASS -- eligibility after the fix names verify as the next, eligible milestone -- {"eligible": true, "next_milestone": "verify", "reasons": []}
+- PASS -- 8. positive, negative and neighbouring tests produced recorded results -- 5/5 passed
+- PASS -- 10. final evidence links the outcome to the exact approved artifact -- chain {'story_id': 'S-PROOF-TECH-1', 'valid': True, 'entries': 6}; active d0fbc21269f522fc == approved d0fbc21269f522fc
+
+| Test | Kind | Passed | Expected | Actual |
+|---|---|---|---|---|
+| Exempt customer over limit is released | positive | True | {'HoldCode': '', 'HoldReason': ''} | {'HoldCode': '', 'HoldReason': ''} |
+| Non-exempt customer over limit is held | negative | True | {'HoldCode': 'C1', 'HoldReason': 'Over credit limit'} | {'HoldCode': 'C1', 'HoldReason': 'Over credit limit'} |
+| Blank-exempt customer over limit is held | negative | True | {'HoldCode': 'C1', 'HoldReason': 'Over credit limit'} | {'HoldCode': 'C1', 'HoldReason': 'Over credit limit'} |
+| SO order within limit is unaffected | neighbouring | True | {'HoldCode': '', 'HoldReason': ''} | {'HoldCode': '', 'HoldReason': ''} |
+| Non-SO order type over limit is unaffected | neighbouring | True | {'HoldCode': '', 'HoldReason': ''} | {'HoldCode': '', 'HoldReason': ''} |
+
+Final reply:
+
+> Verification for **S-PROOF-TECH-1** is complete — good news across the board:
+> 
+> **Package state (revision 2):**
+> - Apply: ✅ applied
+> - Build: ✅ built
+> - CNC activation: ✅ recorded (this is what unlocked the test run)
+> - Verify: ✅ tests executed
+> 
+> **Verification test results — 5/5 PASS:**
+> 1. Exempt customer over credit limit → released (no hold) — **PASS**
+> 2. Non-exempt customer over limit → held with correct code/reason — **PASS**
+> 3. Blank-exempt customer over limit → held with correct code/reason — **PASS**
+> 4. Sales order within limit → unaffected — **PASS**
+> 5. Non-SO order type over limit → unaffected — **PASS**
+> 
+> These cover positive, negative, and neighbouring-behaviour cases as required, all run against the confirmed ACTIVE DEV runtime for the approved artifact, with no discrepancies against expected outcomes. No new package revisions were applied or built — this was a verify-only run against the previously approved, applied, built, and CNC-activated package. An evidence entry was recorded for audit purposes.
+> 
+> Overall: the approved technical package for S-PROOF-TECH-1 is verified and working as designed.
