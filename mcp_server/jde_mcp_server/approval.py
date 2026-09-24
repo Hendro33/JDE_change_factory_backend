@@ -249,6 +249,11 @@ def approve_change(
             raise ChangeApprovalError(str(exc)) from exc
         if not matched:
             raise ApproverNotAuthorised(f"{approved_by}'s roles changed while approving -- refusing")
+        # What this approval is given against: the design revision, its
+        # evidence baseline and artifacts, and the target's before-state.
+        from . import binding
+
+        basis = binding.snapshot(record)
         now = time.time()
         record.update({
             "status": "approved",
@@ -262,6 +267,7 @@ def approve_change(
                 "scope_revision": str(scope.get("revision", "unknown")),
             },
             "decision_note": note,
+            "binding": basis,
         })
         _save(change_id, record)
         return record
@@ -335,6 +341,11 @@ def require_exact_change(change_id: str, operation: dict) -> dict:
     # An earlier attempt that is in flight, applied, or of unknown outcome
     # blocks this one: no blind retry, no second application.
     execution.require_ready(record, execution.WRITE)
+    # The basis the approval was given against must still hold: same design
+    # revision, no recorded invalidation, the target still in its before-state.
+    from . import binding
+
+    binding.require_valid(record)
     # The write is compared with the approved operation minus its test
     # binding: the test name is enforced separately, by
     # require_change_covers_test, and the write tool never sends it.
@@ -397,6 +408,11 @@ def require_change_covers_test(change_id: str, test_orchestration_name: str) -> 
             f"(state: {execution.effective_state(record, execution.WRITE)}), so its test cannot run yet"
         )
     execution.require_ready(record, execution.TEST)
+    from . import binding
+
+    found = binding.problems(record, read_current=False)  # the write itself changed the target, by design
+    if found:
+        raise binding.BindingInvalid(f"change {change_id} is not eligible: " + "; ".join(found))
     expected = record["operation"].get("test_orchestration")
     if expected != test_orchestration_name:
         raise ChangeApprovalError(
@@ -467,6 +483,15 @@ def preflight(change_id: str) -> dict:
         check("AIS connection points at the bound DEV environment", lambda: require_bound_environment(scope))
     check("Version is not Oracle-owned (XJDE/ZJDE)", lambda: scope_module.reject_if_oracle_owned_version(op.get("version", "")))
     check("No earlier attempt in flight, applied or of unknown outcome", lambda: execution.require_ready(record, execution.WRITE))
+    if record.get("status") == "approved":
+        from . import binding
+
+        def basis_holds() -> None:
+            found = binding.problems(record, read_current=execution.effective_state(record, execution.WRITE) == "ready")
+            if found:
+                raise binding.BindingInvalid("; ".join(found))
+
+        check("Approval basis still holds (design revision, evidence, no invalidation, target before-state)", basis_holds)
     if not settings.mock_mode:
         def fsr_recorded() -> None:
             if FSR_SET_PROCESSING_OPTION is None:

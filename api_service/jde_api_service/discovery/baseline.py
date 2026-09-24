@@ -404,6 +404,10 @@ def on_artifact_uploaded(company_id: str, artifact: dict) -> list[str]:
                                                                 f"{artifacts.evidence_ref(artifact)}"})
                 flagged.append(b["story_id"])
                 break
+    from ..services.work_invalidation import invalidate_affected
+
+    invalidate_affected(company_id, source=f"new artifact revision {artifacts.evidence_ref(artifact)}",
+                        revised_artifacts={artifact["artifact_id"]})
     return flagged
 
 
@@ -415,6 +419,10 @@ def on_profile_saved(company_id: str, profile: dict) -> list[str]:
             _flag(b, {"kind": "environment_profile_changed",
                       "detail": f"baseline used profile revision {p['revision']}; now revision {profile['revision']}"})
             flagged.append(b["story_id"])
+    from ..services.work_invalidation import invalidate_affected
+
+    invalidate_affected(company_id, source=f"discovery profile revision {profile['revision']}",
+                        profile_material_hash=profile["material_hash"])
     return flagged
 
 
@@ -459,6 +467,19 @@ def refresh(company_id: str, story_id: str, *, actor_user_id: str) -> dict:
     if blocked:
         reassessment.append({"kind": "refresh_incomplete", "detail": f"{len(blocked)} observation(s) could not be refreshed",
                              "flagged_at": _now()})
+    # Which approved or pending work this materially affects (its own
+    # dependencies), each invalidated for execution under its approval.
+    from ..services.work_invalidation import invalidate_affected
+
+    by_id = {e["observation_id"]: e for e in old.get("observations", [])}
+    affected = invalidate_affected(
+        company_id, story_id=story_id, source=f"Refresh Evidence by {actor_user_id}",
+        changed_targets={f"{by_id[c['previous']]['capability_id']}:{by_id[c['previous']]['target'].upper()}"
+                         for c in changes if c["changed"]},
+        unverified_targets={f"{b['capability_id']}:{str(b['target']).upper()}" for b in blocked},
+        revised_artifacts={e["artifact_id"] for e in (*old.get("artifacts", []), *old.get("documents", []))
+                           if artifacts.latest_revision(company_id, e["artifact_id"]) > e["revision"]},
+        profile_material_hash=profile["material_hash"] if profile else None)
     manifest = {**old, "created_at": _now(), "trigger": "refresh", "refreshed_by": actor_user_id,
                 "evidence_notes": EVIDENCE_NOTES,
                 "refresh_note": ("Evidence re-read only: new observations were recorded for the same approved "
@@ -468,7 +489,7 @@ def refresh(company_id: str, story_id: str, *, actor_user_id: str) -> dict:
                                  "re-run the Architect."),
                 "refreshed_from": current["baseline_id"], "observations": new_obs,
                 "environment_profile": _profile_block(profile, grant),
-                "refresh_changes": changes, "refresh_blocked": blocked}
+                "refresh_changes": changes, "refresh_blocked": blocked, "affected_work": affected}
     manifest.pop("baseline_id", None)
     status = "needs_reassessment" if reassessment else "current"
     return _store(company_id, story_id, current["design_revision"], "refresh", manifest, status, reassessment)

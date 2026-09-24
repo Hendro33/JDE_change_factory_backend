@@ -56,6 +56,7 @@ args = parser.parse_args()
 
 DATA = tempfile.mkdtemp(prefix="jade-architect-proof-")
 for name, sub in (("JDE_API_DATA_DIR", "api"), ("JDE_BACKLOG_DIR", "backlog"), ("JDE_CHANGE_DIR", "changes"),
+                  ("JDE_SIM_ESTATE_DIR", "sim_estate"),
                   ("JDE_EVIDENCE_DIR", "evidence")):
     os.environ[name] = os.path.join(DATA, sub)
 os.environ["JDE_CREDENTIAL_KEY"] = __import__("cryptography.fernet", fromlist=["Fernet"]).Fernet.generate_key().decode()
@@ -69,6 +70,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 from jde_api_service.config import settings  # noqa: E402
 from jde_api_service.discovery import transport  # noqa: E402
+from jde_mcp_server import sim_estate  # noqa: E402
 from jde_api_service.main import app  # noqa: E402
 from jde_api_service.services import agent_runtime, architecture_driver  # noqa: E402
 
@@ -226,8 +228,8 @@ endpoint_calls: list = []
 _real_init = transport.SimulatedAisEndpoint.__init__
 
 
-def _logged_init(self, company_id, *, calls=None):
-    _real_init(self, company_id, calls=endpoint_calls)
+def _logged_init(self, company_id, environment, *, calls=None):
+    _real_init(self, company_id, environment, calls=endpoint_calls)
 
 
 transport.SimulatedAisEndpoint.__init__ = _logged_init  # observe every simulated network request
@@ -279,7 +281,9 @@ with TestClient(app) as client:
     setup["environment_check"] = enabled["profile"]["health"]["environment"]
     # The DEV state the story describes: the webshop version does not run the
     # credit check today (PCREDCHK blank), so over-limit orders are released.
-    transport.simulated_estate(COMPANY)["processing_options"]["P4210|CIQ0001"]["PCREDCHK"] = ""
+    with sim_estate.edit(COMPANY, "JDV920", actor="proof harness",
+                         reason="fixture: the webshop version does not run the credit check") as _est:
+        _est["processing_options"]["P4210|CIQ0001"]["PCREDCHK"] = ""
     setup["fixture"] = "simulated DEV: P4210|CIQ0001 PCREDCHK is blank (credit check off)"
     calls_before_run = len(endpoint_calls)
 
@@ -482,7 +486,9 @@ with TestClient(app) as client:
     # Someone changes the target in DEV; the reviewer presses Refresh Evidence.
     history_before = len(get_architecture_review_service().get(STORY).history)
     change_before_refresh = mcp_approval._load(bound_change) if bound_change else None
-    transport.simulated_estate(COMPANY)["processing_options"]["P4210|CIQ0001"]["PCREDCHK"] = "2"
+    with sim_estate.edit(COMPANY, "JDV920", actor="proof harness",
+                         reason="TEST CONDITION: drift -- someone changes PCREDCHK in DEV") as _est:
+        _est["processing_options"]["P4210|CIQ0001"]["PCREDCHK"] = "2"
     refreshed = client.post(f"/changes/{STORY}/architecture-review/refresh-evidence", headers=H)
     after_refresh = ok(client.get(f"/changes/{STORY}/architecture-review/evidence", headers=H), "evidence")
     from jde_mcp_server.design_baseline import get_design_baseline as mcp_get_design_baseline

@@ -77,8 +77,15 @@ def test_refresh_records_new_observations_and_flags_without_regenerating_or_reap
     ready_company(client, "vdb")
     _save_scope(client, "vdb", _full_scope())
     _approved_story(STORY)
-    _run(monkeypatch, lambda tools: (tools.read("processing_option_values", "P4210|CIQ0001"), {})[1])
-    change = _propose(STORY)
+    proposed = {}
+
+    def architect(tools):  # the Architect reads the target and proposes the change during its run
+        tools.read("processing_option_values", "P4210|CIQ0001")
+        proposed.update(_propose(STORY))
+        return {}
+
+    _run(monkeypatch, architect)
+    change = proposed
     approved = _approve(change["change_id"])
     history_before = [v.model_dump() for v in get_architecture_review_service().get(STORY).history]
     first = _baselines(client)[0]
@@ -99,6 +106,12 @@ def test_refresh_records_new_observations_and_flags_without_regenerating_or_reap
     record = approval._load(change["change_id"])
     assert (record["status"], record["approved_at"], record["approved_by"]) == (
         "approved", approved["approved_at"], approved["approved_by"])
+    # ...but the unchanged approval timestamp does not mean it may still run:
+    # its own target's evidence changed, so it is invalidated for execution.
+    assert r["manifest"]["affected_work"][0]["change_id"] == change["change_id"]
+    assert record["invalidations"][0]["kind"] == "evidence_changed"
+    pre = client.get(f"/changes/{STORY}/execution/preflight", headers=headers("vdb")).json()
+    assert pre["executable"] is False and any("invalidated" in c["detail"] for c in pre["checks"] if not c["ok"])
     # The earlier baseline is kept, byte for byte.
     assert _baselines(client)[-1]["manifestSha256"] == first["manifestSha256"]
     # Downstream agents see the flag.

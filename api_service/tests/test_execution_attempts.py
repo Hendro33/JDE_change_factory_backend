@@ -259,8 +259,16 @@ def test_a_capability_without_an_execution_adapter_cannot_be_proposed_as_executa
 # ---------------------------------------------------------------------
 # Live mode (simulated: the HTTP call is replaced, nothing leaves the process)
 # ---------------------------------------------------------------------
-def _live(monkeypatch, environment: str = "JDV920"):
-    from jde_mcp_server import ais_client
+def _live(monkeypatch, environment: str = "JDV920", *, before_reader: bool = True):
+    """Live mode with the HTTP call replaced. Live before-state reading is not
+    implemented, so by default a TEST DOUBLE stands in for a qualified reader
+    (to exercise the rest of the live path); before_reader=False shows the
+    real behaviour: no before-state, no dispatch."""
+    from jde_mcp_server import ais_client, binding
+
+    if before_reader:
+        monkeypatch.setitem(binding.BEFORE_READERS, "functional",
+                            lambda record: {"known": True, "value": "S3", "source": "TEST DOUBLE live reader"})
 
     monkeypatch.setattr(
         ais_client, "settings",
@@ -287,6 +295,16 @@ def test_live_mode_refuses_when_the_connection_is_not_the_bound_environment(clie
         _execute("S-EX-WRONGENV", change["change_id"])
     assert sent == []
     assert _state(change["change_id"]) == "ready"  # nothing was attempted
+
+
+def test_live_mode_without_a_before_state_reader_never_dispatches(client, monkeypatch):
+    from jde_mcp_server.binding import BindingInvalid
+
+    change = _ready_change(client, "S-EX-NOREADER")
+    sent = _live(monkeypatch, before_reader=False)
+    with pytest.raises(BindingInvalid, match="current state cannot be read"):
+        _execute("S-EX-NOREADER", change["change_id"])
+    assert sent == [] and _state(change["change_id"]) == "ready"
 
 
 def test_a_live_write_is_unknown_until_a_person_verifies_the_target(client, monkeypatch):
