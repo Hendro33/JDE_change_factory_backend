@@ -49,4 +49,7 @@ def reconcile_interrupted_runs() -> dict[str, int]:
             agents.fail(run.run_id, INTERRUPTED)
             counts["agent"] += 1
 
+    from ..technical import store as technical_store
+
+    counts["technical"] = technical_store.mark_interrupted()
     return counts

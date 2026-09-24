@@ -23,8 +23,12 @@ LifecycleState = Literal[
 Priority = Literal["High", "Medium", "Low"]
 Complexity = Literal["Low", "Medium", "High", "Unknown"]
 
+# "Clarification Required": the evidence contradicts the story, or a business
+# question must be answered before any design -- a valid result, not a failure,
+# and nothing can be approved or executed from it.
 ImplementationRoute = Literal[
-    "Functional Agent", "Technical Agent", "Mixed", "Human Implementation", "Resolve without Change"
+    "Functional Agent", "Technical Agent", "Mixed", "Human Implementation", "Resolve without Change",
+    "Clarification Required",
 ]
 ChangeType = Literal["Configuration", "Functional Change", "Technical Change", "Investigation", "Other"]
 

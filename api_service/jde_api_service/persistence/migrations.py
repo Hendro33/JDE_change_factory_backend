@@ -316,4 +316,62 @@ MIGRATIONS: list[tuple[int, str]] = [
         CREATE INDEX idx_design_baselines_story ON design_baselines(company_id, story_id);
         """,
     ),
+    (
+        6,
+        """
+        -- A person's approval of one Architect design revision for technical
+        -- implementation. Separate from (and a precondition for) the exact
+        -- implementation approval of a package revision.
+        CREATE TABLE design_approvals (
+            id TEXT PRIMARY KEY,
+            company_id TEXT NOT NULL,
+            story_id TEXT NOT NULL,
+            design_revision INTEGER NOT NULL,
+            baseline_id TEXT NOT NULL,
+            manifest_sha256 TEXT NOT NULL,
+            approved_by TEXT NOT NULL,
+            approver_user_id TEXT NOT NULL,
+            roles TEXT NOT NULL,
+            note TEXT NOT NULL DEFAULT '',
+            approved_at TEXT NOT NULL
+        );
+        CREATE INDEX idx_design_approvals_story ON design_approvals(company_id, story_id);
+        -- Technical Agent runs: progress, failures, model usage, outcome.
+        CREATE TABLE technical_runs (
+            run_id TEXT PRIMARY KEY,
+            company_id TEXT NOT NULL,
+            story_id TEXT NOT NULL,
+            purpose TEXT NOT NULL,
+            status TEXT NOT NULL,
+            design_revision INTEGER,
+            baseline_id TEXT,
+            design_approval_id TEXT,
+            expected_package_revision INTEGER NOT NULL DEFAULT 0,
+            initiated_by TEXT,
+            started_at TEXT NOT NULL,
+            finished_at TEXT,
+            error TEXT,
+            outcome TEXT NOT NULL DEFAULT '{}',
+            model TEXT,
+            usage TEXT NOT NULL DEFAULT '{}',
+            events TEXT NOT NULL DEFAULT '[]'
+        );
+        CREATE INDEX idx_technical_runs_story ON technical_runs(company_id, story_id);
+        -- Implementation packages: immutable content per revision.
+        CREATE TABLE technical_packages (
+            package_id TEXT NOT NULL,
+            revision INTEGER NOT NULL,
+            company_id TEXT NOT NULL,
+            story_id TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            created_by_run TEXT,
+            content TEXT NOT NULL,
+            content_sha256 TEXT NOT NULL,
+            change_id TEXT,
+            superseded_by INTEGER,
+            PRIMARY KEY (package_id, revision)
+        );
+        CREATE INDEX idx_technical_packages_story ON technical_packages(company_id, story_id);
+        """,
+    ),
 ]

@@ -514,18 +514,22 @@ def write_handoff(company_id: str, story_id: str, baseline: dict, architect_deci
     the change it already had."""
     directory = handoff_dir()
     path = os.path.join(directory, f"{story_id}.json")
-    if change_id is None and os.path.exists(path):
+    design_approval = None
+    if os.path.exists(path):
         with open(path, encoding="utf-8") as f:
             previous = json.load(f)
         if previous.get("design_revision") == baseline["design_revision"]:
-            change_id = previous.get("change_id")
+            change_id = change_id if change_id is not None else previous.get("change_id")
+            # A person's approval of THIS design revision stays with it; a
+            # new design revision never inherits it.
+            design_approval = previous.get("design_approval")
     package = {
         "company_id": company_id, "story_id": story_id, "baseline_id": baseline["baseline_id"],
         "design_revision": baseline["design_revision"], "baseline_revision": baseline["baseline_revision"],
         "manifest_sha256": baseline["manifest_sha256"], "status": baseline["status"],
         "architect_decision": architect_decision, "implementation_spec": implementation_spec,
         "evidence_manifest": baseline["manifest"], "reassessment": baseline["reassessment"], "note": HANDOFF_NOTE,
-        "change_id": change_id,
+        "change_id": change_id, "design_approval": design_approval,
     }
     os.makedirs(directory, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=directory, prefix=".handoff-")
@@ -533,3 +537,19 @@ def write_handoff(company_id: str, story_id: str, baseline: dict, architect_deci
         json.dump(package, f, indent=2, sort_keys=True)
     os.replace(tmp, path)
     return package
+
+
+def set_design_approval(story_id: str, approval: dict) -> None:
+    """Record a person's design approval on the downstream hand-off copy,
+    for the design revision it names only."""
+    path = os.path.join(handoff_dir(), f"{story_id}.json")
+    with open(path, encoding="utf-8") as f:
+        package = json.load(f)
+    if package.get("design_revision") != approval["design_revision"]:
+        raise LookupError("the hand-off is for a different design revision")
+    package["design_approval"] = {k: approval[k] for k in (
+        "id", "design_revision", "baseline_id", "manifest_sha256", "approved_by", "approver_user_id", "approved_at")}
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".handoff-")
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        json.dump(package, f, indent=2, sort_keys=True)
+    os.replace(tmp, path)

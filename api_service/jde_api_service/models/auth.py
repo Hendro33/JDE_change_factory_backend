@@ -32,8 +32,12 @@ from typing import Literal, Optional
 
 from .base import ApiModel
 
-Role = Literal["domain_owner", "product_manager", "admin", "dashboard_viewer"]
-ALL_ROLES: tuple[Role, ...] = ("domain_owner", "product_manager", "admin", "dashboard_viewer")
+Role = Literal["domain_owner", "product_manager", "admin", "dashboard_viewer", "cnc_operator"]
+ALL_ROLES: tuple[Role, ...] = ("domain_owner", "product_manager", "admin", "dashboard_viewer", "cnc_operator")
+# The CNC operator records a package deployment/activation that a human CNC
+# performed. It is never granted by default: the bootstrap Admin does not
+# hold it, and it must be assigned to a named person explicitly.
+BOOTSTRAP_ROLES: tuple[Role, ...] = ("domain_owner", "product_manager", "admin", "dashboard_viewer")
 
 MembershipStatus = Literal["active", "inactive"]
 InvitationStatus = Literal["pending", "accepted", "revoked", "expired"]

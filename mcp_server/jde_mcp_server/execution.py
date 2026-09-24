@@ -46,6 +46,9 @@ STALE_AFTER_SECONDS = 15 * 60
 
 WRITE = "write"
 TEST = "test"
+# Technical packages only: the simulated (or, once qualified, real) build of
+# what was applied. Application is WRITE; verification tests are TEST.
+BUILD = "build"
 
 
 class ExecutionBlocked(approval.ChangeApprovalError):
@@ -93,6 +96,9 @@ _BLOCK_REASON = {
                "Reconcile it by checking the actual target state before anything else runs",
     "diverged": "reconciliation found the target in neither the before nor the approved state; "
                 "this change can no longer execute -- investigate, then propose a new change",
+    "built": "this package has already been built; a further build needs a new package revision and approval",
+    "failed": "the build of this approved package failed; a repair is a new package revision that needs a fresh "
+              "approval -- the failed revision does not run again",
 }
 
 
@@ -147,6 +153,10 @@ _OUTCOME_STATE = {
     (TEST, "not_sent"): "ready",
     (WRITE, "unknown"): "unknown",
     (TEST, "unknown"): "unknown",
+    (BUILD, "built"): "built",
+    (BUILD, "failed"): "failed",
+    (BUILD, "not_sent"): "ready",
+    (BUILD, "unknown"): "unknown",
 }
 
 
@@ -185,7 +195,7 @@ def mark_interrupted_unknown() -> int:
         with _locked(change_id):
             record = approval._load(change_id)
             changed = False
-            for kind in (WRITE, TEST):
+            for kind in (WRITE, BUILD, TEST):
                 block = (record.get("execution") or {}).get(kind)
                 if block and block.get("state") == "in_progress":
                     block["state"] = "unknown"
@@ -222,7 +232,10 @@ def _exact_target(record: dict, kind: str) -> dict:
         "environment": record.get("environment"),
         "jde_environment": jde_environment,
     }
-    if kind == WRITE:
+    if record.get("kind") == "technical":
+        target.update({"package_id": op.get("package_id"), "package_revision": op.get("package_revision"),
+                       "package_sha256": op.get("package_sha256"), "objects": op.get("objects"), "milestone": kind})
+    elif kind == WRITE:
         target.update({
             "application": op.get("application"), "version": op.get("version"), "option": op.get("option"),
             "approved_value": str(op.get("value", "")),
@@ -263,7 +276,9 @@ def _audit(record: dict, kind: str, block: dict, *, observed: dict, outcome: str
     }
     target = entry["target"]
     where = (
-        f"{target.get('application')}/{target.get('version')}/{target.get('option')}" if kind == WRITE
+        f"{kind} of package {target.get('package_id')}@r{target.get('package_revision')} ({', '.join(target.get('objects') or [])})"
+        if record.get("kind") == "technical"
+        else f"{target.get('application')}/{target.get('version')}/{target.get('option')}" if kind == WRITE
         else f"test {target.get('orchestration')}"
     )
     chained = capture_evidence(record["story_id"], {

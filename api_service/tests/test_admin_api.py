@@ -81,7 +81,7 @@ def test_agents_list_reflects_the_real_md_files(client):
     r = client.get("/admin/agents", headers=headers())
     assert r.status_code == 200
     names = {a["name"] for a in r.json()}
-    assert names == {"architect", "check-agent", "functional-agent", "improve-agent", "receive-agent"}
+    assert names == {"architect", "check-agent", "functional-agent", "improve-agent", "receive-agent", "technical-agent"}
     architect = next(a for a in r.json() if a["name"] == "architect")
     assert "mcp__jde-change-factory__get_approved_story" in architect["declaredTools"]
     assert len(architect["version"]) == 12  # short content hash

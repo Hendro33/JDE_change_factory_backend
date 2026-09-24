@@ -35,7 +35,8 @@ from .models import ArtifactUpload
 
 MAX_BYTES = 2 * 1024 * 1024
 MAX_EXTRACT_CHARS = 60_000
-TEXT_FORMATS = {"text", "c_source", "er_text", "omw_xml", "json", "markdown", "csv"}
+# jade_sim_er: the SYNTHETIC simulation format (jde_mcp_server/technical_sim.py).
+TEXT_FORMATS = {"text", "c_source", "er_text", "jade_sim_er", "omw_xml", "json", "markdown", "csv"}
 
 
 class ArtifactRejected(ValueError):

@@ -234,7 +234,7 @@ class ActivityRow(ApiModel):
 # Technical baseline artifacts and reference documents
 # ---------------------------------------------------------------------
 ArtifactKind = Literal["technical_export", "reference_document"]
-ExportFormat = Literal["text", "c_source", "er_text", "omw_xml", "json", "markdown", "csv",
+ExportFormat = Literal["text", "c_source", "er_text", "jade_sim_er", "omw_xml", "json", "markdown", "csv",
                        "par", "zip", "pdf", "docx", "other"]
 RuntimeCorrespondence = Literal["matches_dev_runtime", "known_mismatch", "unknown"]
 

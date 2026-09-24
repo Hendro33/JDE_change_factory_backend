@@ -49,6 +49,7 @@ def test_the_execution_client_has_no_unrestricted_read_methods():
 def test_no_agent_definition_or_driver_allowlist_names_an_unrestricted_read():
     from jde_api_service.discovery import architect_tools
     from jde_api_service.services import architecture_driver, conversation_driver, orchestration_driver, review_driver
+    from jde_api_service.technical import tools as technical_tools
 
     registered = _registered_tools()
     for md in (REPO / ".claude" / "agents").glob("*.md"):
@@ -60,6 +61,8 @@ def test_no_agent_definition_or_driver_allowlist_names_an_unrestricted_read():
             assert name not in UNRESTRICTED, (md.name, tool)
             if server == "jde-change-factory":
                 assert name in registered, (md.name, tool)
+            elif md.name == "technical-agent.md":
+                assert tool in technical_tools.ALLOWED_TOOLS, (md.name, tool)
             else:
                 assert server == architect_tools.SERVER_NAME and tool in architect_tools.ALLOWED_TOOLS, (md.name, tool)
     allowlists = {
@@ -136,3 +139,93 @@ def test_the_architect_is_told_every_catalogue_capability_id():
     for cap in capability_catalog.list_capabilities():
         assert cap["capability_id"] in prompt
     assert '"tool": "set_processing_option"' in prompt
+
+
+# ---------------------------------------------------------------------
+# Delegation: a subagent can never hold more than the run's own runtime
+# ---------------------------------------------------------------------
+def _agent_tools(name: str) -> list[str]:
+    front = (REPO / ".claude" / "agents" / f"{name}.md").read_text().split("---")[1]
+    line = next((l for l in front.splitlines() if l.startswith("tools:")), "tools:")
+    return [t.strip() for t in line[len("tools:"):].split(",") if t.strip()]
+
+
+def test_the_technical_runtime_is_task_plus_its_own_run_bound_tools_only():
+    from jde_api_service.services import architecture_driver
+    from jde_api_service.technical import driver as technical_driver
+    from jde_api_service.technical import tools as technical_tools
+
+    assert technical_driver.ALLOWED == ["Task", *technical_tools.ALLOWED_TOOLS]
+    assert set(technical_driver.DISALLOWED) == {f"mcp__jde-change-factory__{t}" for t in architecture_driver.PROJECT_SERVER_TOOLS}
+    # No technical tool approves, records a CNC activation, reads credentials or reaches a network or shell.
+    names = [t.rsplit("__", 1)[-1] for t in technical_tools.ALLOWED_TOOLS]
+    assert not [n for n in names if n.startswith(("approve", "reject", "record")) or "cnc" in n]
+    for forbidden in ("credential", "shell", "bash", "http", "sql", "fetch", "write_file", "exec"):
+        assert not any(forbidden in n.lower() for n in names), forbidden
+    # The subagent definition asks for nothing its runtime does not grant.
+    assert set(_agent_tools("technical-agent")) <= set(technical_driver.ALLOWED)
+
+
+def test_no_subagent_definition_can_widen_its_drivers_runtime():
+    """A subagent's tools come from the session that delegates to it: every
+    tool an agent definition lists must be in the allowlist of the driver
+    that runs it, and the runtime's built-ins are Task only -- so Task
+    cannot hand a subagent Bash, WebFetch, file access or another server."""
+    from jde_api_service.services import architecture_driver, conversation_driver, orchestration_driver
+    from jde_api_service.technical import driver as technical_driver
+
+    drivers = {
+        "architect": architecture_driver._ALLOWED_TOOLS,
+        "technical-agent": technical_driver.ALLOWED,
+        "improve-agent": orchestration_driver._ALLOWED_TOOLS,
+    }
+    for agent, allowed in drivers.items():
+        extra = set(_agent_tools(agent)) - set(allowed)
+        assert not extra, (agent, extra)
+    # The functional-agent has no driver in this increment: its write, test and
+    # evidence tools are only reachable through the gate, never granted here.
+    assert not any(set(_agent_tools("functional-agent")) & set(a) for a in
+                   (architecture_driver._ALLOWED_TOOLS, technical_driver.ALLOWED, conversation_driver._SOLUTION_ALLOWED_TOOLS))
+
+
+def test_the_technical_driver_builds_its_options_through_the_restricted_runtime(monkeypatch):
+    """The options the technical driver actually passes to the runtime."""
+    import asyncio
+
+    import claude_agent_sdk as sdk
+
+    from jde_api_service.technical import driver as technical_driver
+
+    captured = {}
+
+    class _Stop(Exception):
+        pass
+
+    class _FakeTools:
+        outcome, calls = {}, []
+
+        def __init__(self, **kwargs):
+            pass
+
+        def sdk_server(self):
+            return sdk.create_sdk_mcp_server("jade-technical", tools=[])
+
+    async def fake_query(prompt, options):
+        captured["options"] = options
+        captured["prompt"] = prompt
+        raise _Stop()
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(technical_driver, "TechnicalAgentTools", _FakeTools)
+    monkeypatch.setattr(technical_driver.store, "add_event", lambda *a, **k: None)
+    monkeypatch.setattr(technical_driver.store, "finish_run", lambda *a, **k: None)
+    asyncio.run(technical_driver.run_technical_agent(company_id="vdb", story_id="S-X", run_id="TR-0000000000",
+                                                     repo_root=str(REPO), purpose="prepare", observer=fake_query))
+    opts = captured["options"]
+    assert opts.tools == ["Task"]
+    assert list(opts.mcp_servers) == ["jade-technical"]
+    assert opts.allowed_tools == technical_driver.ALLOWED
+    assert set(opts.disallowed_tools) == set(technical_driver.DISALLOWED)
+    for secret in ("JDE_CREDENTIAL_KEY", "JDE_AIS_USERNAME", "JDE_AIS_PASSWORD", "JDE_BOOTSTRAP_ADMIN_PASSWORD"):
+        assert opts.env[secret] == ""
+    assert "technical-agent subagent" in captured["prompt"]

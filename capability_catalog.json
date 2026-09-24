@@ -1,7 +1,6 @@
 {
   "_comment": "Functional Agent Capability Catalogue -- design update Section 2/3. Version-controlled source: promote a capability only by editing this file and getting the change reviewed by a designated functional owner AND technical validator (Section 2, 'the agent cannot certify its own capabilities'). Every entry below defaults to needs_spike; nothing here has been declared Validated by this file's authorship alone -- see each entry's validation.technical_validation for exactly what has, and has not, actually been demonstrated.",
-  "catalog_revision": "2026-09-23.1",
-
+  "catalog_revision": "2026-09-24.1",
   "capabilities": [
     {
       "capability_id": "processing_option_update",
@@ -16,7 +15,11 @@
         "application_form": "Any interactive or batch application's Processing Option Revisions form",
         "object_or_version_key": "application + customer-named version (never XJDE/ZJDE -- scope.py's universal rule)",
         "permitted_fields": "Exactly the (application, version, option) triples listed in scope.json's functional_agent.approved_versions, nothing else",
-        "supported_actions": ["read current value", "set a new value from allowed_values", "never triggers report/application execution itself"]
+        "supported_actions": [
+          "read current value",
+          "set a new value from allowed_values",
+          "never triggers report/application execution itself"
+        ]
       },
       "compatibility": {
         "application_release": "Any (processing options are a stable JDE mechanism since Tools Release 9.1.4.6 per Oracle discovery docs)",
@@ -67,10 +70,18 @@
         "status": "needs_spike",
         "technical_validation": "The GATING logic (story approval, exact-change hash binding, Oracle-owned-version rule, engagement scope, evidence chain) is real, working code, proven end-to-end in prove_the_gate.py -- see evidence_references. The ACTUAL JDE write (the AIS Form Service Request payload) is NOT implemented: ais_client.py's FSR_SET_PROCESSING_OPTION is None, and any live-mode call raises AISClientError until the manual FSR-recording spike (README/GETTING_STARTED Step 4) is completed.",
         "policy_restriction": "None beyond the universal exclusions (tax/GL/AAI/security fields, XJDE/ZJDE) -- this capability is not blanket-Restricted, it is Needs spike pending the technical work above",
-        "evidence_references": ["prove_the_gate.py (mock-mode gate proof, all 6 checks passing)", "mcp_server/jde_mcp_server/ais_client.py:34 (FSR_SET_PROCESSING_OPTION = None)"],
+        "evidence_references": [
+          "prove_the_gate.py (mock-mode gate proof, all 6 checks passing)",
+          "mcp_server/jde_mcp_server/ais_client.py:34 (FSR_SET_PROCESSING_OPTION = None)"
+        ],
         "validation_date": null,
         "approver": null,
-        "revalidation_triggers": ["FSR_SET_PROCESSING_OPTION populated from a real spike", "a real DEV AIS endpoint configured", "Tools Release change", "scope.py/approval.py/capability_catalog.py gating logic changes"]
+        "revalidation_triggers": [
+          "FSR_SET_PROCESSING_OPTION populated from a real spike",
+          "a real DEV AIS endpoint configured",
+          "Tools Release change",
+          "scope.py/approval.py/capability_catalog.py gating logic changes"
+        ]
       },
       "enforcement": {
         "_comment": "What the execution gate enforces for this capability (capability_catalog.require_enforcement). Only a capability with a complete enforcement block can execute; the prose elsewhere in this entry is descriptive and is never enforced.",
@@ -78,23 +89,43 @@
         "mechanism": "ais_form_service_request",
         "target": "one processing option on a customer-owned version (never XJDE/ZJDE), listed in the company's approved versions with a declared option category",
         "option_categories": {
-          "defaults_and_display": {"protected": false},
-          "document_and_order_types": {"protected": false},
-          "workflow_and_status": {"protected": false},
-          "pricing": {"protected": true},
-          "tax": {"protected": true},
-          "gl_posting_and_aai": {"protected": true},
-          "security_and_authorisation": {"protected": true},
-          "payments_and_banking": {"protected": true},
-          "outbound_integration": {"protected": true}
+          "defaults_and_display": {
+            "protected": false
+          },
+          "document_and_order_types": {
+            "protected": false
+          },
+          "workflow_and_status": {
+            "protected": false
+          },
+          "pricing": {
+            "protected": true
+          },
+          "tax": {
+            "protected": true
+          },
+          "gl_posting_and_aai": {
+            "protected": true
+          },
+          "security_and_authorisation": {
+            "protected": true
+          },
+          "payments_and_banking": {
+            "protected": true
+          },
+          "outbound_integration": {
+            "protected": true
+          }
         },
         "test": {
           "mechanism": "ais_orchestration",
-          "permitted_side_effects": ["none", "creates_dev_transaction"]
+          "permitted_side_effects": [
+            "none",
+            "creates_dev_transaction"
+          ]
         }
       }
     },
-
     {
       "capability_id": "batch_version_data_selection",
       "revision": "r1",
@@ -108,7 +139,10 @@
         "application_form": "Batch Versions / Version Design, Data Selection tab",
         "object_or_version_key": "application + customer-named, non-posting report version",
         "permitted_fields": "The full selection expression (grouping, operators, types, literals) as one atomic replacement -- no partial-clause edits",
-        "supported_actions": ["read current selection", "replace the complete selection expression"]
+        "supported_actions": [
+          "read current selection",
+          "replace the complete selection expression"
+        ]
       },
       "compatibility": {
         "application_release": "Any",
@@ -162,10 +196,11 @@
         "evidence_references": [],
         "validation_date": null,
         "approver": null,
-        "revalidation_triggers": ["initial feasibility spike completed"]
+        "revalidation_triggers": [
+          "initial feasibility spike completed"
+        ]
       }
     },
-
     {
       "capability_id": "batch_version_data_sequencing",
       "revision": "r1",
@@ -179,31 +214,56 @@
         "application_form": "Batch Versions / Version Design, Data Sequencing tab",
         "object_or_version_key": "application + customer-named report version",
         "permitted_fields": "Ordered field list, sort direction, grouping behaviour -- atomic replacement",
-        "supported_actions": ["read current sequencing", "replace the complete sequencing"]
+        "supported_actions": [
+          "read current sequencing",
+          "replace the complete sequencing"
+        ]
       },
-      "compatibility": {"application_release": "Any", "tools_release": "Not yet spiked", "customisations": "Not yet assessed", "adapter_revision": "Not yet implemented"},
+      "compatibility": {
+        "application_release": "Any",
+        "tools_release": "Not yet spiked",
+        "customisations": "Not yet assessed",
+        "adapter_revision": "Not yet implemented"
+      },
       "execution": {
         "mechanism": "Not yet determined -- shares the same saved-specification-vs-runtime-override distinction as data selection above",
         "input_schema": "Not yet defined",
         "commit_boundary": "Whole-sequence replacement, one commit",
         "expected_side_effects": "Report/batch output order and grouping change for every future run"
       },
-      "scope": {"environment_constraint": "DEV only", "company_branch_boundary": "Constrained per engagement once authorised", "protected_targets": "XJDE*/ZJDE*; posting versions excluded from remit"},
+      "scope": {
+        "environment_constraint": "DEV only",
+        "company_branch_boundary": "Constrained per engagement once authorised",
+        "protected_targets": "XJDE*/ZJDE*; posting versions excluded from remit"
+      },
       "risk": {
         "risk_classification": "Medium -- incorrect grouping can silently change subtotal/break logic on financial or operational reports",
         "restricted_fields": "Not applicable (whole-sequence capability)",
         "cross_domain_effects": "Same as data selection -- shared version, shared impact",
         "required_approver_authority": "Engagement functional lead + version's business owner"
       },
-      "preconditions": {"required_records": "Target version exists, customer-named", "expected_current_value": "Full current sequencing, read and recorded before write", "dependencies": "None identified yet", "locks_and_absence_checks": "Not yet designed"},
+      "preconditions": {
+        "required_records": "Target version exists, customer-named",
+        "expected_current_value": "Full current sequencing, read and recorded before write",
+        "dependencies": "None identified yet",
+        "locks_and_absence_checks": "Not yet designed"
+      },
       "verification": {
         "read_back_method": "Saved version specification, fresh session, not a runtime override",
         "behavioural_tests": "Run the version and confirm output order/grouping matches the new sequencing",
         "negative_tests": "Not yet defined",
         "evidence_requirements": "Not yet defined"
       },
-      "recovery": {"retry_policy": "Not yet defined", "ambiguous_result_handling": "Not yet defined", "compensation_note": "Rollback is a separate governed write", "concurrency_note": "Not yet assessed"},
-      "delivery": {"classification": "Configuration-data change", "cnc_handoff": "Not yet defined"},
+      "recovery": {
+        "retry_policy": "Not yet defined",
+        "ambiguous_result_handling": "Not yet defined",
+        "compensation_note": "Rollback is a separate governed write",
+        "concurrency_note": "Not yet assessed"
+      },
+      "delivery": {
+        "classification": "Configuration-data change",
+        "cnc_handoff": "Not yet defined"
+      },
       "validation": {
         "status": "needs_spike",
         "technical_validation": "No implementation exists.",
@@ -211,10 +271,11 @@
         "evidence_references": [],
         "validation_date": null,
         "approver": null,
-        "revalidation_triggers": ["initial feasibility spike completed"]
+        "revalidation_triggers": [
+          "initial feasibility spike completed"
+        ]
       }
     },
-
     {
       "capability_id": "udc_value_maintenance",
       "revision": "r1",
@@ -228,26 +289,57 @@
         "application_form": "User Defined Codes (P0004A) or equivalent",
         "object_or_version_key": "System code + UDC type, restricted to an explicit per-engagement allowlist of UDC lists",
         "permitted_fields": "value, description 1/2 only -- never special-handling code, hard-coded flag, or the UDC's own key structure",
-        "supported_actions": ["add a new value", "update description of an existing value", "never delete"]
+        "supported_actions": [
+          "add a new value",
+          "update description of an existing value",
+          "never delete"
+        ]
       },
-      "compatibility": {"application_release": "Any", "tools_release": "Not yet spiked", "customisations": "Not yet assessed", "adapter_revision": "Not yet implemented"},
+      "compatibility": {
+        "application_release": "Any",
+        "tools_release": "Not yet spiked",
+        "customisations": "Not yet assessed",
+        "adapter_revision": "Not yet implemented"
+      },
       "execution": {
         "mechanism": "Not yet determined -- likely AIS Form Service Request against P0004A",
         "input_schema": "Not yet defined",
         "commit_boundary": "Single value add/update, one commit",
         "expected_side_effects": "None if special-handling fields are genuinely excluded -- see risk.restricted_fields"
       },
-      "scope": {"environment_constraint": "DEV only", "company_branch_boundary": "Not applicable (UDCs are typically system-wide)", "protected_targets": "Hard-coded codes (per Oracle's extensibility guidance) -- always excluded"},
+      "scope": {
+        "environment_constraint": "DEV only",
+        "company_branch_boundary": "Not applicable (UDCs are typically system-wide)",
+        "protected_targets": "Hard-coded codes (per Oracle's extensibility guidance) -- always excluded"
+      },
       "risk": {
         "risk_classification": "Low for description-only edits; Medium+ if special handling is ever in scope (explicitly excluded here)",
         "restricted_fields": "Special handling code, hard-coded flag -- 'UDC' does not automatically mean low risk (Section 3's own caveat)",
         "cross_domain_effects": "A UDC list can be shared across multiple applications/domains -- verify no other consumer depends on the current values",
         "required_approver_authority": "Engagement functional lead"
       },
-      "preconditions": {"required_records": "The UDC list (system code + type) must be on the engagement's explicit permitted list", "expected_current_value": "Current value/description set, read before write", "dependencies": "None", "locks_and_absence_checks": "Absence check for 'add' (value must not already exist); presence check for 'update'"},
-      "verification": {"read_back_method": "Re-read the UDC list after write, fresh call", "behavioural_tests": "Confirm the value is selectable where the UDC is consumed in DEV", "negative_tests": "Not yet defined", "evidence_requirements": "Not yet defined"},
-      "recovery": {"retry_policy": "Not yet defined", "ambiguous_result_handling": "Not yet defined", "compensation_note": "Rollback is a separate governed write", "concurrency_note": "Not yet assessed"},
-      "delivery": {"classification": "Configuration-data change", "cnc_handoff": "Not yet defined"},
+      "preconditions": {
+        "required_records": "The UDC list (system code + type) must be on the engagement's explicit permitted list",
+        "expected_current_value": "Current value/description set, read before write",
+        "dependencies": "None",
+        "locks_and_absence_checks": "Absence check for 'add' (value must not already exist); presence check for 'update'"
+      },
+      "verification": {
+        "read_back_method": "Re-read the UDC list after write, fresh call",
+        "behavioural_tests": "Confirm the value is selectable where the UDC is consumed in DEV",
+        "negative_tests": "Not yet defined",
+        "evidence_requirements": "Not yet defined"
+      },
+      "recovery": {
+        "retry_policy": "Not yet defined",
+        "ambiguous_result_handling": "Not yet defined",
+        "compensation_note": "Rollback is a separate governed write",
+        "concurrency_note": "Not yet assessed"
+      },
+      "delivery": {
+        "classification": "Configuration-data change",
+        "cnc_handoff": "Not yet defined"
+      },
       "validation": {
         "status": "needs_spike",
         "technical_validation": "No implementation exists.",
@@ -255,10 +347,11 @@
         "evidence_references": [],
         "validation_date": null,
         "approver": null,
-        "revalidation_triggers": ["initial feasibility spike completed"]
+        "revalidation_triggers": [
+          "initial feasibility spike completed"
+        ]
       }
     },
-
     {
       "capability_id": "constants_and_setup_master_data",
       "revision": "r1",
@@ -272,16 +365,55 @@
         "application_form": "Not yet chosen -- Section 3 requires selecting one concrete application and field allowlist before this can move past Needs spike",
         "object_or_version_key": "Not yet defined",
         "permitted_fields": "Not yet defined",
-        "supported_actions": ["Not yet defined"]
+        "supported_actions": [
+          "Not yet defined"
+        ]
       },
-      "compatibility": {"application_release": "Not yet chosen", "tools_release": "Not yet spiked", "customisations": "Not yet assessed", "adapter_revision": "Not yet implemented"},
-      "execution": {"mechanism": "Not yet determined", "input_schema": "Not yet defined", "commit_boundary": "Not yet defined", "expected_side_effects": "Not yet assessed"},
-      "scope": {"environment_constraint": "DEV only", "company_branch_boundary": "Explicit company/branch scope required where applicable (Section 3)", "protected_targets": "Not yet defined"},
-      "risk": {"risk_classification": "Not yet assessed -- constants/master data can have wide-reaching effects, so this stays Needs spike until a narrow field is chosen and proven low-risk", "restricted_fields": "Everything, until a specific allowlist is chosen", "cross_domain_effects": "Potentially significant -- unassessed", "required_approver_authority": "Engagement functional lead, likely plus a second technical validator given the risk class"},
-      "preconditions": {"required_records": "Not yet defined", "expected_current_value": "Not yet defined", "dependencies": "Not yet defined", "locks_and_absence_checks": "Not yet defined"},
-      "verification": {"read_back_method": "Not yet defined", "behavioural_tests": "Not yet defined", "negative_tests": "Not yet defined", "evidence_requirements": "Not yet defined"},
-      "recovery": {"retry_policy": "Not yet defined", "ambiguous_result_handling": "Not yet defined", "compensation_note": "Rollback is a separate governed write", "concurrency_note": "Not yet assessed"},
-      "delivery": {"classification": "Configuration-data change (presumed; reconfirm once a target is chosen)", "cnc_handoff": "Not yet defined"},
+      "compatibility": {
+        "application_release": "Not yet chosen",
+        "tools_release": "Not yet spiked",
+        "customisations": "Not yet assessed",
+        "adapter_revision": "Not yet implemented"
+      },
+      "execution": {
+        "mechanism": "Not yet determined",
+        "input_schema": "Not yet defined",
+        "commit_boundary": "Not yet defined",
+        "expected_side_effects": "Not yet assessed"
+      },
+      "scope": {
+        "environment_constraint": "DEV only",
+        "company_branch_boundary": "Explicit company/branch scope required where applicable (Section 3)",
+        "protected_targets": "Not yet defined"
+      },
+      "risk": {
+        "risk_classification": "Not yet assessed -- constants/master data can have wide-reaching effects, so this stays Needs spike until a narrow field is chosen and proven low-risk",
+        "restricted_fields": "Everything, until a specific allowlist is chosen",
+        "cross_domain_effects": "Potentially significant -- unassessed",
+        "required_approver_authority": "Engagement functional lead, likely plus a second technical validator given the risk class"
+      },
+      "preconditions": {
+        "required_records": "Not yet defined",
+        "expected_current_value": "Not yet defined",
+        "dependencies": "Not yet defined",
+        "locks_and_absence_checks": "Not yet defined"
+      },
+      "verification": {
+        "read_back_method": "Not yet defined",
+        "behavioural_tests": "Not yet defined",
+        "negative_tests": "Not yet defined",
+        "evidence_requirements": "Not yet defined"
+      },
+      "recovery": {
+        "retry_policy": "Not yet defined",
+        "ambiguous_result_handling": "Not yet defined",
+        "compensation_note": "Rollback is a separate governed write",
+        "concurrency_note": "Not yet assessed"
+      },
+      "delivery": {
+        "classification": "Configuration-data change (presumed; reconfirm once a target is chosen)",
+        "cnc_handoff": "Not yet defined"
+      },
       "validation": {
         "status": "needs_spike",
         "technical_validation": "No implementation exists, and no concrete field allowlist has even been chosen yet -- this is the least-defined entry in the catalogue on purpose (Section 3 explicitly defers the choice to the pilot backlog).",
@@ -289,10 +421,12 @@
         "evidence_references": [],
         "validation_date": null,
         "approver": null,
-        "revalidation_triggers": ["a concrete application + field allowlist is chosen from the pilot backlog", "initial feasibility spike completed"]
+        "revalidation_triggers": [
+          "a concrete application + field allowlist is chosen from the pilot backlog",
+          "initial feasibility spike completed"
+        ]
       }
     },
-
     {
       "capability_id": "document_type_definition",
       "revision": "r1",
@@ -303,15 +437,59 @@
         "functional_owner": "<assign: engagement functional lead>",
         "business_domain": "Order-to-cash / procure-to-pay, depending on the document type"
       },
-      "target": {"application_form": "Document Type Maintenance (P40040) or equivalent", "object_or_version_key": "Customer-defined document type code, from an approved template", "permitted_fields": "Not yet defined -- full resulting record needs scrutiny, not just the fields directly set", "supported_actions": ["create from template"]},
-      "compatibility": {"application_release": "Not yet spiked", "tools_release": "Not yet spiked", "customisations": "Not yet assessed", "adapter_revision": "Not yet implemented"},
-      "execution": {"mechanism": "Not yet determined", "input_schema": "Not yet defined", "commit_boundary": "Not yet defined", "expected_side_effects": "Copying a template is still a change to the COMPLETE resulting configuration (Section 3) -- inherited accounting/inventory/tax behaviour must be enumerated, not assumed inert"},
-      "scope": {"environment_constraint": "DEV only", "company_branch_boundary": "Not yet defined", "protected_targets": "Oracle-delivered document types -- never modified, only copied from"},
-      "risk": {"risk_classification": "Medium-High -- document types can control accounting and inventory behaviour", "restricted_fields": "Not yet defined", "cross_domain_effects": "Potentially GL/inventory-wide", "required_approver_authority": "Engagement functional lead + a technical validator given the accounting/inventory exposure"},
-      "preconditions": {"required_records": "An approved template document type to copy from", "expected_current_value": "Not applicable (creation, not update)", "dependencies": "Coupled line-type setup (see line_type_definition) may be required before this is usable end to end", "locks_and_absence_checks": "The target document type code must not already exist"},
-      "verification": {"read_back_method": "Not yet defined", "behavioural_tests": "Full resulting record inspection, not just the copied fields", "negative_tests": "Not yet defined", "evidence_requirements": "Not yet defined"},
-      "recovery": {"retry_policy": "Not yet defined", "ambiguous_result_handling": "Not yet defined", "compensation_note": "Rollback is a separate governed write", "concurrency_note": "Not yet assessed"},
-      "delivery": {"classification": "Configuration-data change (setup record) -- reconfirm once a mechanism is chosen", "cnc_handoff": "Not yet defined"},
+      "target": {
+        "application_form": "Document Type Maintenance (P40040) or equivalent",
+        "object_or_version_key": "Customer-defined document type code, from an approved template",
+        "permitted_fields": "Not yet defined -- full resulting record needs scrutiny, not just the fields directly set",
+        "supported_actions": [
+          "create from template"
+        ]
+      },
+      "compatibility": {
+        "application_release": "Not yet spiked",
+        "tools_release": "Not yet spiked",
+        "customisations": "Not yet assessed",
+        "adapter_revision": "Not yet implemented"
+      },
+      "execution": {
+        "mechanism": "Not yet determined",
+        "input_schema": "Not yet defined",
+        "commit_boundary": "Not yet defined",
+        "expected_side_effects": "Copying a template is still a change to the COMPLETE resulting configuration (Section 3) -- inherited accounting/inventory/tax behaviour must be enumerated, not assumed inert"
+      },
+      "scope": {
+        "environment_constraint": "DEV only",
+        "company_branch_boundary": "Not yet defined",
+        "protected_targets": "Oracle-delivered document types -- never modified, only copied from"
+      },
+      "risk": {
+        "risk_classification": "Medium-High -- document types can control accounting and inventory behaviour",
+        "restricted_fields": "Not yet defined",
+        "cross_domain_effects": "Potentially GL/inventory-wide",
+        "required_approver_authority": "Engagement functional lead + a technical validator given the accounting/inventory exposure"
+      },
+      "preconditions": {
+        "required_records": "An approved template document type to copy from",
+        "expected_current_value": "Not applicable (creation, not update)",
+        "dependencies": "Coupled line-type setup (see line_type_definition) may be required before this is usable end to end",
+        "locks_and_absence_checks": "The target document type code must not already exist"
+      },
+      "verification": {
+        "read_back_method": "Not yet defined",
+        "behavioural_tests": "Full resulting record inspection, not just the copied fields",
+        "negative_tests": "Not yet defined",
+        "evidence_requirements": "Not yet defined"
+      },
+      "recovery": {
+        "retry_policy": "Not yet defined",
+        "ambiguous_result_handling": "Not yet defined",
+        "compensation_note": "Rollback is a separate governed write",
+        "concurrency_note": "Not yet assessed"
+      },
+      "delivery": {
+        "classification": "Configuration-data change (setup record) -- reconfirm once a mechanism is chosen",
+        "cnc_handoff": "Not yet defined"
+      },
       "validation": {
         "status": "needs_spike",
         "technical_validation": "No implementation exists.",
@@ -319,10 +497,12 @@
         "evidence_references": [],
         "validation_date": null,
         "approver": null,
-        "revalidation_triggers": ["initial feasibility spike completed", "inherited accounting/inventory/tax behaviour enumerated and reviewed"]
+        "revalidation_triggers": [
+          "initial feasibility spike completed",
+          "inherited accounting/inventory/tax behaviour enumerated and reviewed"
+        ]
       }
     },
-
     {
       "capability_id": "line_type_definition",
       "revision": "r1",
@@ -333,15 +513,59 @@
         "functional_owner": "<assign: engagement functional lead>",
         "business_domain": "Order-to-cash / procure-to-pay, depending on the line type"
       },
-      "target": {"application_form": "Line Type Constants (P40205) or equivalent", "object_or_version_key": "Customer-defined line type code, from an approved template", "permitted_fields": "Not yet defined -- ledger and inventory effect flags require explicit scrutiny (Section 3)", "supported_actions": ["create from template"]},
-      "compatibility": {"application_release": "Not yet spiked", "tools_release": "Not yet spiked", "customisations": "Not yet assessed", "adapter_revision": "Not yet implemented"},
-      "execution": {"mechanism": "Not yet determined", "input_schema": "Not yet defined", "commit_boundary": "Not yet defined", "expected_side_effects": "Line types can control ledger and inventory effects directly -- an unsafe variant (e.g. one that posts to GL or updates inventory unexpectedly) must remain excluded, per Section 3's explicit warning"},
-      "scope": {"environment_constraint": "DEV only", "company_branch_boundary": "Not yet defined", "protected_targets": "Oracle-delivered line types -- never modified, only copied from"},
-      "risk": {"risk_classification": "High -- ledger/inventory effect flags are exactly the fields this capability would touch", "restricted_fields": "Any flag enabling GL posting, inventory update, or pricing behaviour beyond the approved template's own defaults", "cross_domain_effects": "GL and inventory-wide", "required_approver_authority": "Engagement functional lead + a technical validator; likely also Finance sign-off depending on the line type"},
-      "preconditions": {"required_records": "An approved template line type to copy from", "expected_current_value": "Not applicable (creation)", "dependencies": "May be coupled to document_type_definition", "locks_and_absence_checks": "Target line type code must not already exist"},
-      "verification": {"read_back_method": "Not yet defined", "behavioural_tests": "Full resulting record inspection, explicit check of every ledger/inventory-effect flag against the template", "negative_tests": "Not yet defined", "evidence_requirements": "Not yet defined"},
-      "recovery": {"retry_policy": "Not yet defined", "ambiguous_result_handling": "Not yet defined", "compensation_note": "Rollback is a separate governed write", "concurrency_note": "Not yet assessed"},
-      "delivery": {"classification": "Configuration-data change (setup record) -- reconfirm once a mechanism is chosen", "cnc_handoff": "Not yet defined"},
+      "target": {
+        "application_form": "Line Type Constants (P40205) or equivalent",
+        "object_or_version_key": "Customer-defined line type code, from an approved template",
+        "permitted_fields": "Not yet defined -- ledger and inventory effect flags require explicit scrutiny (Section 3)",
+        "supported_actions": [
+          "create from template"
+        ]
+      },
+      "compatibility": {
+        "application_release": "Not yet spiked",
+        "tools_release": "Not yet spiked",
+        "customisations": "Not yet assessed",
+        "adapter_revision": "Not yet implemented"
+      },
+      "execution": {
+        "mechanism": "Not yet determined",
+        "input_schema": "Not yet defined",
+        "commit_boundary": "Not yet defined",
+        "expected_side_effects": "Line types can control ledger and inventory effects directly -- an unsafe variant (e.g. one that posts to GL or updates inventory unexpectedly) must remain excluded, per Section 3's explicit warning"
+      },
+      "scope": {
+        "environment_constraint": "DEV only",
+        "company_branch_boundary": "Not yet defined",
+        "protected_targets": "Oracle-delivered line types -- never modified, only copied from"
+      },
+      "risk": {
+        "risk_classification": "High -- ledger/inventory effect flags are exactly the fields this capability would touch",
+        "restricted_fields": "Any flag enabling GL posting, inventory update, or pricing behaviour beyond the approved template's own defaults",
+        "cross_domain_effects": "GL and inventory-wide",
+        "required_approver_authority": "Engagement functional lead + a technical validator; likely also Finance sign-off depending on the line type"
+      },
+      "preconditions": {
+        "required_records": "An approved template line type to copy from",
+        "expected_current_value": "Not applicable (creation)",
+        "dependencies": "May be coupled to document_type_definition",
+        "locks_and_absence_checks": "Target line type code must not already exist"
+      },
+      "verification": {
+        "read_back_method": "Not yet defined",
+        "behavioural_tests": "Full resulting record inspection, explicit check of every ledger/inventory-effect flag against the template",
+        "negative_tests": "Not yet defined",
+        "evidence_requirements": "Not yet defined"
+      },
+      "recovery": {
+        "retry_policy": "Not yet defined",
+        "ambiguous_result_handling": "Not yet defined",
+        "compensation_note": "Rollback is a separate governed write",
+        "concurrency_note": "Not yet assessed"
+      },
+      "delivery": {
+        "classification": "Configuration-data change (setup record) -- reconfirm once a mechanism is chosen",
+        "cnc_handoff": "Not yet defined"
+      },
       "validation": {
         "status": "needs_spike",
         "technical_validation": "No implementation exists.",
@@ -349,10 +573,12 @@
         "evidence_references": [],
         "validation_date": null,
         "approver": null,
-        "revalidation_triggers": ["initial feasibility spike completed", "ledger/inventory effect flags enumerated and reviewed"]
+        "revalidation_triggers": [
+          "initial feasibility spike completed",
+          "ledger/inventory effect flags enumerated and reviewed"
+        ]
       }
     },
-
     {
       "capability_id": "order_activity_status_rules",
       "revision": "r1",
@@ -362,15 +588,59 @@
         "functional_owner": "<assign: engagement functional lead>",
         "business_domain": "Order-to-cash / procure-to-pay, depending on the combination"
       },
-      "target": {"application_form": "Order Activity Rules (P40204) or equivalent", "object_or_version_key": "One isolated order-type/line-type combination, explicitly not touching flows with existing dependent transactions", "permitted_fields": "Explicit transitions, alternative next-status values, logging settings", "supported_actions": ["add/update transitions on the isolated combination"]},
-      "compatibility": {"application_release": "Not yet spiked", "tools_release": "Not yet spiked", "customisations": "Not yet assessed", "adapter_revision": "Not yet implemented"},
-      "execution": {"mechanism": "Not yet determined", "input_schema": "Not yet defined", "commit_boundary": "Not yet defined", "expected_side_effects": "Changes which next-statuses are valid for orders in this combination going forward"},
-      "scope": {"environment_constraint": "DEV only", "company_branch_boundary": "Not yet defined", "protected_targets": "Any document-type/line-type combination with existing transactions dependent on the current rules -- excluded from this capability's remit, not merely Restricted (Oracle disallows deleting rules used by existing records; this capability does not even attempt changes where that risk exists)"},
-      "risk": {"risk_classification": "High -- status-rule changes affect order processing correctness broadly and are multi-step to test properly", "restricted_fields": "Not applicable at this stage -- whole-combination risk", "cross_domain_effects": "Order processing across every user of the affected combination", "required_approver_authority": "Engagement functional lead + technical validator + the business process owner for the affected order flow"},
-      "preconditions": {"required_records": "The combination must be genuinely isolated -- no existing transactions depend on its current rules (verified, not assumed)", "expected_current_value": "Full current rule set for the combination, read and recorded before write", "dependencies": "Existing dependent transactions -- a hard precondition failure if found, not a warning", "locks_and_absence_checks": "Dependency check for existing transactions on this combination"},
-      "verification": {"read_back_method": "Not yet defined", "behavioural_tests": "Test both permitted AND prohibited transitions explicitly (Section 3's own instruction), not just the happy path", "negative_tests": "Attempt a transition the new rules should prohibit and confirm it is rejected", "evidence_requirements": "Not yet defined"},
-      "recovery": {"retry_policy": "Not yet defined", "ambiguous_result_handling": "Not yet defined", "compensation_note": "Rollback is a separate governed write", "concurrency_note": "Not yet assessed"},
-      "delivery": {"classification": "Configuration-data change (setup record) -- reconfirm once a mechanism is chosen", "cnc_handoff": "Not yet defined"},
+      "target": {
+        "application_form": "Order Activity Rules (P40204) or equivalent",
+        "object_or_version_key": "One isolated order-type/line-type combination, explicitly not touching flows with existing dependent transactions",
+        "permitted_fields": "Explicit transitions, alternative next-status values, logging settings",
+        "supported_actions": [
+          "add/update transitions on the isolated combination"
+        ]
+      },
+      "compatibility": {
+        "application_release": "Not yet spiked",
+        "tools_release": "Not yet spiked",
+        "customisations": "Not yet assessed",
+        "adapter_revision": "Not yet implemented"
+      },
+      "execution": {
+        "mechanism": "Not yet determined",
+        "input_schema": "Not yet defined",
+        "commit_boundary": "Not yet defined",
+        "expected_side_effects": "Changes which next-statuses are valid for orders in this combination going forward"
+      },
+      "scope": {
+        "environment_constraint": "DEV only",
+        "company_branch_boundary": "Not yet defined",
+        "protected_targets": "Any document-type/line-type combination with existing transactions dependent on the current rules -- excluded from this capability's remit, not merely Restricted (Oracle disallows deleting rules used by existing records; this capability does not even attempt changes where that risk exists)"
+      },
+      "risk": {
+        "risk_classification": "High -- status-rule changes affect order processing correctness broadly and are multi-step to test properly",
+        "restricted_fields": "Not applicable at this stage -- whole-combination risk",
+        "cross_domain_effects": "Order processing across every user of the affected combination",
+        "required_approver_authority": "Engagement functional lead + technical validator + the business process owner for the affected order flow"
+      },
+      "preconditions": {
+        "required_records": "The combination must be genuinely isolated -- no existing transactions depend on its current rules (verified, not assumed)",
+        "expected_current_value": "Full current rule set for the combination, read and recorded before write",
+        "dependencies": "Existing dependent transactions -- a hard precondition failure if found, not a warning",
+        "locks_and_absence_checks": "Dependency check for existing transactions on this combination"
+      },
+      "verification": {
+        "read_back_method": "Not yet defined",
+        "behavioural_tests": "Test both permitted AND prohibited transitions explicitly (Section 3's own instruction), not just the happy path",
+        "negative_tests": "Attempt a transition the new rules should prohibit and confirm it is rejected",
+        "evidence_requirements": "Not yet defined"
+      },
+      "recovery": {
+        "retry_policy": "Not yet defined",
+        "ambiguous_result_handling": "Not yet defined",
+        "compensation_note": "Rollback is a separate governed write",
+        "concurrency_note": "Not yet assessed"
+      },
+      "delivery": {
+        "classification": "Configuration-data change (setup record) -- reconfirm once a mechanism is chosen",
+        "cnc_handoff": "Not yet defined"
+      },
       "validation": {
         "status": "needs_spike",
         "technical_validation": "No implementation exists. Highest-scrutiny entry in the catalogue by design (Section 3: 'requires multi-step behavioural testing and stronger dependency control').",
@@ -378,7 +648,142 @@
         "evidence_references": [],
         "validation_date": null,
         "approver": null,
-        "revalidation_triggers": ["initial feasibility spike completed", "dependency-detection mechanism proven reliable"]
+        "revalidation_triggers": [
+          "initial feasibility spike completed",
+          "dependency-detection mechanism proven reliable"
+        ]
+      }
+    },
+    {
+      "capability_id": "custom_object_text_change",
+      "revision": "r1",
+      "priority": 9,
+      "family": "technical",
+      "identity": {
+        "description": "Technical Agent: prepare, apply, build and verify a bounded change to a customer-owned (system code 55-59) development object whose source is available as supported text. Applied ONLY through the simulation adapter today; no live mechanism is qualified.",
+        "functional_owner": "<assign: engagement technical lead>",
+        "business_domain": "Cross-domain"
+      },
+      "target": {
+        "application_form": "A customer-owned object's source representation, per format (see technical_enforcement.formats)",
+        "object_or_version_key": "object name + object type, system code 55-59, in the company's authorised object types",
+        "permitted_fields": "The object's logic only; its interface (data structure) is out of scope -- the build refuses an interface change",
+        "supported_actions": [
+          "prepare a candidate and exact diff in an isolated workspace",
+          "apply (check in, not active)",
+          "build",
+          "record a human CNC activation",
+          "run the approved verification tests"
+        ]
+      },
+      "compatibility": {
+        "application_release": "Not applicable to the simulation",
+        "tools_release": "No live mechanism validated on any Tools release",
+        "customisations": "The customer's build rules are part of the simulated estate object",
+        "adapter_revision": "jde_simulation_adapter sim-1 (mcp_server/jde_mcp_server/technical_sim.py)"
+      },
+      "execution": {
+        "mechanism": "jade_simulation_adapter (simulation only)",
+        "input_schema": "An approved implementation package revision (exact content hash)",
+        "commit_boundary": "One package revision: apply, build, CNC activation and verification are separate milestones",
+        "expected_side_effects": "In the simulation: the object's checked-in, built and (after the recorded CNC hand-off) active source; the object librarian row names the package"
+      },
+      "scope": {
+        "environment_constraint": "DEV only",
+        "company_branch_boundary": "Not applicable",
+        "protected_targets": "Any object outside system codes 55-59 or outside the company's authorised object types"
+      },
+      "risk": {
+        "risk_classification": "High for real JDE objects -- which is why no live adapter exists",
+        "restricted_fields": "Interfaces/data structures, Oracle-owned objects",
+        "cross_domain_effects": "A shared customer object can serve several processes -- neighbouring-behaviour tests are part of every package",
+        "required_approver_authority": "Design approval and exact implementation approval by roles the company's approval policy allows; CNC activation by a cnc_operator"
+      },
+      "preconditions": {
+        "required_records": "An approved Architect design revision, its evidence baseline, and an authorised source artifact of the object",
+        "expected_current_value": "The object's active runtime source checksum equals the package's source checksum (stale-source check)",
+        "dependencies": "As listed in the package",
+        "locks_and_absence_checks": "Per-change attempt lock; unknown outcomes block until reconciled"
+      },
+      "verification": {
+        "read_back_method": "Active runtime checksum compared with the approved candidate checksum after activation",
+        "behavioural_tests": "The package's positive, negative and neighbouring-behaviour tests, executed against the active simulated runtime",
+        "negative_tests": "Changed patch, stale source, missing CNC hand-off, expired approval, unauthorised CNC -- api_service/tests/test_technical_*.py",
+        "evidence_requirements": "Hash-chained evidence per milestone, linking the outcome to the exact approved package and candidate checksums"
+      },
+      "recovery": {
+        "retry_policy": "No blind retry: an unknown apply or build is reconciled against the simulated estate first",
+        "rollback": "Before activation: abandon the checked-in candidate. After activation: re-apply the previous source as a new, approved package revision -- in real JDE a checked-in or promoted object is a Human Implementation / CNC decision",
+        "concurrency_note": "One attempt per change at a time (file lock)"
+      },
+      "delivery": {
+        "classification": "Development-object change",
+        "cnc_handoff": "Package build/deployment and promotion remain human CNC actions; Jade records the hand-off and never performs it"
+      },
+      "validation": {
+        "status": "needs_spike",
+        "technical_validation": "Agent workflow, package preparation, approval binding and the SIMULATION adapter are implemented and tested. No real JDE mechanism (Web OMW, specification tools, import) has been qualified for editing or importing any object type; the live adapter is unavailable by design.",
+        "policy_restriction": "Simulation only. Real objects are Human Implementation until a mechanism is qualified per object type (design Section 7.6).",
+        "evidence_references": [
+          "api_service/tests/test_technical_*.py",
+          "docs/proof/technical_agent_run/summary.md"
+        ],
+        "validation_date": null,
+        "approver": null,
+        "revalidation_triggers": [
+          "a qualified live mechanism for an object type",
+          "Tools release change",
+          "adapter change"
+        ]
+      },
+      "technical_enforcement": {
+        "_comment": "What the technical executor enforces (technical_gate.py). Formats and adapters not listed here, or marked unavailable, cannot be applied.",
+        "tool": "apply_technical_package",
+        "object_types": [
+          "ER"
+        ],
+        "formats": {
+          "jade_sim_er": {
+            "prepare": true,
+            "apply": {
+              "simulation": true,
+              "live": false
+            },
+            "note": "SYNTHETIC simulation format -- not a JD Edwards export"
+          },
+          "c_source": {
+            "prepare": true,
+            "apply": {
+              "simulation": false,
+              "live": false
+            },
+            "note": "business function source: a candidate and diff can be prepared for a developer; no mechanism applies or builds it"
+          },
+          "er_text": {
+            "prepare": false,
+            "apply": {
+              "simulation": false,
+              "live": false
+            },
+            "note": "an ER print export reports specifications; editing it as text changes nothing in JDE"
+          }
+        },
+        "adapters": {
+          "simulation": {
+            "available": true,
+            "adapter": "jade_simulation_adapter",
+            "version": "sim-1"
+          },
+          "live": {
+            "available": false,
+            "reason": "no customer mechanism for editing or importing development objects has been qualified"
+          }
+        },
+        "requires_build": true,
+        "requires_cnc_activation": true,
+        "cnc_activation_roles": [
+          "cnc_operator"
+        ]
       }
     }
   ]

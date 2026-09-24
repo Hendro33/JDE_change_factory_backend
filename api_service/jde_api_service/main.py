@@ -31,6 +31,7 @@ from .routers import (
     discovery,
     domain_governance,
     session,
+    technical,
 )
 from .persistence.db import db_path, ensure_schema
 from .persistence.revisions import RevisionConflict, RevisionRequired
@@ -153,6 +154,7 @@ app.include_router(architecture_review.router)
 app.include_router(admin.router)
 app.include_router(company_users.router)
 app.include_router(discovery.router)
+app.include_router(technical.router)
 
 
 @app.exception_handler(RevisionConflict)

@@ -34,6 +34,7 @@ def test_list_capabilities_returns_the_catalogue(client):
         "document_type_definition",
         "line_type_definition",
         "order_activity_status_rules",
+        "custom_object_text_change",
     }
     # Nothing in this catalogue is Validated by its own authorship --
     # every entry defaults to Needs spike until a human promotes it.

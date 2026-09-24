@@ -11,7 +11,7 @@ def test_default_identity_is_hendro_with_four_companies(client):
     # Every seeded company lists Hendro's roles on THAT company --
     # the fixture gives him every role everywhere.
     for c in body["customers"]:
-        assert set(c["roles"]) == {"admin", "dashboard_viewer", "domain_owner", "product_manager"}
+        assert set(c["roles"]) == {"admin", "dashboard_viewer", "domain_owner", "product_manager", "cnc_operator"}
 
 
 def test_single_company_persona_sees_only_its_own_company(ellen_client):

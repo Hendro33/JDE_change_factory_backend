@@ -82,7 +82,35 @@ def read_functional_before(record: dict) -> dict:
             "source": "simulated DEV estate read (SIMULATION)"}
 
 
-BEFORE_READERS: dict[str, Callable[[dict], dict]] = {"functional": read_functional_before}
+def technical_targets(record: dict) -> list[str]:
+    return [f"technical_object:{k}" for k in (record.get("operation") or {}).get("objects", [])]
+
+
+def read_technical_before(record: dict) -> dict:
+    """The ACTIVE runtime checksum of every object the package changes, in
+    the company's bound DEV environment. Only the simulation can read it;
+    there is no qualified live mechanism, so live is unknown (fail closed)."""
+    from . import technical_sim
+    from .config import settings
+    from .scope import load_company_scope
+
+    if not settings.mock_mode:
+        return {"known": False, "reason": "no qualified live mechanism reads an object's active runtime specification"}
+    try:
+        env = ((load_company_scope(record["company_id"]).get("environment") or {}).get("dev_environment_id") or "")
+    except Exception as exc:  # noqa: BLE001 -- recorded as unknown, never guessed
+        return {"known": False, "reason": str(exc)}
+    keys = (record.get("operation") or {}).get("objects", [])
+    state = technical_sim.runtime_state(record["company_id"], env, keys)
+    if any(v is None for v in state.values()):
+        return {"known": False, "reason": f"object(s) missing from the simulated DEV estate: "
+                                          f"{', '.join(k for k, v in state.items() if v is None)}"}
+    return {"known": True, "value": state, "target": ", ".join(keys),
+            "source": f"simulated DEV estate {env} active runtime checksums (SIMULATION)"}
+
+
+BEFORE_READERS: dict[str, Callable[[dict], dict]] = {"functional": read_functional_before,
+                                                     "technical": read_technical_before}
 
 
 def _kind(record: dict) -> str:
@@ -103,7 +131,17 @@ def snapshot(record: dict, *, extra_dependencies: Optional[dict] = None) -> dict
     if handoff is not None:
         if handoff.get("company_id") != record.get("company_id"):
             raise BindingInvalid("the story's design belongs to another company -- refusing")
-        if handoff.get("change_id") != record["change_id"]:
+        if _kind(record) == "technical":
+            op = record.get("operation") or {}
+            approved_design = handoff.get("design_approval") or {}
+            if op.get("design_revision") != handoff.get("design_revision"):
+                raise BindingInvalid(
+                    f"package was prepared for design revision {op.get('design_revision')}, but the story's design is "
+                    f"revision {handoff.get('design_revision')} -- prepare it again against the current design")
+            if approved_design.get("design_revision") != handoff.get("design_revision"):
+                raise BindingInvalid("the current design revision has no design approval -- a person must approve "
+                                     "the design before its implementation can be approved")
+        elif handoff.get("change_id") != record["change_id"]:
             raise BindingInvalid(
                 f"change {record['change_id']} is not the change the story's current design revision "
                 f"{handoff.get('design_revision')} proposed ({handoff.get('change_id') or 'none'}) -- it cannot be "
@@ -118,9 +156,12 @@ def snapshot(record: dict, *, extra_dependencies: Optional[dict] = None) -> dict
             "profile_material_hash": (manifest.get("environment_profile") or {}).get("material_hash"),
             "artifacts": [{"artifact_id": a.get("artifact_id"), "revision": a.get("revision"), "sha256": a.get("sha256")}
                           for a in (*manifest.get("artifacts", []), *manifest.get("documents", []))],
+            "design_approval": handoff.get("design_approval"),
         }
-    depends_on = {"targets": [functional_target(record)] if _kind(record) == "functional" else [],
-                  "artifacts": [a["artifact_id"] for a in (design or {}).get("artifacts", [])]}
+    depends_on = {"targets": [functional_target(record)] if _kind(record) == "functional"
+                  else sorted(set(technical_targets(record)) | set(record.get("depends_on_targets") or [])),
+                  "artifacts": sorted({a["artifact_id"] for a in (design or {}).get("artifacts", [])}
+                                      | set(record.get("depends_on_artifacts") or []))}
     for key, values in (extra_dependencies or {}).items():
         depends_on[key] = sorted(set(depends_on.get(key, [])) | set(values))
     reader = BEFORE_READERS.get(_kind(record))
@@ -172,6 +213,10 @@ def problems(record: dict, *, read_current: bool = True) -> list[str]:
             if handoff.get("design_revision") != design["design_revision"]:
                 out.append(f"approved against design revision {design['design_revision']}, but the story's design "
                            f"is now revision {handoff.get('design_revision')} -- the newer design is not substituted")
+            elif _kind(record) == "technical":
+                approved_design = handoff.get("design_approval") or {}
+                if approved_design.get("design_revision") != design["design_revision"]:
+                    out.append("the design approval this implementation relied on is no longer in force")
             elif handoff.get("change_id") != record["change_id"]:
                 out.append("the story's design no longer proposes this change")
     elif handoff is not None:

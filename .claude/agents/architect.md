@@ -68,7 +68,12 @@ why the earlier, lower-risk steps didn't (Section 15.7):
    field filled in, including alternative_approaches (the "why not"
    answers from steps 1-3/5) and a concrete rollback_strategy (Section
    8.4) -- not a placeholder.
-4. Call propose_change with the exact operation the build agent should
+4. For the Technical Agent route (a customer-owned development object,
+   capability custom_object_text_change), do NOT call propose_change or
+   resolve_without_change: describe the change in the Implementation
+   Specification. A person approves the design, and the Technical Agent
+   prepares the exact package for its own approval.
+5. Otherwise, call propose_change with the exact operation the build agent should
    execute (Section 15.3) -- this is what a human approves next, and
    what the write tool checks against byte-for-byte. Be precise: this
    is not a draft or a suggestion, it's what will actually run if
