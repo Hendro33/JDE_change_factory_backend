@@ -156,16 +156,37 @@ A live profile never falls back to the simulation, and the simulation never pret
 
 The only paths it can call are the token request, logout, `defaultconfig`, `dataservice` (BROWSE only) and `poservice`.
 
+**Environment verification.** Test Connection verifies the environment against the documented AIS contract, and keeps four sources of information apart:
+
+| Source | What it is | Used as evidence? |
+|---|---|---|
+| Expected | What the Admin saved in the profile | It is what is being checked |
+| Server defaults | `GET /jderest/defaultconfig`: `defaultEnvironment`, `defaultRole`, `defaultJasServer`, `aisVersion` | **Never.** These are the server's defaults, not the environment a session runs in. A difference from the expected environment is shown as a note only |
+| Session context | The v2 token response for this credential and the requested environment and role: `environment`, `role`, `userInfo.appsRelease` | Yes: session environment and role must equal the expected values; the application release must match |
+| Attested | What the AIS contract does not report: the Tools release and the path code (CNC runtime attestation), and OCM data-source routing and isolation (CNC isolation evidence) | Recorded as customer attestation, never as verified |
+
+Each item is `verified`, `attested`, `missing` or `mismatch`:
+- Any `mismatch` fails the check.
+- Any `missing` item leaves it `unknown`, and discovery cannot be enabled. The check names the missing evidence.
+
+For example, if the token response does not report the environment, the connection stays blocked until it does. The check is never relaxed to accept `defaultconfig` instead.
+
+Contract sources (docs.oracle.com could not be fetched from the build environment; these pages were consulted through search results):
+- [v2 token request](https://docs.oracle.com/en/applications/jd-edwards/cross-product/9.2/rest-api/op-v2-tokenrequest-post.html)
+- [defaultconfig](https://docs.oracle.com/en/applications/jd-edwards/cross-product/9.2/rest-api/op-defaultconfig-get.html)
+- [AIS client DefaultConfig](https://docs.oracle.com/en/applications/jd-edwards/cross-product/9.2/ais-client-api-reference/com/oracle/e1/aisclient/DefaultConfig.html)
+
 **Before the first supervised live connection** (none has happened yet):
 1. **Customer/CNC:** a dedicated JDE user and a role that can read only the approved tables and applications in the DEV environment. Jade's read-only design does not make an over-privileged account safe.
-2. **Customer/CNC:** a network route that reaches only the DEV AIS server, and written confirmation that the environment is isolated. Record this in the profile.
-3. **Operator:** set `JDE_DISCOVERY_ALLOWED_HOSTS` to that host, and `JDE_DISCOVERY_LIVE_ENABLED=true`, for the supervised session only.
-4. **Admin:** save the live profile with a short window and a minimal approved-read list. Enter the credential.
-5. **With the customer present:**
+2. **Customer/CNC:** a network route that reaches only the DEV AIS server, and written confirmation that OCM maps the environment to the DEV data source only. Record this in the profile.
+3. **CNC:** a written statement of the Tools release and path code the DEV environment runs on (the runtime attestation). AIS does not report them.
+4. **Operator:** set `JDE_DISCOVERY_ALLOWED_HOSTS` to that host, and `JDE_DISCOVERY_LIVE_ENABLED=true`, for the supervised session only.
+5. **Admin:** save the live profile with a short window and a minimal approved-read list. Enter the credential.
+6. **With the customer present:**
    - run Test Connection;
    - run one approved sample read per capability;
-   - compare the results with what the customer sees in JDE. Response shapes are unverified until this is done (Experiment A1).
-6. **Admin:** enable discovery only after that comparison. Disable the connection when the window ends, and remove `JDE_DISCOVERY_LIVE_ENABLED` again.
+   - compare the results, including the session context the token response reports, with what the customer sees in JDE. Response shapes are unverified until this is done (Experiment A1).
+7. **Admin:** enable discovery only after that comparison. Disable the connection when the window ends, and remove `JDE_DISCOVERY_LIVE_ENABLED` again.
 
 **Disable Connection** blocks new and queued calls at once. It reports any request already in flight, which finishes; nothing is interrupted mid-request. Re-enabling needs a fresh Test Connection and fresh sample reads.
 
@@ -178,6 +199,20 @@ The only paths it can call are the token request, logout, `defaultconfig`, `data
 | `full` | Everything |
 
 Choose `full` only with the customer's written agreement.
+
+**Evidence limits.**
+- **Artifacts:** only the first 60,000 characters of a text artifact are analysed. The artifact record, the manifest and the Architect's tool result all state the coverage, and a citation of a truncated artifact carries the limitation.
+- **Observations:** each one stores its full-result SHA-256 as a change detector only. Redacted values are not retained, so the hash is not proof of what the model did not see.
+- **Refresh Evidence:** it records new observations and flags the design for reassessment. It never regenerates or re-approves a design.
+
+**Agent runtime.** Every agent run:
+- is restricted to `Task` as its only built-in tool (`services/agent_runtime.py`);
+- has the credential encryption keys, the execution AIS credential (`JDE_AIS_USERNAME`, `JDE_AIS_PASSWORD`) and the bootstrap password blanked in the agent process, and so also in the project MCP server that process starts. Consequence: live execution through an agent run cannot authenticate to AIS. It fails closed. This must be revisited, deliberately, before any authorised live execution;
+- has every project MCP tool it is not allowed removed from its context.
+
+**Design hand-off.** The hand-off file names the exact change its design revision proposed. `get_design_baseline` returns that change with its current approval state.
+
+**Integration proof.** `scripts/prove_architect_discovery.py` runs the real Architect, and then the existing functional-agent (non-executing), through the Claude CLI against the simulated endpoint. The last recorded run is in `docs/proof/architect_discovery_run/`. It needs a Claude login; it is not part of CI.
 
 ## Credential encryption key
 
