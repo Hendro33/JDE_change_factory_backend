@@ -100,6 +100,10 @@ def artifact_summary(a: dict, profile: Optional[dict]) -> dict:
         "runtime_statement": meta.get("runtime_statement", ""),
         "runtime_stated_by": meta.get("runtime_stated_by", ""),
         "extraction_status": a["extraction_status"], "domain_id": a["domain_id"],
+        # Exactly how much of the file could be analysed (older uploads: unknown).
+        "analysis_coverage": meta.get("analysis_coverage") or {"analysed": a["extraction_status"] == "supported",
+                                                               "truncated": None, "note": "coverage not recorded"},
+        "extraction_note": a.get("extraction_note", ""),
     }
     if a["kind"] == "reference_document":
         summary.update({
@@ -147,6 +151,10 @@ def _validate_citations(raw: list[dict], ledger: RunLedger, profile_ref: Optiona
             if s and s["kind"] == "technical_export" and s["runtime_correspondence"] != "matches_dev_runtime":
                 entry.setdefault("limitations", []).append(
                     f"{i}: export's correspondence to the active DEV runtime is {s['runtime_correspondence']}")
+            if s and (s.get("analysis_coverage") or {}).get("truncated"):
+                cov = s["analysis_coverage"]
+                entry.setdefault("limitations", []).append(
+                    f"{i}: only {cov['analysed_chars']:,} of {cov['total_chars']:,} characters were analysed (truncated)")
             if s and s["kind"] == "reference_document" and s.get("compatibility") != "compatible":
                 entry.setdefault("limitations", []).append(
                     f"{i}: documentation release applicability is {s.get('compatibility')}")
@@ -202,6 +210,11 @@ def _system_gaps(ledger: RunLedger, profile: Optional[dict]) -> tuple[list[dict]
                                       f"({s['runtime_statement'] or 'no detail'})")
             elif s["runtime_correspondence"] == "unknown":
                 limits.append(f"{ref}: whether this export matches the active DEV runtime is unknown")
+    for ref, s in ledger.artifacts_consulted.items():
+        cov = s.get("analysis_coverage") or {}
+        if cov.get("truncated"):
+            limits.append(f"{ref}: TRUNCATED -- only {cov['analysed_chars']:,} of {cov['total_chars']:,} characters "
+                          "were available for analysis; conclusions about the rest of the file are not supported")
     if any(o["mode"] == "simulation" for o in ledger.observations):
         limits.append("Live observations in this baseline are SIMULATED, not the customer's JDE")
     if any(not o["sharing"]["values_shared"] for o in ledger.observations):
@@ -231,8 +244,22 @@ def _profile_block(profile: Optional[dict], grant: Optional[service.DiscoveryGra
 def _observation_entry(o: dict, payload_sha: str) -> dict:
     return {"observation_id": o["observation_id"], "capability_id": o["capability_id"], "target": o["target"],
             "fields": o["fields"], "observed_at": o["observed_at"], "mode": o["mode"],
-            "record_count": o["record_count"], "payload_sha256": payload_sha,
+            "record_count": o["record_count"],
+            # A change detector only: Jade does not keep the unredacted result,
+            # so this hash cannot reproduce or prove content nobody retained.
+            "payload_sha256": payload_sha, "payload_sha256_role": "change_detector",
+            "retained": "the evidence as shown to the model" + ("" if o["sharing"]["values_shared"]
+                                                                else " (values redacted)"),
             "values_shared": o["sharing"]["values_shared"], "provenance": o["provenance"]}
+
+
+EVIDENCE_NOTES = [
+    "payload_sha256 on each observation is computed over the FULL read result, including values redacted from "
+    "the model. It detects whether a later read of the same target returns something different. Jade does not "
+    "retain that full result, so the hash is not proof of any content that was not shown or kept.",
+    "Retained evidence is the sanitised observation as shown to the model; redacted values were never seen by "
+    "the model and are not stored.",
+]
 
 
 def _payload_sha(company_id: str, observation_id: str) -> str:
@@ -271,6 +298,7 @@ def create_for_design(*, company_id: str, story_id: str, design_revision: int, l
     manifest = {
         "manifest_version": 1,
         "scope_statement": SCOPE_STATEMENT,
+        "evidence_notes": EVIDENCE_NOTES,
         "company_id": company_id, "story_id": story_id,
         "domain_id": ledger.grant.domain_id if ledger.grant else None,
         "design_revision": design_revision, "created_at": _now(), "trigger": "architect_run",
@@ -432,6 +460,12 @@ def refresh(company_id: str, story_id: str, *, actor_user_id: str) -> dict:
         reassessment.append({"kind": "refresh_incomplete", "detail": f"{len(blocked)} observation(s) could not be refreshed",
                              "flagged_at": _now()})
     manifest = {**old, "created_at": _now(), "trigger": "refresh", "refreshed_by": actor_user_id,
+                "evidence_notes": EVIDENCE_NOTES,
+                "refresh_note": ("Evidence re-read only: new observations were recorded for the same approved "
+                                 "targets. The design, its Implementation Specification and any exact-change "
+                                 "approval are unchanged -- nothing was regenerated or re-approved. If the evidence "
+                                 "changed, the design is flagged for reassessment; a person decides whether to "
+                                 "re-run the Architect."),
                 "refreshed_from": current["baseline_id"], "observations": new_obs,
                 "environment_profile": _profile_block(profile, grant),
                 "refresh_changes": changes, "refresh_blocked": blocked}

@@ -88,20 +88,26 @@ def artifact_id_for(kind: str, object_name: str, object_type: str) -> str:
     return f"{prefix}-{_slug(object_type)}-{_slug(object_name)}"
 
 
-def _extract(fmt: str, data: bytes) -> tuple[str, str, Optional[str]]:
-    """(status, note, text). Unsupported formats are never parsed."""
+def _extract(fmt: str, data: bytes) -> tuple[str, str, Optional[str], dict]:
+    """(status, note, text, coverage). Unsupported formats are never parsed.
+    coverage states exactly how much of the file can be analysed."""
     if fmt not in TEXT_FORMATS:
-        return "unsupported", f"{fmt} files are stored but not analysed: no safe text extraction for this format", None
+        return ("unsupported", f"{fmt} files are stored but not analysed: no safe text extraction for this format",
+                None, {"analysed_chars": 0, "total_chars": None, "truncated": False, "analysed": False})
     try:
         text = data.decode("utf-8")
     except UnicodeDecodeError:
-        return "unsupported", "declared as text but not valid UTF-8; not analysed", None
+        return ("unsupported", "declared as text but not valid UTF-8; not analysed", None,
+                {"analysed_chars": 0, "total_chars": None, "truncated": False, "analysed": False})
     text = "".join(ch for ch in text if ch in "\n\t" or ord(ch) >= 32)
+    total = len(text)
     note = ""
-    if len(text) > MAX_EXTRACT_CHARS:
+    if total > MAX_EXTRACT_CHARS:
         text = text[:MAX_EXTRACT_CHARS]
-        note = f"truncated to the first {MAX_EXTRACT_CHARS} characters"
-    return "supported", note, text
+        note = (f"TRUNCATED: only the first {MAX_EXTRACT_CHARS:,} of {total:,} characters "
+                f"({MAX_EXTRACT_CHARS * 100 // total}%) are available for analysis; the rest was not read")
+    return "supported", note, text, {"analysed_chars": len(text), "total_chars": total,
+                                     "truncated": total > MAX_EXTRACT_CHARS, "analysed": True}
 
 
 def upload(company_id: str, payload: ArtifactUpload, *, actor: str, store: Optional[ArtifactStore] = None) -> dict:
@@ -127,7 +133,7 @@ def upload(company_id: str, payload: ArtifactUpload, *, actor: str, store: Optio
     store = store or default_store()
     sha = hashlib.sha256(data).hexdigest()
     storage_key = store.put(company_id, data)
-    status, note, text = _extract(payload.export_format, data)
+    status, note, text, coverage = _extract(payload.export_format, data)
     if text is not None:
         text_key = store.put(company_id, text.encode("utf-8"))
     else:
@@ -135,6 +141,7 @@ def upload(company_id: str, payload: ArtifactUpload, *, actor: str, store: Optio
     artifact_id = artifact_id_for(payload.kind, payload.object_name, payload.object_type)
     meta = payload.model_dump(exclude={"content_base64", "domain_id", "kind"})
     meta["text_storage_key"] = text_key
+    meta["analysis_coverage"] = coverage
     now = datetime.now(timezone.utc).isoformat()
     with connection(immediate=True) as conn:
         current = conn.execute(
