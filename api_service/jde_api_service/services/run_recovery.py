@@ -52,4 +52,7 @@ def reconcile_interrupted_runs() -> dict[str, int]:
     from ..technical import store as technical_store
 
     counts["technical"] = technical_store.mark_interrupted()
+    from ..process import story as story_process
+
+    counts["process_analysis"] = story_process.mark_interrupted_runs()
     return counts

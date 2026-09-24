@@ -27,6 +27,9 @@ dependencies = [
     # services/credential_crypto.py: encryption of stored Jira API tokens
     # (Fernet), with the key held only in the server environment.
     "cryptography>=42.0.0",
+    # process/framework.py: reading customer process-framework workbooks
+    # (.xlsx) and writing the import template.
+    "openpyxl>=3.1.0",
 ]
 
 [project.optional-dependencies]

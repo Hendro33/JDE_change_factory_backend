@@ -61,6 +61,7 @@ class RunLedger:
         self.artifacts_listed: dict[str, dict] = {}
         self.artifacts_consulted: dict[str, dict] = {}
         self.artifacts_unavailable: list[dict] = []
+        self.process_context_consulted: Optional[dict] = None
         self._lock = threading.Lock()
 
     def add_observation(self, evidence: dict) -> None:
@@ -317,8 +318,24 @@ def create_for_design(*, company_id: str, story_id: str, design_revision: int, l
         "contradictions": [str(c)[:500] for c in (evidence.get("contradictions") or [])][:20] + contradictions,
         "confidence_limitations": [str(c)[:500] for c in (evidence.get("confidence_limitations") or [])][:20] + limits,
         "blocked_requests": ledger.blocked,
+        "process_context": _process_context(company_id, story_id, ledger, evidence),
     }
     return _store(company_id, story_id, design_revision, "architect_run", manifest, "current", [])
+
+
+def _process_context(company_id: str, story_id: str, ledger: RunLedger, evidence: dict) -> dict:
+    """The story's process context this design rests on: always the
+    fingerprint at design time (so a later material change is detected),
+    whether the Architect consulted it, and its process findings."""
+    from ..process import story as story_process
+
+    raw = evidence.get("process_findings") or {}
+    return {"fingerprint": story_process.fingerprint(company_id, story_id),
+            "consulted": ledger.process_context_consulted is not None,
+            "consulted_fingerprint": (ledger.process_context_consulted or {}).get("fingerprint"),
+            "findings": {k: [str(x)[:500] for x in (raw.get(k) or [])][:15]
+                         for k in ("affected_processes", "missing_requirements", "missing_controls",
+                                   "missing_acceptance_criteria")}}
 
 
 # ---------------------------------------------------------------------
@@ -464,6 +481,12 @@ def refresh(company_id: str, story_id: str, *, actor_user_id: str) -> dict:
     if old.get("environment_profile") and profile and old["environment_profile"]["material_hash"] != profile["material_hash"]:
         reassessment.append({"kind": "environment_profile_changed", "detail": "profile changed since the design",
                              "flagged_at": _now()})
+    from ..process import story as story_process
+
+    recorded = ((old.get("process_context") or {}).get("fingerprint") or {}).get("sha256")
+    if recorded and recorded != story_process.fingerprint(company_id, story_id)["sha256"]:
+        reassessment.append({"kind": "process_context_changed", "detail": "the story's confirmed processes or maps "
+                             "changed since the design", "flagged_at": _now()})
     if blocked:
         reassessment.append({"kind": "refresh_incomplete", "detail": f"{len(blocked)} observation(s) could not be refreshed",
                              "flagged_at": _now()})

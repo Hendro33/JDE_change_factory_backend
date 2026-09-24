@@ -22,7 +22,8 @@ from . import artifacts, capabilities, profile_service, service
 from .baseline import RunLedger, artifact_summary
 
 SERVER_NAME = "jade-discovery"
-TOOL_NAMES = ["list_discovery_capabilities", "discovery_read", "list_baseline_artifacts", "read_baseline_artifact"]
+TOOL_NAMES = ["list_discovery_capabilities", "discovery_read", "list_baseline_artifacts", "read_baseline_artifact",
+              "get_process_context"]
 ALLOWED_TOOLS = [f"mcp__{SERVER_NAME}__{n}" for n in TOOL_NAMES]
 
 
@@ -136,6 +137,17 @@ class ArchitectDiscoveryTools:
                 "evidence_id": ref, "metadata": summary, "content": text,
                 "extraction_note": a["extraction_note"]}
 
+    def process_context(self) -> dict[str, Any]:
+        """The story's confirmed processes and maps -- this company's only,
+        resolved from backend records."""
+        from ..process import story as story_process
+
+        if not self.company_id:
+            return {"available": False, "reason": "the story's company is unknown"}
+        ctx = story_process.context_for_story(self.company_id, self.story_id)
+        self.ledger.process_context_consulted = ctx
+        return ctx
+
     # -- the in-process MCP server ------------------------------------------
     def sdk_server(self):
         import claude_agent_sdk as sdk
@@ -181,4 +193,11 @@ class ArchitectDiscoveryTools:
         async def _read_artifact(args):
             return reply(self.read_artifact(args.get("artifact_id", ""), args.get("revision")))
 
-        return sdk.create_sdk_mcp_server(SERVER_NAME, tools=[_caps, _read, _list, _read_artifact])
+        @sdk.tool("get_process_context",
+                  "The story's business-process context: the company's selected process framework, the processes a "
+                  "reviewer confirmed for this story (exact framework version and node), and the as-is / to-be "
+                  "process maps (steps marked 'assumption' are proposals, not confirmed customer practice).", {})
+        async def _process(args):
+            return reply(self.process_context())
+
+        return sdk.create_sdk_mcp_server(SERVER_NAME, tools=[_caps, _read, _list, _read_artifact, _process])

@@ -374,4 +374,145 @@ MIGRATIONS: list[tuple[int, str]] = [
         CREATE INDEX idx_technical_packages_story ON technical_packages(company_id, story_id);
         """,
     ),
+    (
+        7,
+        """
+        -- Process frameworks: a company's imported process hierarchy
+        -- (authorised APQC content or its own). A version is immutable once
+        -- activated; nodes of every version are kept so historical
+        -- references stay resolvable after the framework changes.
+        CREATE TABLE process_frameworks (
+            framework_id TEXT PRIMARY KEY,
+            company_id TEXT NOT NULL,
+            name TEXT NOT NULL,
+            source_kind TEXT NOT NULL,
+            created_by TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        CREATE UNIQUE INDEX idx_process_frameworks_name ON process_frameworks(company_id, name);
+        CREATE TABLE framework_versions (
+            framework_id TEXT NOT NULL,
+            version INTEGER NOT NULL,
+            company_id TEXT NOT NULL,
+            status TEXT NOT NULL,
+            file_name TEXT NOT NULL,
+            file_sha256 TEXT NOT NULL,
+            file_size INTEGER NOT NULL,
+            storage_key TEXT NOT NULL,
+            sheet_name TEXT NOT NULL,
+            column_mapping TEXT NOT NULL,
+            source_statement TEXT NOT NULL,
+            validation TEXT NOT NULL,
+            node_count INTEGER NOT NULL,
+            content_sha256 TEXT NOT NULL,
+            changes TEXT NOT NULL DEFAULT '{}',
+            uploaded_by TEXT NOT NULL,
+            uploaded_at TEXT NOT NULL,
+            activated_by TEXT,
+            activated_at TEXT,
+            superseded_at TEXT,
+            PRIMARY KEY (framework_id, version)
+        );
+        CREATE TABLE framework_nodes (
+            framework_id TEXT NOT NULL,
+            version INTEGER NOT NULL,
+            node_key TEXT NOT NULL,
+            parent_key TEXT,
+            level INTEGER NOT NULL,
+            position INTEGER NOT NULL,
+            name TEXT NOT NULL,
+            description TEXT NOT NULL DEFAULT '',
+            node_type TEXT NOT NULL DEFAULT '',
+            external_ref TEXT NOT NULL DEFAULT '',
+            node_sha256 TEXT NOT NULL,
+            PRIMARY KEY (framework_id, version, node_key)
+        );
+        -- Which framework a company works with (revisioned setting).
+        CREATE TABLE process_settings (
+            company_id TEXT PRIMARY KEY,
+            selected_framework_id TEXT,
+            revision INTEGER NOT NULL,
+            updated_by TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        -- Agent suggestions for a story's processes (refinement analysis).
+        CREATE TABLE process_analysis_runs (
+            run_id TEXT PRIMARY KEY,
+            company_id TEXT NOT NULL,
+            story_id TEXT NOT NULL,
+            status TEXT NOT NULL,
+            framework_id TEXT,
+            framework_version INTEGER,
+            initiated_by TEXT,
+            started_at TEXT NOT NULL,
+            finished_at TEXT,
+            error TEXT,
+            model TEXT,
+            usage TEXT NOT NULL DEFAULT '{}',
+            result TEXT NOT NULL DEFAULT '{}',
+            scripted INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE INDEX idx_process_analysis_story ON process_analysis_runs(company_id, story_id);
+        -- A reviewer's decision on a story's processes: append-only
+        -- revisions, each with exact framework/version/node references.
+        CREATE TABLE story_process_mappings (
+            company_id TEXT NOT NULL,
+            story_id TEXT NOT NULL,
+            revision INTEGER NOT NULL,
+            status TEXT NOT NULL,
+            refs TEXT NOT NULL,
+            no_mapping_reason TEXT NOT NULL DEFAULT '',
+            findings TEXT NOT NULL DEFAULT '{}',
+            analysis_run_id TEXT,
+            reviewer_name TEXT NOT NULL,
+            reviewer_user_id TEXT NOT NULL,
+            roles TEXT NOT NULL,
+            note TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (company_id, story_id, revision)
+        );
+        -- As-is / to-be process maps beside a story; immutable versions.
+        CREATE TABLE process_maps (
+            map_id TEXT PRIMARY KEY,
+            company_id TEXT NOT NULL,
+            story_id TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            title TEXT NOT NULL,
+            created_by TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        CREATE UNIQUE INDEX idx_process_maps_story ON process_maps(company_id, story_id, kind);
+        CREATE TABLE process_map_versions (
+            map_id TEXT NOT NULL,
+            version INTEGER NOT NULL,
+            company_id TEXT NOT NULL,
+            content TEXT NOT NULL,
+            content_sha256 TEXT NOT NULL,
+            material_sha256 TEXT NOT NULL,
+            material_change INTEGER NOT NULL,
+            note TEXT NOT NULL DEFAULT '',
+            created_by TEXT NOT NULL,
+            created_by_user_id TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (map_id, version)
+        );
+        -- As-built records: generated, versioned, finalised once.
+        CREATE TABLE as_built_records (
+            company_id TEXT NOT NULL,
+            story_id TEXT NOT NULL,
+            version INTEGER NOT NULL,
+            status TEXT NOT NULL,
+            delivery_mode TEXT NOT NULL,
+            inputs_sha256 TEXT NOT NULL,
+            content TEXT NOT NULL,
+            markdown TEXT NOT NULL,
+            content_sha256 TEXT NOT NULL,
+            generated_by TEXT NOT NULL,
+            generated_at TEXT NOT NULL,
+            finalised_by TEXT,
+            finalised_at TEXT,
+            PRIMARY KEY (company_id, story_id, version)
+        );
+        """,
+    ),
 ]

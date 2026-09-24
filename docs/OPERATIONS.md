@@ -329,3 +329,51 @@ To set it up once the service exists: in Render's dashboard, add a
 Custom Domain (e.g. `api.consultiq.nl`) to the service; Render gives
 you a CNAME target to add at wherever consultiq.nl's DNS is managed.
 Render provisions HTTPS for it automatically once that CNAME resolves.
+
+## Process frameworks, process maps and as-built records
+
+- **Frameworks** (Admin › Process Framework, admin only): an `.xlsx` import (template at `GET /process/template`) goes
+  upload → column mapping → validation and preview (a draft) → activation. Everything lives in SQLite (migration 7):
+  - `process_frameworks`;
+  - `framework_versions`: original file checksum and storage key, mapping, validation, and the changes against the previous version;
+  - `framework_nodes`: every version's nodes, each with a checksum;
+  - `process_settings`: the framework selected for the company.
+
+  An activated version is immutable. Superseded versions stay resolvable. The original file is kept in the artifact
+  store. Jade supplies no APQC content: `apqc_authorised` requires a statement of authority to use it.
+  `fixtures/process_framework/` contains **SYNTHETIC** workbooks only (`scripts/make_process_fixtures.py`).
+- **Story finalisation**:
+  - The refinement process analysis (`POST /changes/{id}/process/analysis`) runs the real agent runtime. It has only
+    the run-bound `jade-process` tools.
+  - Its suggestions are validated against the exact framework version.
+  - A Product Manager, or the Domain Owner assigned to the story's domain, confirms the mapping or records why no
+    mapping applies.
+  - Decisions are append-only revisions with pinned `(framework, version, node, node checksum)` references.
+- **Architect**:
+  - `get_process_context` (jade-discovery) returns this company's framework, the confirmed mapping and the maps.
+  - The design baseline records the process fingerprint, whether the Architect consulted it, and the Architect's
+    process findings.
+- **Reassessment**: these changes flag the story's current design:
+  - a new mapping revision;
+  - a materially different map version (a title- or note-only edit is not material);
+  - a framework version that changes or removes a mapped node;
+  - Refresh Evidence after a process change.
+
+  References are never rewritten.
+- **As-built** (`/changes/{id}/as-built`):
+  - Each generation is a new version, with its Markdown stored.
+  - It is finalised only when every checkpoint is complete **and** its sources are unchanged since generation.
+  - Checkpoints are: story approved, processes decided, to-be map, design approved and not flagged, exact approval,
+    applied, built, CNC activation, verified.
+  - Simulated delivery carries the SIMULATED DELIVERY notice in the record and its Markdown.
+
+## Local preview
+
+`scripts/run_local_preview.sh [--reset]` does the following:
+- starts the real backend (:8000) and the frontend (:5173);
+- seeds the BicycleWorks demonstration on first run (`seed_demo_technical.py`, `seed_demo_process.py`: scripted
+  stand-ins, synthetic framework, simulated JDE);
+- prints throwaway local logins.
+
+Data and those credentials stay in `.preview-data/` (git-ignored), so a restart resumes where you left off.
+Browser demonstration: frontend `e2e/process/`.
