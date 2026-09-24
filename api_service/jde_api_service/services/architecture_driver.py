@@ -25,6 +25,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, Optional
 
+from . import agent_runtime
 from ..discovery import architect_tools, baseline, service as discovery_service
 from ..models.change import ArchitectDecision, ImplementationSpecification
 from .architecture_review_service import ArchitectureReviewService
@@ -202,7 +203,7 @@ async def run_architecture_review(
         import claude_agent_sdk as sdk
 
         tools = build_discovery_tools(story_id, customer_id, agent_run_id=agent_run.run_id, initiated_by=initiated_by)
-        options = sdk.ClaudeAgentOptions(
+        options = agent_runtime.options(
             cwd=repo_root,
             permission_mode=PERMISSION_MODE,
             allowed_tools=_ALLOWED_TOOLS,

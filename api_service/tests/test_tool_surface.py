@@ -109,3 +109,18 @@ def test_the_architect_runtime_is_denied_every_other_project_tool():
     disallowed = {t.rsplit("__", 1)[-1] for t in architecture_driver._DISALLOWED_TOOLS}
     assert allowed | disallowed == registered and not allowed & disallowed
     assert {"set_processing_option", "run_orchestration", "capture_evidence", "read_approved_target"} <= disallowed
+
+
+def test_every_agent_driver_uses_the_restricted_runtime():
+    """Only Task as a built-in tool, and no credential/execution secrets in the
+    agent process -- for every driver, with no way around the helper."""
+    from jde_api_service.services import agent_runtime
+
+    opts = agent_runtime.options(cwd="/tmp", permission_mode="dontAsk", allowed_tools=[])
+    assert opts.tools == ["Task"]
+    for name in ("JDE_CREDENTIAL_KEY", "JDE_CREDENTIAL_KEY_PREVIOUS", "JDE_AIS_PASSWORD"):
+        assert opts.env[name] == ""
+    services = REPO / "api_service" / "jde_api_service" / "services"
+    for py in services.glob("*.py"):
+        if py.name != "agent_runtime.py":
+            assert "ClaudeAgentOptions(" not in py.read_text(), py.name

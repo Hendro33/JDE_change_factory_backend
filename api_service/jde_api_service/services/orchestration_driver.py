@@ -27,6 +27,7 @@ import json
 import re
 from typing import Any, Optional
 
+from . import agent_runtime
 from ..models.change import AcceptanceCriterion, BusinessImpact, TestStep, UserStory
 from ..persistence.pilot_data_bicycleworks import CUSTOMER_ID as BICYCLEWORKS_CUSTOMER_ID
 from .customer_link_service import CustomerLinkService
@@ -180,7 +181,7 @@ async def run_enhancement(
     try:
         import claude_agent_sdk as sdk
 
-        options = sdk.ClaudeAgentOptions(
+        options = agent_runtime.options(
             cwd=repo_root,
             permission_mode=PERMISSION_MODE,
             allowed_tools=_ALLOWED_TOOLS,

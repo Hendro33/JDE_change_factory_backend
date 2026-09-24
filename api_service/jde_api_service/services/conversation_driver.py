@@ -28,6 +28,7 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
+from . import agent_runtime
 from ..models.architecture_review import ArchitectAnalysisVersion
 from ..models.change import UserStory
 from ..models.domain_review import ConversationTurn
@@ -114,7 +115,7 @@ async def ask_about_requirement(
 
     import claude_agent_sdk as sdk
 
-    options = sdk.ClaudeAgentOptions(
+    options = agent_runtime.options(
         cwd=repo_root, permission_mode=PERMISSION_MODE, allowed_tools=_ALLOWED_TOOLS, max_turns=MAX_TURNS,
     )
     prompt = _build_prompt(story_id, current_story, question, asked_by, prior_turns)
@@ -235,7 +236,7 @@ async def ask_about_solution(
 
     import claude_agent_sdk as sdk
 
-    options = sdk.ClaudeAgentOptions(
+    options = agent_runtime.options(
         cwd=repo_root, permission_mode=PERMISSION_MODE, allowed_tools=_SOLUTION_ALLOWED_TOOLS, max_turns=MAX_TURNS,
     )
     prompt = _build_solution_prompt(story_id, latest_version, question, asked_by, prior_turns)
