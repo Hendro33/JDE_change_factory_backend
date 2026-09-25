@@ -251,7 +251,8 @@ def validate(grant: DiscoveryGrant, capability_id: str, target: str, fields: lis
 def _dispatch(profile: dict, plan: capabilities.ReadPlan) -> tuple[transport.ReadResult, str]:
     config: JdeProfileConfig = profile["config"]
     try:
-        client = transport.transport_for(profile["company_id"], config, live_transport=LIVE_HTTP_TRANSPORT)
+        client = transport.transport_for(profile["company_id"], config, live_transport=LIVE_HTTP_TRANSPORT,
+                                         trust=profile_service.trust_for(profile["company_id"], config))
     except transport.DestinationNotAllowed as exc:
         raise DiscoveryBlocked(str(exc)) from exc
     try:
@@ -416,7 +417,8 @@ def test_connection(company_id: str, actor_user_id: str) -> tuple[str, str]:
         log("blocked", "circuit breaker open")
         raise DiscoveryBlocked("the circuit breaker is open after repeated failures; try later")
     try:
-        client = transport.transport_for(company_id, config, live_transport=LIVE_HTTP_TRANSPORT)
+        client = transport.transport_for(company_id, config, live_transport=LIVE_HTTP_TRANSPORT,
+                                         trust=profile_service.trust_for(company_id, config))
     except transport.DestinationNotAllowed as exc:
         log("blocked", str(exc))
         raise DiscoveryBlocked(str(exc)) from None
@@ -436,7 +438,7 @@ def test_connection(company_id: str, actor_user_id: str) -> tuple[str, str]:
         try:
             username, password = profile_service.credential(company_id)
         except credential_crypto.CredentialUnreadable as exc:
-            profile_service.record_check(company_id, "authentication", "failed", "no usable credential")
+            profile_service.record_check(company_id, "authentication", "failed", f"no usable credential: {exc}")
             log("blocked", "no usable credential")
             return "failed", str(exc)
         try:

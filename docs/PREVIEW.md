@@ -124,21 +124,18 @@ stored on Jade's backend. **Save** never contacts JDE.
 After saving, enter the JDE user and password under **Credential**. The password is encrypted on the server and never
 shown again.
 
-**Server-managed trust.** These settings are made on the machine that runs the backend, never in the browser. Create
-`~/jade/JDE_change_factory_backend/.preview-data/server.env` containing:
+**Certificate.** In **Edit settings**, under the AIS address, upload the AIS server's certificate (the one you trusted when
+testing TLS), or its CA, as a .pem/.crt file, then **Save**. Jade trusts it only for this connection. Every AIS request
+(sign-in, defaultconfig, sample reads, sign-out) verifies it together with the address: here the certificate must name
+the IP `141.144.202.25`. Never upload a private key; Jade refuses one. Nothing is needed on the server. Jade only ever
+sends requests to the saved address, and the saved password is only used for the address and certificate it was
+entered for: change either, and you enter the password again. The backend machine itself must reach
+`141.144.202.25:7077`. On Python 3.13 or newer, strict checks can reject a certificate that lacks standard extensions;
+the panel then shows the TLS error.
 
-```
-JDE_DISCOVERY_LIVE_ENABLED=true
-JDE_DISCOVERY_ALLOWED_HOSTS=141.144.202.25
-JDE_DISCOVERY_CA_BUNDLE=/path/to/ais-server-certificate.pem
-```
-
-Then restart the preview. Every AIS request uses that file for certificate checks: sign-in, defaultconfig, sample reads and
-sign-out. The certificate must match the address (here an IP address entry in the certificate's alternative names). If the
-file is missing, unreadable or not a certificate, live access stays **off**, the backend log says why, and the panel shows
-it. Jade never falls back to unverified TLS. On Python 3.13 or newer, strict certificate checks can also reject a
-certificate that lacks standard extensions; the panel shows the TLS error, and the fix belongs to the certificate, not
-to Jade. The backend machine itself must reach `141.144.202.25:7077`.
+Optional operator overrides, in `.preview-data/server.env`: `JDE_DISCOVERY_LIVE_ENABLED=false` locks live access off,
+`JDE_DISCOVERY_ALLOWED_HOSTS` narrows the permitted hosts, and `JDE_DISCOVERY_CA_BUNDLE` is a fallback CA file for
+connections without an uploaded certificate.
 
 **Supervised order:**
 1. **Test Connection.** Jade signs in, reads the AIS server identity (`defaultconfig`) and signs out. It runs no UBE, batch

@@ -161,6 +161,10 @@ class JdeProfileConfig(ApiModel):
     expected_application_release: str
     expected_tools_release: str
     path_code: str = ""
+    # The AIS server certificate (or its CA) uploaded in these settings, by
+    # sha256; blank = the public trust store. It only adds trust for this
+    # connection -- verification is never switched off.
+    ca_certificate_sha256: str = Field(default="", pattern=r"^([0-9a-f]{64})?$")
     auth_method: AuthMethod = "ais_token_request"
     customer_contact: str = ""
     cnc_contact: str = ""
@@ -304,6 +308,10 @@ class JdeProfileView(ApiModel):
     prerequisites: list[dict[str, Any]] = []
     readiness: list[dict[str, Any]] = []
     ready: bool = False
+    # The uploaded certificate in use (subject, names, validity, fingerprints), if any.
+    certificate: Optional[dict[str, Any]] = None
+    # Whether the saved password was entered for the current address and certificate.
+    credential_bound: bool = True
     server_prerequisites: list[dict[str, Any]] = []
     ceilings: dict[str, Any] = {}
     auth_methods: list[dict[str, Any]] = []

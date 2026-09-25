@@ -82,9 +82,9 @@ export JDE_BOOTSTRAP_ADMIN_EMAIL=admin@e2e.local JDE_BOOTSTRAP_ADMIN_NAME="E2E A
 export JADE_E2E_CNC_PASSWORD="$CNC_PW" JADE_E2E_DO_PASSWORD="$DO_PW"
 # JDE writes: live writes are not enabled. Simulated writes run only for demo customers.
 export JDE_MCP_MOCK_MODE=true
-# Server-managed trust controls for LIVE read-only discovery. Off unless the
-# person running this machine creates $DATA/server.env (see docs/PREVIEW.md).
-# Only these three keys are read from it; nothing here is editable in the browser.
+# JDE connection settings (address, certificate, live mode) are made in the app.
+# Optional operator overrides only: $DATA/server.env may lock live discovery off
+# (JDE_DISCOVERY_LIVE_ENABLED=false), narrow destinations or add a server CA bundle.
 unset JDE_DISCOVERY_LIVE_ENABLED JDE_DISCOVERY_ALLOWED_HOSTS JDE_DISCOVERY_CA_BUNDLE
 if [ -f "$DATA/server.env" ]; then
   while IFS='=' read -r key value; do
@@ -132,8 +132,8 @@ cat <<INFO
     do@e2e.local     (DO_PW)     Domain Owner for Customer Service -- try it in a second browser
     cnc@e2e.local    (CNC_PW)    CNC operator only
 
-  JDE connection: Admin > Integrations (JDE panel). Live read-only access: ${JDE_DISCOVERY_LIVE_ENABLED:-off}
-    ${JDE_DISCOVERY_ALLOWED_HOSTS:+permitted AIS host(s): $JDE_DISCOVERY_ALLOWED_HOSTS}
+  JDE connection: Admin > Integrations (JDE panel) -- address, certificate and credential are all set there.
+    ${JDE_DISCOVERY_LIVE_ENABLED:+operator override: JDE_DISCOVERY_LIVE_ENABLED=$JDE_DISCOVERY_LIVE_ENABLED}
   JDE writes: not enabled for real customers; simulated only inside demo customers.
 
   Start at Delivery > Process & Maps > S-BW-RETURNS, then follow the journey bar.

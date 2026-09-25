@@ -26,7 +26,8 @@ from ..persistence.revisions import next_revision
 from ..services import credential_crypto
 from . import capabilities
 from .models import CapabilityView, CheckResult, JdeProfileConfig, JdeProfileView
-from .transport import live_status_detail, SIMULATION_LABEL, allowed_hosts, live_allowed_by_deployment
+from .transport import (SIMULATION_LABEL, Trust, allowed_hosts, live_allowed_by_deployment, live_status_detail,
+                        tls_trust)
 
 HEALTH_CHECKS = ("reachability", "authentication", "environment", "approved_read")
 _NON_MATERIAL = {"customer_contact", "cnc_contact", "connection_name"}
@@ -112,8 +113,9 @@ def save_credential(company_id: str, username: str, password: str, *, expected_r
         conn.execute(
             "UPDATE jde_profiles SET revision = ?, material_hash = ?, credential_username = ?, credential_secret = ?, "
             "credential_revision = ?, credential_updated_at = ?, credential_updated_by = ?, discovery_enabled = 0, "
-            "enabled_material_hash = NULL, updated_at = ?, updated_by = ? WHERE company_id = ?",
-            (revision, new_hash, username.strip(), secret, cred_rev, now, actor, now, actor, company_id),
+            "enabled_material_hash = NULL, updated_at = ?, updated_by = ?, credential_destination = ? WHERE company_id = ?",
+            (revision, new_hash, username.strip(), secret, cred_rev, now, actor, now, actor, destination(config),
+             company_id),
         )
         conn.execute(
             "INSERT INTO jde_profile_revisions (company_id, revision, config, material_hash, credential_revision, "
@@ -129,6 +131,9 @@ def credential(company_id: str) -> tuple[str, str]:
     profile = load(company_id)
     if not profile or not profile.get("credential_secret"):
         raise credential_crypto.CredentialUnreadable("no discovery credential is saved for this company")
+    if not credential_bound(profile):
+        raise credential_crypto.CredentialUnreadable(
+            "the saved password was entered for a different AIS address or certificate; re-enter it for this one")
     return profile["credential_username"], credential_crypto.decrypt(profile["credential_secret"])
 
 
@@ -140,7 +145,43 @@ def credential_storage(profile: dict) -> str:
         credential_crypto.decrypt(secret)
     except credential_crypto.CredentialUnreadable:
         return "unreadable"
+    if not credential_bound(profile):
+        return "entered for a different address or certificate -- re-enter it"
     return "encrypted"
+
+
+def trust_for(company_id: str, config: JdeProfileConfig) -> Trust:
+    """This company's connection trust, from its own saved settings: the
+    host of the AIS address and the uploaded certificate (if any)."""
+    from urllib.parse import urlparse
+
+    from . import certificates
+
+    host = (urlparse(config.ais_base_url).hostname or "").lower()
+    if not config.ca_certificate_sha256:
+        return Trust(host=host)
+    cert = certificates.get(company_id, config.ca_certificate_sha256)
+    if cert is None:
+        return Trust(host=host, ca_sha256=config.ca_certificate_sha256, ca_missing=True)
+    return Trust(host=host, ca_pem=cert["pem"], ca_sha256=cert["sha256"])
+
+
+def destination(config: JdeProfileConfig) -> str:
+    """Where a password is sent: scheme, host, port and the trusted certificate."""
+    from urllib.parse import urlparse
+
+    u = urlparse(config.ais_base_url)
+    port = u.port or (443 if u.scheme == "https" else 80)
+    return f"{u.scheme}://{(u.hostname or '').lower()}:{port}#ca={config.ca_certificate_sha256 or 'default'}"
+
+
+def credential_bound(profile: dict) -> bool:
+    """A saved password only goes to the address and certificate it was
+    entered for. Simulation never sends it anywhere."""
+    config: JdeProfileConfig = profile["config"]
+    if config.connection_mode != "live" or not profile.get("credential_secret"):
+        return True
+    return profile.get("credential_destination") == destination(config)
 
 
 def record_check(company_id: str, check: str, state: str, detail: str, *, capability_id: Optional[str] = None,
@@ -235,13 +276,11 @@ def enable_blockers(profile: dict) -> list[str]:
     elif not window_open(config):
         out.append("the discovery window is not open now")
     if config.connection_mode == "live":
-        if not live_allowed_by_deployment():
-            out.append("live discovery is switched off for this deployment")
-        else:
-            from urllib.parse import urlparse
-
-            if (urlparse(config.ais_base_url).hostname or "").lower() not in allowed_hosts():
-                out.append("the AIS host is not in this deployment's destination allowlist")
+        trust = trust_for(profile["company_id"], config)
+        if not live_allowed_by_deployment(trust):
+            out.append(live_status_detail(trust))
+        elif trust.host not in allowed_hosts(trust):
+            out.append("the AIS host is not a permitted destination (narrowed by the server operator)")
     if credential_storage(profile) != "encrypted":
         out.append("no readable discovery credential")
     h = health(profile)
@@ -321,25 +360,23 @@ def prerequisites(profile: dict) -> list[dict]:
     return out
 
 
-def server_prerequisites(config: JdeProfileConfig) -> list[dict]:
-    """Deployment trust controls. Set on the server by whoever runs it, never
-    from the browser: global live enablement, the destination allowlist, TLS
-    trust and the credential-encryption key."""
-    from urllib.parse import urlparse
-
+def server_prerequisites(config: JdeProfileConfig, company_id: str = "") -> list[dict]:
+    """What must hold for a live connection: live access not locked by the
+    server operator, the saved address as the permitted destination, usable
+    TLS trust (an uploaded certificate or public CAs), and the server's
+    credential-encryption key. All but the key come from the settings."""
     from ..services import credential_crypto
-    from .transport import ALLOWED_HOSTS_ENV, CA_BUNDLE_ENV, live_status_detail, tls_trust
 
-    host = (urlparse(config.ais_base_url).hostname or "").lower()
-    trust_ok, trust_detail = tls_trust()
+    trust = trust_for(company_id, config)
+    trust_ok, trust_detail = tls_trust(trust)
+    permitted = trust.host in allowed_hosts(trust)
     return [
-        {"id": "live_enabled", "label": "Live discovery enabled for this deployment", "satisfied": live_allowed_by_deployment(),
-         "detail": live_status_detail()},
-        {"id": "allowlist", "label": f"AIS host {host} is a permitted destination", "satisfied": host in allowed_hosts(),
-         "detail": "permitted" if host in allowed_hosts() else f"add {host} to the server setting {ALLOWED_HOSTS_ENV}"},
-        {"id": "tls_trust", "label": "TLS certificate trust configured", "satisfied": trust_ok,
-         "detail": trust_detail + f" (a private CA is added with the server setting {CA_BUNDLE_ENV}; "
-                                  "certificate verification is never switched off)"},
+        {"id": "live_enabled", "label": "Live access available", "satisfied": live_allowed_by_deployment(trust),
+         "detail": live_status_detail(trust)},
+        {"id": "allowlist", "label": f"AIS host {trust.host} is the permitted destination", "satisfied": permitted,
+         "detail": "the saved AIS address" if permitted else "the server operator limits destinations to other hosts"},
+        {"id": "tls_trust", "label": "TLS certificate trust (never unverified)", "satisfied": trust_ok,
+         "detail": trust_detail},
         {"id": "encryption_key", "label": "Credential-encryption key configured on the server",
          "satisfied": credential_crypto.is_configured(),
          "detail": "configured" if credential_crypto.is_configured() else "JDE_CREDENTIAL_KEY is not set on the server"},
@@ -383,8 +420,6 @@ def readiness(profile: dict) -> tuple[list[dict], bool]:
     simulation the live-only items are marked not applicable."""
     from jde_mcp_server.config import settings as mcp_settings
 
-    from .transport import tls_trust
-
     config: JdeProfileConfig = profile["config"]
     live = config.connection_mode == "live"
     h = health(profile)
@@ -403,17 +438,19 @@ def readiness(profile: dict) -> tuple[list[dict], bool]:
                      (i["detail"] if i else "not checked yet: run Test Connection"))
 
     na = "not applicable in simulation"
-    trust_ok, trust_detail = tls_trust()
+    trust = trust_for(profile["company_id"], config)
+    trust_ok, trust_detail = tls_trust(trust)
     reach = h["reachability"]
     connectivity = [
-        _item("live_enabled", "Live access enabled on the server", "server_managed",
-              live_allowed_by_deployment() or not live, live_status_detail() if live else na, required=live),
-        _item("tls_trust", "TLS certificate trust configured (no unverified TLS)", "server_managed",
+        _item("live_enabled", "Live access available (not locked by the server operator)", "configuration",
+              live_allowed_by_deployment(trust) or not live, live_status_detail(trust) if live else na, required=live),
+        _item("tls_trust", "TLS certificate trust (uploaded certificate or public CAs; never unverified)", "configuration",
               trust_ok or not live, trust_detail if live else na, required=live),
-        _item("allowlist", "AIS host is a permitted destination", "server_managed",
-              (not live) or _host(config) in allowed_hosts(),
-              (f"{_host(config)} permitted" if _host(config) in allowed_hosts() else f"{_host(config)} is not in the allowlist")
-              if live else na, required=live),
+        _item("allowlist", "AIS host is the permitted destination", "configuration",
+              (not live) or trust.host in allowed_hosts(trust),
+              (f"{trust.host}: the saved AIS address" if trust.host in allowed_hosts(trust)
+               else f"{trust.host} is outside the destinations the server operator allows") if live else na,
+              required=live),
         _item("tls_verified", "Endpoint reached from the backend over verified TLS", "machine_verified",
               reach.state == "ok" and (not live or "verified TLS" in reach.detail), reach.detail or "not checked yet"),
     ]
@@ -544,12 +581,26 @@ def view(company_id: str) -> JdeProfileView:
         disabled=bool(profile["disabled"]), disabled_by=profile.get("disabled_by"),
         disabled_at=profile.get("disabled_at"), enable_blockers=enable_blockers(profile),
         mode_label=SIMULATION_LABEL if config.connection_mode == "simulation" else "LIVE customer AIS endpoint",
-        live_allowed_by_deployment=live_allowed_by_deployment(),
+        live_allowed_by_deployment=live_allowed_by_deployment(trust_for(company_id, config)),
         updated_at=profile["updated_at"], updated_by=profile["updated_by"],
-        prerequisites=prerequisites(profile), server_prerequisites=server_prerequisites(config),
+        prerequisites=prerequisites(profile), server_prerequisites=server_prerequisites(config, company_id),
+        certificate=_certificate_view(company_id, config), credential_bound=credential_bound(profile),
         readiness=readiness(profile)[0], ready=readiness(profile)[1],
         **_static_view_parts(config),
     )
+
+
+def _certificate_view(company_id: str, config: JdeProfileConfig) -> Optional[dict]:
+    from urllib.parse import urlparse
+
+    from . import certificates
+
+    if not config.ca_certificate_sha256:
+        return None
+    summary = certificates.get_summary(company_id, config.ca_certificate_sha256)
+    if summary is None:
+        return {"sha256": config.ca_certificate_sha256, "missing": True}
+    return {**summary, "coversHost": certificates.covers_host(summary, (urlparse(config.ais_base_url).hostname or ""))}
 
 
 def _static_view_parts(config: Optional[JdeProfileConfig]) -> dict:

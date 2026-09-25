@@ -91,12 +91,13 @@ async def _lifespan(app: FastAPI):
     ensure_schema()
     from .discovery import transport as _jde_transport
 
-    if os.environ.get(_jde_transport.LIVE_ENABLED_ENV, "").strip().lower() == "true":
+    if _jde_transport.server_lock():
+        logger.info("Live JDE discovery is locked off on this server (%s=false)", _jde_transport.LIVE_ENABLED_ENV)
+    elif os.environ.get(_jde_transport.CA_BUNDLE_ENV, "").strip():
         _ok, _detail = _jde_transport.tls_trust()
-        if _ok:
-            logger.info("Live JDE discovery enabled; TLS trust: %s", _detail)
-        else:
-            logger.error("Live JDE discovery is held OFF: %s", _detail)
+        if not _ok:
+            logger.error("The server-level JDE CA bundle is unusable (connections without an uploaded certificate "
+                         "stay off): %s", _detail)
     interrupted = reconcile_interrupted_runs()
     if any(interrupted.values()):
         logger.warning("Marked runs interrupted by the restart as failed: %s", interrupted)

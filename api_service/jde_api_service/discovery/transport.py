@@ -9,10 +9,11 @@ simulation of one.
     Chosen ONLY when the profile's connection_mode is "simulation"; every
     result it produces is labelled SIMULATION.
   * LiveAisTransport: httpx with TLS verification, no redirects, a short
-    timeout and a deployment-controlled destination allowlist. Chosen only
-    when the profile says "live" AND the deployment enables live discovery
-    (JDE_DISCOVERY_LIVE_ENABLED=true) AND the host is in
-    JDE_DISCOVERY_ALLOWED_HOSTS. There is no fallback in either direction:
+    timeout and exactly one permitted destination: the host of the saved AIS
+    address. Its trust (see Trust) comes from the company's connection
+    settings in Jade. The server operator can still lock live discovery off
+    (JDE_DISCOVERY_LIVE_ENABLED=false) or narrow destinations
+    (JDE_DISCOVERY_ALLOWED_HOSTS). There is no fallback in either direction:
     a live profile that cannot connect fails; it never quietly simulates.
 
 Both only accept a ReadPlan that has passed capabilities.assert_read_semantics,
@@ -46,9 +47,8 @@ from jde_mcp_server import sim_estate  # noqa: E402
 DEFAULTCONFIG_KEYS = ("aisVersion", "defaultEnvironment", "defaultRole", "defaultJasServer")
 LIVE_ENABLED_ENV = "JDE_DISCOVERY_LIVE_ENABLED"
 ALLOWED_HOSTS_ENV = "JDE_DISCOVERY_ALLOWED_HOSTS"
-# Optional PEM bundle of CA certificates the backend trusts for the AIS
-# endpoint (a customer's private CA). Server-managed; never browser-editable.
-# Verification itself is never switched off.
+# Optional server-level PEM bundle, used only when the connection settings
+# carry no uploaded certificate. Verification itself is never switched off.
 CA_BUNDLE_ENV = "JDE_DISCOVERY_CA_BUNDLE"
 SIMULATION_LABEL = "SIMULATION -- simulated AIS endpoint, not the customer's JDE"
 
@@ -109,37 +109,73 @@ class ReadResult:
         return hashlib.sha256(blob.encode()).hexdigest()
 
 
-def live_allowed_by_deployment() -> bool:
-    """Live discovery is on only when the deployment enables it AND its TLS
-    trust is usable. A configured CA bundle that is missing, unreadable or
-    not a certificate keeps live discovery OFF -- there is never a fallback
-    to unverified TLS."""
-    if os.environ.get(LIVE_ENABLED_ENV, "").strip().lower() != "true":
-        return False
-    return tls_trust()[0]
+@dataclass(frozen=True)
+class Trust:
+    """A company's connection trust, configured by its Admin in Jade: the
+    host of the saved AIS address and, optionally, the AIS server's
+    certificate (or its CA) uploaded in the settings. An uploaded
+    certificate only lets Jade verify that server; certificate and
+    host-name/IP verification are never switched off."""
+
+    host: str = ""
+    ca_pem: str = ""
+    ca_sha256: str = ""
+    ca_missing: bool = False  # the settings name a certificate that is not stored
 
 
-def live_status_detail() -> str:
-    if os.environ.get(LIVE_ENABLED_ENV, "").strip().lower() != "true":
-        return f"live discovery is switched off for this deployment ({LIVE_ENABLED_ENV} is not true)"
-    ok, detail = tls_trust()
-    return "enabled" if ok else f"live discovery is held OFF because TLS trust is unusable: {detail}"
+def server_lock() -> bool:
+    """The server operator can still lock live discovery off for the whole
+    deployment (JDE_DISCOVERY_LIVE_ENABLED=false). Otherwise the company's
+    own connection settings decide."""
+    return os.environ.get(LIVE_ENABLED_ENV, "").strip().lower() == "false"
 
 
-def tls_context() -> ssl.SSLContext:
+def live_allowed_by_deployment(trust: Optional[Trust] = None) -> bool:
+    """Live discovery is available unless the server operator has locked it
+    off, and only while its TLS trust is usable. A certificate that is
+    missing or unusable keeps live discovery OFF -- there is never a
+    fallback to unverified TLS."""
+    return not server_lock() and tls_trust(trust)[0]
+
+
+def live_status_detail(trust: Optional[Trust] = None) -> str:
+    if server_lock():
+        return f"live discovery is locked off on this server by its operator ({LIVE_ENABLED_ENV}=false)"
+    ok, detail = tls_trust(trust)
+    return "available" if ok else f"live discovery is held OFF because TLS trust is unusable: {detail}"
+
+
+def tls_context(trust: Optional[Trust] = None) -> ssl.SSLContext:
     """The one TLS configuration every live AIS request uses (token request,
-    server defaults, reads, logout). With JDE_DISCOVERY_CA_BUNDLE it trusts
-    that bundle ONLY; certificate and hostname/IP checks stay on. Raises if
-    the bundle cannot be loaded."""
+    server defaults, reads, logout). A certificate uploaded in the settings,
+    else the server's JDE_DISCOVERY_CA_BUNDLE, is trusted ONLY; otherwise the
+    public trust store. Certificate and hostname/IP checks stay on. Raises
+    if the trust cannot be loaded."""
+    if trust and trust.ca_missing:
+        raise FileNotFoundError("the certificate named in the settings is not stored")
     path = os.environ.get(CA_BUNDLE_ENV, "").strip()
-    ctx = ssl.create_default_context(cafile=path) if path else ssl.create_default_context()
+    if trust and trust.ca_pem:
+        ctx = ssl.create_default_context(cadata=trust.ca_pem)
+    elif path:
+        ctx = ssl.create_default_context(cafile=path)
+    else:
+        ctx = ssl.create_default_context()
     if ctx.verify_mode != ssl.CERT_REQUIRED or not ctx.check_hostname:  # defensive: never weaker than the default
         raise ssl.SSLError("TLS context is not verifying certificates and host names")
     return ctx
 
 
-def tls_trust() -> tuple[bool, str]:
+def tls_trust(trust: Optional[Trust] = None) -> tuple[bool, str]:
     """(usable, description) of the certificate trust the live transport uses."""
+    if trust and trust.ca_missing:
+        return False, "the certificate selected in the settings is not stored on the server; upload it again"
+    if trust and trust.ca_pem:
+        try:
+            tls_context(trust)
+        except (ssl.SSLError, OSError, ValueError) as exc:
+            return False, f"the uploaded certificate is not usable ({type(exc).__name__})"
+        return True, (f"only the certificate uploaded in the settings (sha256 {trust.ca_sha256[:16]}...), with "
+                      "certificate and host-name/IP checks")
     path = os.environ.get(CA_BUNDLE_ENV, "").strip()
     try:
         tls_context()
@@ -150,7 +186,8 @@ def tls_trust() -> tuple[bool, str]:
     except (ssl.SSLError, OSError, ValueError) as exc:
         return False, f"{CA_BUNDLE_ENV} ({os.path.basename(path)}) is not a usable certificate bundle ({type(exc).__name__})"
     if not path:
-        return True, "the server's default public CA trust store, with certificate and host-name checks"
+        return True, ("the public CA trust store, with certificate and host-name checks (for a self-signed or "
+                      "private-CA AIS certificate, upload it in the connection settings)")
     return True, (f"only the CA bundle configured on the server ({os.path.basename(path)}), with certificate and "
                   "host-name/IP checks")
 
@@ -161,8 +198,8 @@ def diagnose(exc: Exception, host: str) -> str:
     text = str(exc)
     if "CERTIFICATE_VERIFY_FAILED" in text or "certificate verify failed" in text.lower():
         return (f"TLS: the backend does not trust the certificate presented by {host}. If the customer uses a "
-                f"private CA, the server administrator adds it with {CA_BUNDLE_ENV}; verification is never "
-                "switched off")
+                "self-signed or private-CA certificate, upload the AIS certificate (or its CA) in the connection "
+                "settings; verification is never switched off")
     if "hostname" in text.lower() and "match" in text.lower():
         return f"TLS: the certificate presented does not match the host name {host}"
     if isinstance(exc, httpx.ConnectTimeout) or isinstance(exc, httpx.ReadTimeout):
@@ -177,8 +214,18 @@ def diagnose(exc: Exception, host: str) -> str:
     return f"{type(exc).__name__} contacting the AIS endpoint"
 
 
-def allowed_hosts() -> set[str]:
+def server_allowed_hosts() -> set[str]:
+    """An optional server-operator narrowing of destinations."""
     return {h.strip().lower() for h in os.environ.get(ALLOWED_HOSTS_ENV, "").split(",") if h.strip()}
+
+
+def allowed_hosts(trust: Optional[Trust] = None) -> set[str]:
+    """Permitted destinations: the operator's list when one is set on the
+    server, otherwise exactly the host of the company's saved AIS address."""
+    server = server_allowed_hosts()
+    if server:
+        return server
+    return {trust.host} if trust and trust.host else set()
 
 
 # ---------------------------------------------------------------------
@@ -316,26 +363,26 @@ class LiveAisTransport:
     label = "LIVE -- customer AIS endpoint"
 
     def __init__(self, company_id: str, base_url: str, timeout_seconds: int,
-                 *, transport: Optional[httpx.BaseTransport] = None) -> None:
-        if not live_allowed_by_deployment():
-            raise DestinationNotAllowed(live_status_detail())
+                 *, transport: Optional[httpx.BaseTransport] = None, trust: Optional[Trust] = None) -> None:
+        if not live_allowed_by_deployment(trust):
+            raise DestinationNotAllowed(live_status_detail(trust))
         host = (urlparse(base_url).hostname or "").lower()
         if urlparse(base_url).scheme != "https":
             raise DestinationNotAllowed("live discovery only uses https")
-        if host not in allowed_hosts():
+        if host not in allowed_hosts(trust):
             raise DestinationNotAllowed(
-                f"{host} is not in this deployment's discovery destination allowlist ({ALLOWED_HOSTS_ENV})"
+                f"{host} is not a permitted destination (the server operator limits destinations with {ALLOWED_HOSTS_ENV})"
             )
         self.company_id = company_id
         self.base_url = base_url
-        trust_ok, trust_detail = tls_trust()
+        trust_ok, trust_detail = tls_trust(trust)
         if not trust_ok:
-            raise DestinationNotAllowed(f"TLS trust is misconfigured on the server: {trust_detail}")
+            raise DestinationNotAllowed(f"TLS trust is not usable: {trust_detail}")
         self.host = host
         self.tls_detail = trust_detail
         # ONE client, ONE verifying TLS context, for every request of this transport.
         self._client = httpx.Client(
-            verify=tls_context(), follow_redirects=False, timeout=httpx.Timeout(timeout_seconds), transport=transport,
+            verify=tls_context(trust), follow_redirects=False, timeout=httpx.Timeout(timeout_seconds), transport=transport,
         )
 
     def _send(self, method: str, path: str, *, token: Optional[str] = None,
@@ -411,7 +458,8 @@ class LiveAisTransport:
                                                             "shape": "unverified"})
 
 
-def transport_for(company_id: str, config, *, live_transport: Optional[httpx.BaseTransport] = None):
+def transport_for(company_id: str, config, *, live_transport: Optional[httpx.BaseTransport] = None,
+                  trust: Optional[Trust] = None):
     """The transport the profile asks for -- never a substitute."""
     if config.connection_mode == "simulation":
         from ..services.customer_service import is_demo_company
@@ -422,4 +470,5 @@ def transport_for(company_id: str, config, *, live_transport: Optional[httpx.Bas
                 "and enter the customer's real AIS address"
             )
         return SimulatedAisEndpoint(company_id, config.environment)
-    return LiveAisTransport(company_id, config.ais_base_url, config.limits.timeout_seconds, transport=live_transport)
+    return LiveAisTransport(company_id, config.ais_base_url, config.limits.timeout_seconds, transport=live_transport,
+                            trust=trust)

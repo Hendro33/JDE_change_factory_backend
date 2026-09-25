@@ -61,6 +61,11 @@ def save_profile(payload: JdeProfileUpdate, ctx: AuthContext = Depends(require_r
     if config.connection_mode == "simulation" and not is_demo_company(ctx.customer_id):
         raise HTTPException(status_code=422, detail="Simulation is only available for demo customers. Use Live with "
                                                     "the customer's real AIS address.")
+    if config.ca_certificate_sha256:
+        from ..discovery import certificates
+
+        if certificates.get(ctx.customer_id, config.ca_certificate_sha256) is None:
+            raise HTTPException(status_code=422, detail="the selected AIS certificate is not one uploaded for this company")
     for ref in (*config.evidence_artifact_ids, *config.dedicated_account.evidence_artifact_ids,
                 *config.network_restriction.evidence_artifact_ids):  # this company's own documents only
         a = artifacts.get(ctx.customer_id, ref.partition("@r")[0])
@@ -72,6 +77,23 @@ def save_profile(payload: JdeProfileUpdate, ctx: AuthContext = Depends(require_r
     if before is not None and before["material_hash"] != saved["material_hash"]:
         baseline.on_profile_saved(ctx.customer_id, saved)
     return profile_service.view(ctx.customer_id)
+
+
+class CertificateUpload(ApiModel):
+    pem: str
+
+
+@router.post("/admin/jde/certificates", status_code=201)
+def upload_certificate(payload: CertificateUpload, ctx: AuthContext = Depends(require_role("admin"))) -> dict:
+    """Store the AIS server certificate (or its CA) for this company and
+    return what it contains. Selecting it in the settings is a separate Save.
+    It only adds trust for this connection; a private key is refused."""
+    from ..discovery import certificates
+
+    try:
+        return certificates.store(ctx.customer_id, payload.pem, ctx.identity.display_name)
+    except certificates.InvalidCertificate as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
 
 
 @router.put("/admin/jde/credential", response_model=JdeProfileView)
