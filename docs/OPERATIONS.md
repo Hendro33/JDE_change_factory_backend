@@ -143,6 +143,16 @@ All of it is covered by the backup script.
 |---|---|
 | `JDE_DISCOVERY_LIVE_ENABLED` | `true` allows profiles in *live* mode. Unset means only the labelled simulation works. |
 | `JDE_DISCOVERY_ALLOWED_HOSTS` | Comma-separated AIS host names a live profile may use. Anything else is refused before a connection is opened. |
+| `JDE_DISCOVERY_CA_BUNDLE` | Optional PEM file trusted for the AIS certificate. It is used for every AIS request: sign-in, defaultconfig, reads and sign-out. Hostname or IP checks stay on. If the file is missing, unreadable or unusable, live access stays off and the startup log says why. There is never a fallback to unverified TLS. |
+
+**Readiness.** A live profile can be enabled only when every required item in five separately shown groups is satisfied:
+- **Connectivity:** live enabled, TLS trust usable, host allowlisted, endpoint reached over verified TLS.
+- **Identity:** signed in, and the session's environment, role, application release and Tools / server release captured. Environment names are compared exactly and never aliased (`JPS920` is not `PS920`). A `*ALL` role proves only that sign-in works. The path code comes only from JDE's F00941 answer, never from the environment name.
+- **JDE authorisation:** a dedicated user and non-`*ALL` role, verified independently with a linked evidence document, and the approved sample read succeeding within its bounds. The customer's JDE permissions are the primary boundary; Jade's approved reads are an extra restriction.
+- **Network restriction:** AIS accepts only the backend's source address, with evidence.
+- **Jade runtime safeguards:** writes simulated, approved reads defined, window open, credential encrypted, not disabled.
+
+Passing TLS, sign-in or the attestations alone never makes a connection ready. Sample reads are built on the server from the approved read; the browser can preview the exact request (method, URL, body, sha256) but never supplies an endpoint or query.
 
 A live profile never falls back to the simulation, and the simulation never pretends to be live.
 

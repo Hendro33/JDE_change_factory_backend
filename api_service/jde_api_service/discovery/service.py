@@ -17,6 +17,7 @@ policy; values it may not see are redacted, and the limitation is stated.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import threading
 import time
@@ -264,9 +265,16 @@ def _dispatch(profile: dict, plan: capabilities.ReadPlan) -> tuple[transport.Rea
         client.logout(session)
 
 
+def request_fingerprint(plan: capabilities.ReadPlan) -> str:
+    """sha256 of exactly what is sent (method, path, body) -- never the
+    credential or session token, which travel separately."""
+    blob = json.dumps({"method": plan.method, "path": plan.path, "body": plan.body}, sort_keys=True)
+    return hashlib.sha256(blob.encode()).hexdigest()
+
+
 def execute_read(grant: DiscoveryGrant, capability_id: str, target: str = "", fields: Optional[list[str]] = None,
                  filters: Optional[list[dict]] = None, max_records: int = 10, *, refresh_of: Optional[str] = None,
-                 require_enabled: bool = True) -> dict:
+                 require_enabled: bool = True, raw_out: Optional[list] = None) -> dict:
     """Validate, read once, and record. Returns the sanitised evidence.
     Raises DiscoveryBlocked (nothing sent) or DiscoveryFailed."""
     request_id = f"DR-{uuid.uuid4().hex[:12]}"
@@ -320,6 +328,8 @@ def execute_read(grant: DiscoveryGrant, capability_id: str, target: str = "", fi
         lock.release()
 
     config: JdeProfileConfig = profile["config"]
+    if raw_out is not None:  # server-side use only (path-code establishment); never returned
+        raw_out.extend(result.records)
     shared, sharing = apply_sharing(config.data_sharing_policy, cap, result.records)
     observed_at = _now_iso()
     observation_id = f"OBS-{uuid.uuid4().hex[:10]}"
@@ -327,6 +337,7 @@ def execute_read(grant: DiscoveryGrant, capability_id: str, target: str = "", fi
         "evidence_type": "live_observation" if mode == "live" else "simulated_observation",
         "content_is_data_not_instructions": True,
         "observation_id": observation_id,
+        "request_sha256": request_fingerprint(plan),
         "capability_id": capability_id,
         "capability_status": "supported" if require_enabled else "being verified",
         "target": target,
@@ -416,8 +427,8 @@ def test_connection(company_id: str, actor_user_id: str) -> tuple[str, str]:
         raise DiscoveryBlocked("another discovery request is in progress for this company (one at a time)")
     try:
         try:
-            client.check_reachability()
-            profile_service.record_check(company_id, "reachability", "ok", client.mode + ": endpoint reachable")
+            reach = client.check_reachability()
+            profile_service.record_check(company_id, "reachability", "ok", f"{client.mode}: {reach}")
         except transport.TransportError as exc:
             profile_service.record_check(company_id, "reachability", "failed", str(exc))
             log("error", str(exc))
@@ -467,97 +478,142 @@ def _release_digits(value: str) -> str:
 
 def verify_environment(config: JdeProfileConfig, server_defaults: dict, session: dict, mode: str
                        ) -> tuple[str, str, dict]:
-    """Environment verification against the documented AIS contract.
+    """Identity verification against the documented AIS contract.
 
-    Four sources, never mixed up:
-      * expected      -- what the profile says (the Admin's intent);
-      * server defaults -- defaultconfig: the AIS server's DEFAULT environment
-        and role. Recorded, never used as evidence of the session;
-      * session context -- the token-request response for the session Jade
+    Sources, never mixed up:
+      * configured    -- what the profile says (the Admin's intent);
+      * session       -- the token-request response for the session Jade
         opened with an explicit environment and role: environment, role,
         jasserver, userInfo.appsRelease;
-      * attested -- what the contract does not expose (Tools release, path
-        code, OCM data-source routing and isolation): the customer/CNC
-        statement recorded in the profile. Jade cannot verify it.
-    Anything the session does not state stays unverified and discovery
-    stays blocked, with the missing evidence named."""
+      * server level  -- defaultconfig: the AIS server's DEFAULT environment
+        and role (recorded, never evidence of the session) and the release
+        the server reports;
+      * JDE data      -- the path code, only from the environment master
+        (F00941) through an approved read; never from the environment name;
+      * attested      -- what AIS cannot show (OCM routing and isolation).
+    Names are compared exactly: JPS920 and PS920 are different until JDE
+    evidence says otherwise, and a difference is shown, never corrected."""
     items, missing, mismatch = [], [], []
+    live = mode == "live"
 
-    def item(name: str, status: str, source: str, detail: str) -> None:
-        items.append({"item": name, "status": status, "source": source, "detail": detail})
+    def item(name: str, status: str, source: str, detail: str, configured=None, reported=None) -> None:
+        items.append({"item": name, "status": status, "source": source, "detail": detail,
+                      "configured": configured, "reported": reported})
         if status == "missing":
             missing.append(f"{name}: {detail}")
         elif status == "mismatch":
             mismatch.append(f"{name}: {detail}")
 
-    for key, label, expected in (("environment", "session environment", config.environment),
-                                 ("role", "session role", config.role)):
-        reported = session.get(key)
-        if reported is None:
-            item(label, "missing", "AIS token response",
-                 f"the token-request response did not state the session's {key}; it cannot be verified")
-        elif str(reported) != expected:
-            item(label, "mismatch", "AIS token response", f"expected {expected!r}, session reports {reported!r}")
-        else:
-            item(label, "verified", "AIS token response", f"session reports {reported!r}")
+    env = session.get("environment")
+    if env is None:
+        item("session environment", "missing", "AIS token response",
+             "the token-request response did not state the session's environment; it cannot be verified",
+             config.environment, None)
+    elif str(env) != config.environment:
+        item("session environment", "mismatch", "AIS token response",
+             f"configured {config.environment!r}, the authenticated session reports {env!r}. Jade does not alias or "
+             "substitute environment names: this stays blocked until JDE evidence establishes which environment is "
+             "meant and the configuration is corrected by an Admin", config.environment, env)
+    else:
+        item("session environment", "verified", "AIS token response", f"session reports {env!r}", config.environment, env)
+    role = session.get("role")
+    if role is None:
+        item("session role", "missing", "AIS token response", "the token-request response did not state the session's role",
+             config.role, None)
+    elif str(role).strip().upper() in {"*ALL", "ALL", "*"}:
+        item("session role", "mismatch", "AIS token response",
+             f"the session runs with role {role!r}, which is not acceptable for Jade discovery: a dedicated, restricted "
+             "role is required. Authentication works, but the connection is not ready", config.role, role)
+    elif str(role) != config.role:
+        item("session role", "mismatch", "AIS token response", f"configured {config.role!r}, session reports {role!r}",
+             config.role, role)
+    else:
+        item("session role", "verified", "AIS token response", f"session reports {role!r}", config.role, role)
     apps = session.get("apps_release")
     exp_digits, got_digits = _release_digits(config.expected_application_release), _release_digits(apps or "")
     if apps is None:
         item("application release", "missing", "AIS token response (userInfo.appsRelease)",
-             "userInfo.appsRelease was not returned; the application release cannot be verified")
+             "userInfo.appsRelease was not returned; the application release cannot be verified",
+             config.expected_application_release, None)
     elif not (got_digits.startswith(exp_digits) or exp_digits.startswith(got_digits)):
         item("application release", "mismatch", "AIS token response (userInfo.appsRelease)",
-             f"expected {config.expected_application_release!r}, session reports {apps!r}")
+             f"expected {config.expected_application_release!r}, session reports {apps!r}", config.expected_application_release, apps)
     else:
-        item("application release", "verified", "AIS token response (userInfo.appsRelease)", f"session reports {apps!r}")
+        item("application release", "verified", "AIS token response (userInfo.appsRelease)", f"session reports {apps!r}",
+             config.expected_application_release, apps)
     attested = config.runtime_attestation_confirmed and bool(config.runtime_attestation_evidence.strip())
-    for label, value in (("Tools release", config.expected_tools_release), ("path code", config.path_code)):
-        item(label, "attested" if attested else "missing", "customer/CNC attestation (not exposed by AIS)",
-             f"{value!r}: {config.runtime_attestation_evidence.strip()}" if attested else
-             f"no documented AIS response states the {label}; a CNC attestation is required")
+    release_keys = {k: v for k, v in server_defaults.items() if k not in DEFAULT_IDENTITY_KEYS and k != "used_as_evidence"}
+    if live:
+        exp = _release_digits(config.expected_tools_release)
+        matching = {k: v for k, v in release_keys.items() if exp and _release_digits(str(v)).startswith(exp)}
+        if matching:
+            k, v = next(iter(matching.items()))
+            item("Tools / server release", "verified", f"AIS server defaults ({k}; server level, not the session)",
+                 f"server reports {v!r}", config.expected_tools_release, v)
+        elif release_keys:
+            item("Tools / server release", "mismatch", "AIS server defaults (server level)",
+                 f"expected {config.expected_tools_release!r}, server reports "
+                 + ", ".join(f"{k} {v!r}" for k, v in release_keys.items()), config.expected_tools_release, release_keys)
+        else:
+            item("Tools / server release", "missing", "AIS server defaults",
+                 "the server did not report a release", config.expected_tools_release, None)
+        item("path code", "pending", "JDE environment master (F00941) through an approved read",
+             "not established yet: AIS does not report the path code, and Jade never derives it from the environment "
+             "name. It is established by an approved read of F00941 for the session environment"
+             + (f" (CNC statement recorded, not accepted as proof: {config.runtime_attestation_evidence.strip()})" if attested else ""),
+             config.path_code or None, None)
+    else:
+        for label, value in (("Tools / server release", config.expected_tools_release), ("path code", config.path_code)):
+            item(label, "attested" if attested else "missing", "customer/CNC attestation (SIMULATION)",
+                 f"{value!r}: {config.runtime_attestation_evidence.strip()}" if attested else
+                 f"no attestation of the {label}", value, None)
     routing = config.routing_isolation_confirmed and bool(config.isolation_evidence.strip())
     item("OCM data-source routing and isolation", "attested" if routing else "missing",
          "customer/CNC attestation (not observable through AIS)",
          config.isolation_evidence.strip() if routing else "no customer/CNC attestation of OCM routing and isolation")
-    default_env = server_defaults.get("defaultEnvironment")
     notes = ["defaultconfig describes server defaults only; it is recorded but never used as evidence of the session"]
+    default_env, default_role = server_defaults.get("defaultEnvironment"), server_defaults.get("defaultRole")
     if default_env and default_env != config.environment:
-        notes.append(f"the server's default environment is {default_env!r}; Jade always requests "
-                     f"{config.environment!r} explicitly and verifies it from the session response")
+        notes.append(f"the server's default environment is {default_env!r} and the configured environment is "
+                     f"{config.environment!r}; Jade always requests {config.environment!r} explicitly and compares it "
+                     "exactly with what the session reports")
+    if default_role and str(default_role).upper() == "*ALL":
+        notes.append("the server's default role is *ALL; Jade always requests the configured dedicated role explicitly")
     facets = {
-        "expected": {"environment": config.environment, "role": config.role,
-                     "application_release": config.expected_application_release,
-                     "tools_release": config.expected_tools_release, "path_code": config.path_code},
-        "server_defaults": {**server_defaults, "used_as_evidence": False},
+        "configured": {"environment": config.environment, "role": config.role,
+                       "application_release": config.expected_application_release,
+                       "tools_release": config.expected_tools_release, "path_code": config.path_code or None},
         "session_context": {**session, "source": "AIS v2 token-request response"},
+        "server_defaults": {**server_defaults, "used_as_evidence": False},
         "attested": {"runtime": config.runtime_attestation_evidence.strip() if attested else None,
                      "ocm_routing_isolation": config.isolation_evidence.strip() if routing else None},
         "items": items, "missing_evidence": missing, "notes": notes,
         "mode": mode, "contract_basis": "Oracle AIS REST API v2 tokenrequest and defaultconfig (documented fields); "
                                         "response shapes to be confirmed against the customer's release",
     }
+    facets["expected"] = facets["configured"]  # earlier readers
     if mismatch:
-        return "failed", "environment does not match: " + "; ".join(mismatch), facets
+        return "failed", "identity does not match: " + "; ".join(mismatch), facets
     if missing:
-        return "unknown", "environment not verifiable -- missing evidence: " + "; ".join(missing), facets
+        return "unknown", "identity not verifiable -- missing evidence: " + "; ".join(missing), facets
     verified = [i["item"] for i in items if i["status"] == "verified"]
     attested_items = [i["item"] for i in items if i["status"] == "attested"]
-    return "ok", (f"{mode}: verified from the session response: {', '.join(verified)}; "
-                  f"customer-attested: {', '.join(attested_items)}"), facets
+    return "ok", (f"{mode}: verified: {', '.join(verified)}"
+                  + (f"; customer-attested: {', '.join(attested_items)}" if attested_items else "")), facets
 
 
-def sample_read(company_id: str, actor_user_id: str, capability_id: str, *, target: Optional[str] = None,
-                fields: Optional[list[str]] = None, filters: Optional[list[dict]] = None, max_records: int = 1) -> dict:
-    """Run ONE approved read on ONE explicitly selected approved target,
-    bounded by the approved fields, filters and record limit, to confirm the
-    capability works against this endpoint. Success makes the capability
-    'supported' for this profile revision."""
-    profile = profile_service.load(company_id)
-    if profile is None:
-        raise DiscoveryBlocked("save a discovery profile first")
-    h = profile_service.health(profile)
-    if any(h[c].state != "ok" for c in ("reachability", "authentication", "environment")):
-        raise DiscoveryBlocked("run Test Connection successfully for this profile revision first")
+DEFAULT_IDENTITY_KEYS = {"defaultEnvironment", "defaultRole", "defaultJasServer"}
+
+
+PATH_CODE_TABLE, PATH_CODE_ENV_FIELD, PATH_CODE_FIELD = "F00941", "EMENHV", "EMPATHCD"
+
+
+def _bound_sample(profile: dict, capability_id: str, target: Optional[str], fields: Optional[list[str]],
+                  filters: Optional[list[dict]], max_records: int) -> tuple:
+    """The one request a sample read may send: the approved capability, one
+    approved target, EXACTLY the approved columns, approved filters and at
+    most the profile's record limit. Nothing about the AIS endpoint or the
+    request body comes from the browser."""
     read = _approved_read(profile["config"], capability_id)
     if read is None:
         raise DiscoveryBlocked(f"{capability_id} is not an approved read")
@@ -566,10 +622,63 @@ def sample_read(company_id: str, actor_user_id: str, capability_id: str, *, targ
         target = read.targets[0] if read.targets else ""
     if cap is not None and cap.target_kind != "none" and not target:
         raise DiscoveryBlocked(f"select one of the approved targets for {capability_id}")
+    approved = list(read.fields) or list(cap.fixed_fields if cap else [])
+    if fields and list(fields) != approved:
+        raise DiscoveryBlocked(f"a sample read returns exactly the approved columns ({', '.join(approved)})")
+    return read, cap, target, approved, list(filters or []), max_records
+
+
+def sample_read_preview(company_id: str, capability_id: str, *, target: Optional[str] = None,
+                        fields: Optional[list[str]] = None, filters: Optional[list[dict]] = None,
+                        max_records: int = 1) -> dict:
+    """Exactly what Run Approved Sample Read would send -- computed, never sent."""
+    profile = profile_service.load(company_id)
+    if profile is None:
+        raise DiscoveryBlocked("save a discovery profile first")
+    _, _, target, approved, filters, max_records = _bound_sample(profile, capability_id, target, fields, filters, max_records)
+    grant = admin_grant(company_id, "preview", "sample_read_preview")
+    _, cap, approved, max_records = validate(grant, capability_id, target, approved, filters, max_records, require_enabled=False)
+    plan = capabilities.build_plan(cap, target, approved, filters, max_records, environment=profile["config"].environment)
+    capabilities.assert_read_semantics(plan)
+    return {"capability_id": capability_id, "target": target, "fields": approved, "filters": filters,
+            "max_records": max_records, "method": plan.method, "path": plan.path,
+            "url": profile["config"].ais_base_url + plan.path, "body": plan.body,
+            "request_sha256": request_fingerprint(plan), "mode": profile["config"].connection_mode,
+            "note": "Computed only; nothing was sent. The session token is added at send time and never shown."}
+
+
+def sample_read(company_id: str, actor_user_id: str, capability_id: str, *, target: Optional[str] = None,
+                fields: Optional[list[str]] = None, filters: Optional[list[dict]] = None, max_records: int = 1) -> dict:
+    """Run ONE approved read on ONE explicitly selected approved target,
+    bounded by the approved columns, filters and record limit, to confirm the
+    capability works against this endpoint. Separate from Test Connection.
+    Success makes the capability 'supported' for this profile revision. An
+    approved read of the environment master (F00941) also establishes the
+    session environment's path code from JDE itself."""
+    profile = profile_service.load(company_id)
+    if profile is None:
+        raise DiscoveryBlocked("save a discovery profile first")
+    h = profile_service.health(profile)
+    if any(h[c].state != "ok" for c in ("reachability", "authentication")):
+        raise DiscoveryBlocked("run Test Connection successfully for this profile revision first")
+    _, cap, target, approved, filters, max_records = _bound_sample(profile, capability_id, target, fields, filters, max_records)
+    items = {i["item"]: i for i in (h["environment"].facets or {}).get("items", [])}
+    if (items.get("session role") or {}).get("status") != "verified":
+        raise DiscoveryBlocked("the session role is not verified as the configured dedicated role (a *ALL or "
+                               "mismatched role never reads); fix the JDE account and run Test Connection again")
+    environment_master = capability_id == "table_browse" and target == PATH_CODE_TABLE
+    if h["environment"].state != "ok" and not (
+            environment_master and all(i["status"] in ("verified", "attested", "pending") or n == "session environment"
+                                       for n, i in items.items())):
+        raise DiscoveryBlocked("identity is not verified for this profile revision: " + (h["environment"].detail or "")
+                               + (" -- only the approved environment-master (F00941) read may run to establish it"
+                                  if environment_master or items.get("session environment", {}).get("status") == "mismatch"
+                                  else ""))
     grant = admin_grant(company_id, actor_user_id, "sample_read")
+    raw: list = []
     try:
-        evidence = execute_read(grant, capability_id, target, list(fields or read.fields), list(filters or []),
-                                max_records, require_enabled=False)
+        evidence = execute_read(grant, capability_id, target, approved, filters, max_records, require_enabled=False,
+                                raw_out=raw)
     except (DiscoveryBlocked, DiscoveryFailed) as exc:
         profile_service.record_check(company_id, "approved_read", "failed", f"{capability_id}: {exc}",
                                      capability_id=capability_id)
@@ -577,7 +686,36 @@ def sample_read(company_id: str, actor_user_id: str, capability_id: str, *, targ
     profile_service.record_check(company_id, "approved_read", "ok",
                                  f"{capability_id} on {target or 'environment'}: {evidence['record_count']} record(s)",
                                  capability_id=capability_id)
+    if (capability_id == "table_browse" and target == PATH_CODE_TABLE
+            and {PATH_CODE_ENV_FIELD, PATH_CODE_FIELD} <= set(approved)):
+        _record_path_code(company_id, profile, raw, evidence["observation_id"])
     return evidence
+
+
+def _record_path_code(company_id: str, profile: dict, rows: list[dict], observation_id: str) -> None:
+    session_env = ((profile_service.health(profile)["environment"].facets or {}).get("session_context") or {}).get("environment")
+    config: JdeProfileConfig = profile["config"]
+    if not session_env:
+        profile_service.record_check(company_id, "path_code", "unknown",
+                                     "the session environment is not known yet; run Test Connection first")
+        return
+    match = [r for r in rows if str(r.get(PATH_CODE_ENV_FIELD, "")).strip() == session_env]
+    if not match:
+        profile_service.record_check(company_id, "path_code", "failed",
+                                     f"F00941 returned no row for the session environment {session_env!r}",
+                                     facets={"observation_id": observation_id})
+        return
+    path_code = str(match[0].get(PATH_CODE_FIELD, "")).strip()
+    facets = {"environment": session_env, "path_code": path_code, "observation_id": observation_id,
+              "source": "JDE environment master F00941 (approved read)"}
+    if config.path_code and config.path_code != path_code:
+        profile_service.record_check(company_id, "path_code", "failed",
+                                     f"JDE reports path code {path_code!r} for {session_env!r}; the profile expects "
+                                     f"{config.path_code!r}. Not corrected automatically", facets=facets)
+    else:
+        profile_service.record_check(company_id, "path_code", "ok",
+                                     f"JDE reports path code {path_code!r} for environment {session_env!r} "
+                                     f"({observation_id})", facets=facets)
 
 
 def grant_for_story(story_id: str, company_id: str, *, agent_run_id: Optional[str], actor_user_id: Optional[str],

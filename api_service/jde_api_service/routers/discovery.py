@@ -56,7 +56,8 @@ def save_profile(payload: JdeProfileUpdate, ctx: AuthContext = Depends(require_r
     """Stores a new revision. Does not contact JDE. A material change
     switches discovery off until re-verified and re-enabled."""
     config = JdeProfileConfig.model_validate(payload.model_dump(exclude={"expected_revision"}))
-    for ref in config.evidence_artifact_ids:  # this company's own reference documents only
+    for ref in (*config.evidence_artifact_ids, *config.dedicated_account.evidence_artifact_ids,
+                *config.network_restriction.evidence_artifact_ids):  # this company's own documents only
         a = artifacts.get(ctx.customer_id, ref.partition("@r")[0])
         if a is None:
             raise HTTPException(status_code=422, detail=f"evidence document {ref} is not a document of this company")
@@ -91,6 +92,18 @@ def test_connection(ctx: AuthContext = Depends(require_role("admin"))) -> Action
     except service.DiscoveryBlocked as exc:
         return _action(ctx.customer_id, "blocked", str(exc))
     return _action(ctx.customer_id, outcome, detail)
+
+
+@router.post("/admin/jde/sample-read/preview")
+def preview_sample_read(payload: SampleReadInput, ctx: AuthContext = Depends(require_role("admin"))) -> dict:
+    """The exact AIS request a sample read would send, built server-side from
+    the approved read. Nothing is sent to JDE."""
+    try:
+        return service.sample_read_preview(ctx.customer_id, payload.capability_id, target=payload.target,
+                                           fields=payload.fields, filters=payload.filters,
+                                           max_records=payload.max_records)
+    except service.DiscoveryBlocked as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
 
 
 @router.post("/admin/jde/sample-read", response_model=ActionResult)

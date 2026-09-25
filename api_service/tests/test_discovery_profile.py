@@ -210,7 +210,7 @@ def test_the_session_response_is_the_evidence_not_the_server_default(client):
     assert items["session environment"]["status"] == "verified"
     assert items["session environment"]["source"] == "AIS token response"
     assert items["application release"]["status"] == "verified"
-    assert {items["Tools release"]["status"], items["path code"]["status"],
+    assert {items["Tools / server release"]["status"], items["path code"]["status"],
             items["OCM data-source routing and isolation"]["status"]} == {"attested"}
     assert any("JPD920" in n for n in env["facets"]["notes"])
 
@@ -243,6 +243,6 @@ def test_without_a_cnc_attestation_tools_release_and_path_code_stay_unverified(c
     env = _env_check(client)
     assert env["state"] == "unknown"
     missing = " ".join(env["facets"]["missing_evidence"])
-    assert "Tools release" in missing and "path code" in missing
+    assert "Tools / server release" in missing and "path code" in missing
     view = client.get("/admin/jde/profile", headers=headers("vdb")).json()
     assert any("attested the Tools release and path code" in b for b in view["enableBlockers"])

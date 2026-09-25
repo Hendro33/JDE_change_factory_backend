@@ -89,6 +89,14 @@ async def _lifespan(app: FastAPI):
     _wire_execution_gate()
     # Schema first: recovery reads tables a fresh database only gets here.
     ensure_schema()
+    from .discovery import transport as _jde_transport
+
+    if os.environ.get(_jde_transport.LIVE_ENABLED_ENV, "").strip().lower() == "true":
+        _ok, _detail = _jde_transport.tls_trust()
+        if _ok:
+            logger.info("Live JDE discovery enabled; TLS trust: %s", _detail)
+        else:
+            logger.error("Live JDE discovery is held OFF: %s", _detail)
     interrupted = reconcile_interrupted_runs()
     if any(interrupted.values()):
         logger.warning("Marked runs interrupted by the restart as failed: %s", interrupted)

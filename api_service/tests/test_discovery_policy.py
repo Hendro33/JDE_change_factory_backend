@@ -320,7 +320,7 @@ def test_live_environment_that_ais_does_not_report_is_not_verified(client, monke
     def handler(request):
         if request.url.path.endswith("/tokenrequest"):
             return httpx.Response(200, json={"userInfo": {"token": "t"}})
-        return httpx.Response(200, json={"aisVersion": "x"})
+        return httpx.Response(200, json={"aisVersion": "9.2.8.2"})
 
     _live(client, monkeypatch, handler)
     r = client.post("/admin/jde/test-connection", headers=headers("vdb")).json()

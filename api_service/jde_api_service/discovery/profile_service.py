@@ -26,7 +26,7 @@ from ..persistence.revisions import next_revision
 from ..services import credential_crypto
 from . import capabilities
 from .models import CapabilityView, CheckResult, JdeProfileConfig, JdeProfileView
-from .transport import SIMULATION_LABEL, allowed_hosts, live_allowed_by_deployment
+from .transport import live_status_detail, SIMULATION_LABEL, allowed_hosts, live_allowed_by_deployment
 
 HEALTH_CHECKS = ("reachability", "authentication", "environment", "approved_read")
 _NON_MATERIAL = {"customer_contact", "cnc_contact", "connection_name"}
@@ -250,6 +250,14 @@ def enable_blockers(profile: dict) -> list[str]:
             out.append(f"{name.replace('_', ' ')} check is {h[name].state} for this revision")
     if profile["disabled"]:
         out.append("the connection is disabled; re-test it before enabling")
+    if config.connection_mode == "live":
+        groups, _ = readiness(profile)
+        for g in groups:
+            for i in g["items"]:
+                if i["required"] and not i["satisfied"]:
+                    text = f"{g['label']}: {i['label']} -- {i['detail']}"
+                    if text not in out:
+                        out.append(text)
     return out
 
 
@@ -320,13 +328,13 @@ def server_prerequisites(config: JdeProfileConfig) -> list[dict]:
     from urllib.parse import urlparse
 
     from ..services import credential_crypto
-    from .transport import ALLOWED_HOSTS_ENV, CA_BUNDLE_ENV, LIVE_ENABLED_ENV, tls_trust
+    from .transport import ALLOWED_HOSTS_ENV, CA_BUNDLE_ENV, live_status_detail, tls_trust
 
     host = (urlparse(config.ais_base_url).hostname or "").lower()
     trust_ok, trust_detail = tls_trust()
     return [
         {"id": "live_enabled", "label": "Live discovery enabled for this deployment", "satisfied": live_allowed_by_deployment(),
-         "detail": "enabled" if live_allowed_by_deployment() else f"server setting {LIVE_ENABLED_ENV}=true is not set"},
+         "detail": live_status_detail()},
         {"id": "allowlist", "label": f"AIS host {host} is a permitted destination", "satisfied": host in allowed_hosts(),
          "detail": "permitted" if host in allowed_hosts() else f"add {host} to the server setting {ALLOWED_HOSTS_ENV}"},
         {"id": "tls_trust", "label": "TLS certificate trust configured", "satisfied": trust_ok,
@@ -336,6 +344,141 @@ def server_prerequisites(config: JdeProfileConfig) -> list[dict]:
          "satisfied": credential_crypto.is_configured(),
          "detail": "configured" if credential_crypto.is_configured() else "JDE_CREDENTIAL_KEY is not set on the server"},
     ]
+
+
+def _item(pid, label, kind, ok, detail, required=True):
+    return {"id": pid, "label": label, "kind": kind, "satisfied": bool(ok), "detail": detail, "required": required}
+
+
+def _identity_items(profile: dict) -> dict:
+    return {i["item"]: i for i in ((health(profile)["environment"].facets or {}).get("items") or [])}
+
+
+def _account_problems(profile: dict) -> list[str]:
+    """Why the dedicated-account verification does not (yet) count."""
+    from . import artifacts
+
+    config: JdeProfileConfig = profile["config"]
+    acc = config.dedicated_account
+    problems = []
+    user = (profile.get("credential_username") or "").strip()
+    if not acc.username or acc.username.strip().upper() != user.upper():
+        problems.append(f"the verified user ({acc.username or 'none'}) is not the user Jade signs in with ({user or 'none'})")
+    if not acc.role or acc.role != config.role:
+        problems.append(f"the verified role ({acc.role or 'none'}) is not the configured role ({config.role})")
+    if not acc.verified_by.strip() or not acc.verified_on.strip() or not acc.method:
+        problems.append("who verified it, when and how is not recorded")
+    if not acc.permits_approved_reads or not acc.rejects_prohibited_operations:
+        problems.append("the verification does not confirm both that the approved reads are permitted and that "
+                        "prohibited operations are rejected by JDE")
+    docs = [a for a in acc.evidence_artifact_ids if artifacts.get(profile["company_id"], a.partition("@r")[0])]
+    if not docs:
+        problems.append("no evidence document is linked (a statement or a read-only label alone is not proof)")
+    return problems
+
+
+def readiness(profile: dict) -> tuple[list[dict], bool]:
+    """Separately visible readiness groups. For a LIVE connection every
+    required item must be satisfied before discovery can be enabled; in
+    simulation the live-only items are marked not applicable."""
+    from jde_mcp_server.config import settings as mcp_settings
+
+    from .transport import tls_trust
+
+    config: JdeProfileConfig = profile["config"]
+    live = config.connection_mode == "live"
+    h = health(profile)
+    ids = _identity_items(profile)
+
+    def ident(name, label):
+        i = ids.get(name)
+        if not live and name == "path code":
+            return _item("path_code", label, "machine_verified", True, "not applicable in simulation", required=False)
+        if name == "path code":
+            pc = _current(profile["health"].get("path_code"), profile)
+            return _item("path_code", label, "machine_verified", pc.state == "ok",
+                         pc.detail or "not established: needs the approved F00941 environment-master read")
+        return _item(name.replace(" ", "_").replace("/", ""), label, "machine_verified",
+                     bool(i) and i["status"] in (("verified",) if live else ("verified", "attested")),
+                     (i["detail"] if i else "not checked yet: run Test Connection"))
+
+    na = "not applicable in simulation"
+    trust_ok, trust_detail = tls_trust()
+    reach = h["reachability"]
+    connectivity = [
+        _item("live_enabled", "Live access enabled on the server", "server_managed",
+              live_allowed_by_deployment() or not live, live_status_detail() if live else na, required=live),
+        _item("tls_trust", "TLS certificate trust configured (no unverified TLS)", "server_managed",
+              trust_ok or not live, trust_detail if live else na, required=live),
+        _item("allowlist", "AIS host is a permitted destination", "server_managed",
+              (not live) or _host(config) in allowed_hosts(),
+              (f"{_host(config)} permitted" if _host(config) in allowed_hosts() else f"{_host(config)} is not in the allowlist")
+              if live else na, required=live),
+        _item("tls_verified", "Endpoint reached from the backend over verified TLS", "machine_verified",
+              reach.state == "ok" and (not live or "verified TLS" in reach.detail), reach.detail or "not checked yet"),
+    ]
+    account_problems = _account_problems(profile) if live else []
+    nr = config.network_restriction
+    identity = [
+        _item("authentication", "Signed in as the configured user (session opened and logged out)", "machine_verified",
+              h["authentication"].state == "ok", h["authentication"].detail or "not checked yet"),
+        ident("session environment", "Authenticated environment captured and equal to the configured environment"),
+        ident("session role", "Authenticated role captured, dedicated (never *ALL)"),
+        ident("application release", "Application release reported by the session"),
+        ident("Tools / server release", "Tools / server release reported by JDE"),
+        ident("path code", "Path code established from JDE (never from the environment name)"),
+    ]
+    authz = [
+        _item("dedicated_account", "Dedicated user and role, JDE permissions independently verified", "evidence",
+              (not live) or not account_problems, "; ".join(account_problems) if live else na, required=live),
+        _item("approved_read", "The approved sample read succeeds within its bounds", "machine_verified",
+              h["approved_read"].state == "ok", h["approved_read"].detail or "not run"),
+        _item("privilege_statement", "Customer statement that the identity is narrowly privileged", "customer_attestation",
+              config.privilege_confirmed and config.privilege_statement.strip(),
+              config.privilege_statement.strip() or "not confirmed", required=not live),
+    ]
+    network = [
+        _item("source_restriction", "AIS access restricted to the backend's source address", "customer_attestation",
+              (not live) or (nr.restricted_to_source and nr.backend_source_address.strip()
+                             and (nr.evidence.strip() or nr.evidence_artifact_ids)),
+              (f"{nr.backend_source_address or 'no source address'}: {nr.evidence or 'no evidence'}" if live else na),
+              required=live),
+        _item("routing_isolation", "Network route and data isolation confirmed by the customer/CNC", "customer_attestation",
+              config.routing_isolation_confirmed and config.isolation_evidence.strip(),
+              config.isolation_evidence.strip() or "not confirmed"),
+    ]
+    safeguards = [
+        _item("writes_disabled", "JDE writes disabled (execution stays simulated)", "server_managed",
+              bool(mcp_settings.mock_mode), "simulated execution only" if mcp_settings.mock_mode
+              else "JDE_MCP_MOCK_MODE is off: live execution is possible on this server", required=live),
+        _item("approved_reads", "Approved reads defined (exact targets, columns, record limit)", "configuration",
+              bool(config.approved_reads), f"{len(config.approved_reads)} approved read(s), at most "
+                                           f"{config.limits.max_records} records each"),
+        _item("window", "Authorisation window open now", "configuration", window_open(config),
+              (f"{config.discovery_window.starts_at} to {config.discovery_window.ends_at}" if config.discovery_window
+               else "no window")),
+        _item("credential", "Credential encrypted on the server", "configuration",
+              credential_storage(profile) == "encrypted", credential_storage(profile)),
+        _item("not_disabled", "Connection not disabled", "configuration", not profile["disabled"],
+              "disabled -- run Test Connection to re-check" if profile["disabled"] else "active"),
+    ]
+    groups = [
+        {"id": "connectivity", "label": "Connectivity", "items": connectivity},
+        {"id": "identity", "label": "Identity", "items": identity},
+        {"id": "jde_authorization", "label": "JDE authorisation", "items": authz},
+        {"id": "network_restriction", "label": "Network restriction", "items": network},
+        {"id": "runtime_safeguards", "label": "Jade runtime safeguards", "items": safeguards},
+    ]
+    for g in groups:
+        req = [i for i in g["items"] if i["required"]]
+        g["satisfied"] = all(i["satisfied"] for i in req)
+    return groups, all(g["satisfied"] for g in groups)
+
+
+def _host(config: JdeProfileConfig) -> str:
+    from urllib.parse import urlparse
+
+    return (urlparse(config.ais_base_url).hostname or "").lower()
 
 
 def set_enabled(company_id: str, *, actor: str, expected_revision: Optional[int]) -> dict:
@@ -404,6 +547,7 @@ def view(company_id: str) -> JdeProfileView:
         live_allowed_by_deployment=live_allowed_by_deployment(),
         updated_at=profile["updated_at"], updated_by=profile["updated_by"],
         prerequisites=prerequisites(profile), server_prerequisites=server_prerequisites(config),
+        readiness=readiness(profile)[0], ready=readiness(profile)[1],
         **_static_view_parts(config),
     )
 

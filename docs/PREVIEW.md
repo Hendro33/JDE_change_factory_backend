@@ -85,49 +85,58 @@ and stop the preview with Ctrl-C.
 
 ## First read-only JDE connection (prepared; not yet authorised)
 
-Open **Admin › Integrations**, then the **JDE connection** panel, and choose **Edit settings**. Everything you enter is stored on
-Jade's backend. **Save** never contacts JDE.
+Nothing below contacts JDE until you press **Test Connection**, and no business read runs until you press **Run Approved
+Sample Read** yourself. Neither has been authorised yet.
+
+Open **Admin › Integrations**, then the **JDE connection** panel, and choose **Edit settings**. Everything you enter is
+stored on Jade's backend. **Save** never contacts JDE.
 
 | Field | What to enter |
 |---|---|
-| Connection name | Any label, e.g. "PS920 read-only trial" |
+| Connection name | Any label |
 | Mode | **Live** (read-only; there is no fallback to simulation) |
-| AIS HTTPS address | `https://<ais-host>:<port>` plus any proxy prefix; Jade appends `/jderest/...` itself |
-| JDE environment | The exact name, e.g. `PS920` |
-| Environment purpose | **Isolated trial environment, explicitly approved** (or Development) |
-| Trial approval reference | Who approved using this environment, and where |
-| JDE role | The exact role of the read-only user (no `*ALL`) |
-| Application release / Tools release / Path code | As the CNC states them, e.g. `9.2` / `9.2.x.x` / `PS920` |
-| Authentication | AIS token request (user + password). No other method is supported yet |
-| Customer / CNC contact, Network access notes | Who to call, and the route from **this Mac** to the AIS host |
-| Isolation evidence + tick | The customer/CNC confirmation that the environment is isolated |
-| Privilege statement + tick | The confirmation that the user is read-only and narrowly privileged |
-| Runtime attestation + tick | The CNC's statement of the Tools release and path code |
-| Approved discovery reads | Start with just one: **User defined code values**, target `00/DT`, columns `DRSY, DRRT, DRKY, DRDL01` |
+| AIS HTTPS address | `https://141.144.202.25:7077`. Jade appends `/jderest/...` itself |
+| JDE environment | The exact name the session should report: `JPS920`. Jade compares names exactly and never treats `JPS920` and `PS920` as the same |
+| Environment purpose / approval reference | As approved by the customer |
+| JDE role | The **dedicated** role of the dedicated user. `*ALL` is refused |
+| Application release / Tools / server release | What you expect. Test Connection records what JDE reports next to it |
+| Path code | **Leave blank.** Jade never derives it from the environment name. It is set only by JDE's answer to the F00941 read (below) |
+| Dedicated JDE account | The user and role, who verified them, when and how, both confirmations, and at least one linked evidence document (for example a Security Workbench export imported as a reference document). A statement or a "read-only" label alone does not count |
+| Network restriction | The backend's source address as JDE sees it, confirmation that AIS accepts only that address, and the evidence (for example the OCI security-list rule) |
+| Approved discovery reads | **User defined code values**, target `00/DT`, columns `DRSY, DRRT, DRKY, DRDL01`. To establish the path code, also add **Table browse**, target `F00941`, columns `EMENHV, EMPATHCD`, filter column `EMENHV` |
 | Window | Today to a few days ahead (at most 31 days) |
 | Records per query / timeout | `5` / `15` |
-| Customer data in AI prompts | Metadata only, unless the customer has agreed to more |
 
-After saving, enter the JDE user and password under **Credential**. The password is encrypted on the server and never shown
-again.
+After saving, enter the JDE user and password under **Credential**. The password is encrypted on the server and never
+shown again.
 
-**Server-managed prerequisites.** These are set on the Mac that runs the backend, not in the browser, and they stay off until you
-authorise the first connection. Create `~/jade/JDE_change_factory_backend/.preview-data/server.env` containing:
+**Server-managed trust.** These settings are made on the machine that runs the backend, never in the browser. Create
+`~/jade/JDE_change_factory_backend/.preview-data/server.env` containing:
 
 ```
 JDE_DISCOVERY_LIVE_ENABLED=true
-JDE_DISCOVERY_ALLOWED_HOSTS=<ais-host>
-# only if the AIS certificate comes from a private CA:
-JDE_DISCOVERY_CA_BUNDLE=/path/to/customer-ca.pem
+JDE_DISCOVERY_ALLOWED_HOSTS=141.144.202.25
+JDE_DISCOVERY_CA_BUNDLE=/path/to/ais-server-certificate.pem
 ```
 
-Then restart the preview. The Mac itself must reach `<ais-host>:<port>`, for example over a VPN. Your browser reaching JDE does
-not prove the backend can.
+Then restart the preview. Every AIS request uses that file for certificate checks: sign-in, defaultconfig, sample reads and
+sign-out. The certificate must match the address (here an IP address entry in the certificate's alternative names). If the
+file is missing, unreadable or not a certificate, live access stays **off**, the backend log says why, and the panel shows
+it. Jade never falls back to unverified TLS. On Python 3.13 or newer, strict certificate checks can also reject a
+certificate that lacks standard extensions; the panel shows the TLS error, and the fix belongs to the certificate, not
+to Jade. The backend machine itself must reach `141.144.202.25:7077`.
 
 **Supervised order:**
-1. Test Connection (sign-in and server defaults only).
-2. Run Approved Sample Read: `udc_values`, target `00/DT`, max records `5`, no filter.
-3. Only after both succeed, and only if wanted, Enable Architect Discovery.
+1. **Test Connection.** Jade signs in, reads the AIS server identity (`defaultconfig`) and signs out. It runs no UBE, batch
+   job or business query. The **Identity** status shows configured and reported values side by side: environment, role,
+   application release and Tools / server release. A different environment name, or a `*ALL` role, is shown as a mismatch
+   and is never corrected. Sign-in can work while the connection stays **not ready**.
+2. **Preview exact request**, then **Run Approved Sample Read** (only once you approve it): `udc_values`, target `00/DT`,
+   max records `5`, no filter. The preview shows the method, address, body and checksum the server will send. The run is
+   refused if anything differs from the approved read.
+3. Optional, if approved: the F00941 read with filter `EMENHV = JPS920` establishes the path code from JDE.
+4. **Enable Architect Discovery** unlocks only when all five statuses are satisfied: Connectivity, Identity, JDE
+   authorisation, Network restriction and Jade runtime safeguards.
 
 JDE writes stay simulated throughout.
 

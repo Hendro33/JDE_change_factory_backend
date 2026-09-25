@@ -111,6 +111,42 @@ class RequestLimits(ApiModel):
     concurrent_requests: Literal[1] = 1
 
 
+class DedicatedAccount(ApiModel):
+    """Evidence that the JDE account itself is the restriction: a dedicated
+    user and a dedicated role (never *ALL) whose JDE permissions were
+    independently verified. A statement or a "read-only" label alone is not
+    enough: at least one linked evidence document is required (e.g. a JDE
+    Security Workbench export, or the record of a test in which JDE refused
+    a prohibited operation for this user)."""
+
+    username: str = Field(default="", max_length=40)
+    role: str = Field(default="", max_length=40)
+    verified_by: str = Field(default="", max_length=120)
+    verified_on: str = Field(default="", max_length=40)
+    method: Literal["security_configuration_review", "prohibited_operation_test", ""] = ""
+    permits_approved_reads: bool = False
+    rejects_prohibited_operations: bool = False
+    evidence_artifact_ids: list[str] = Field(default_factory=list, max_length=10)
+    notes: str = Field(default="", max_length=1000)
+
+    @field_validator("role")
+    @classmethod
+    def _no_all(cls, v: str) -> str:
+        if v.strip().upper() in {"*ALL", "ALL", "*"}:
+            raise ValueError("*ALL is not a dedicated role; Jade discovery needs a dedicated, restricted role")
+        return v.strip()
+
+
+class NetworkRestriction(ApiModel):
+    """The customer's restriction of AIS access to the source address of the
+    machine running Jade's backend (a firewall / security-list rule)."""
+
+    backend_source_address: str = Field(default="", max_length=100)
+    restricted_to_source: bool = False
+    evidence: str = Field(default="", max_length=1000)
+    evidence_artifact_ids: list[str] = Field(default_factory=list, max_length=10)
+
+
 class JdeProfileConfig(ApiModel):
     """Everything about a company's discovery connection except the secret."""
 
@@ -124,7 +160,7 @@ class JdeProfileConfig(ApiModel):
     role: str
     expected_application_release: str
     expected_tools_release: str
-    path_code: str
+    path_code: str = ""
     auth_method: AuthMethod = "ais_token_request"
     customer_contact: str = ""
     cnc_contact: str = ""
@@ -139,6 +175,8 @@ class JdeProfileConfig(ApiModel):
     runtime_attestation_evidence: str = ""
     # Reference documents (imported under ERP / JDE Landscape) that evidence the attestations above.
     evidence_artifact_ids: list[str] = Field(default_factory=list, max_length=20)
+    dedicated_account: DedicatedAccount = Field(default_factory=DedicatedAccount)
+    network_restriction: NetworkRestriction = Field(default_factory=NetworkRestriction)
     approved_reads: list[ApprovedRead] = Field(default_factory=list)
     discovery_window: Optional[DiscoveryWindow] = None
     limits: RequestLimits = Field(default_factory=RequestLimits)
@@ -175,12 +213,22 @@ class JdeProfileConfig(ApiModel):
             url = url[: -len("/jderest")]
         return url
 
-    @field_validator("environment", "role", "path_code", "expected_application_release", "expected_tools_release")
+    @field_validator("environment", "role", "expected_application_release", "expected_tools_release")
     @classmethod
     def _explicit(cls, v: str) -> str:
         v = v.strip()
-        if not v or v in {"*ALL", "*", "ALL"}:
+        if not v or v.upper() in {"*ALL", "*", "ALL"}:
             raise ValueError("must be named explicitly (no blank, *ALL or wildcard)")
+        return v
+
+    @field_validator("path_code")
+    @classmethod
+    def _path_code(cls, v: str) -> str:
+        """The expected path code, or blank when it is not yet known. Never
+        derived from the environment name; verified only from JDE itself."""
+        v = v.strip()
+        if v.upper() in {"*ALL", "*", "ALL"}:
+            raise ValueError("path code must be a real path code, or left blank until JDE establishes it")
         return v
 
     @model_validator(mode="after")
@@ -254,6 +302,8 @@ class JdeProfileView(ApiModel):
     mode_label: str = ""
     live_allowed_by_deployment: bool = False
     prerequisites: list[dict[str, Any]] = []
+    readiness: list[dict[str, Any]] = []
+    ready: bool = False
     server_prerequisites: list[dict[str, Any]] = []
     ceilings: dict[str, Any] = {}
     auth_methods: list[dict[str, Any]] = []

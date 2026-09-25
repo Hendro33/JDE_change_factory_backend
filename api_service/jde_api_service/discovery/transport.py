@@ -26,6 +26,8 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
+import ssl
 import threading
 import time
 from dataclasses import dataclass, field
@@ -78,6 +80,17 @@ class Session:
     context: dict[str, Any] = field(default_factory=dict)
 
 
+def server_defaults_from(data: dict[str, Any]) -> dict[str, Any]:
+    """The documented defaultconfig keys plus any short scalar key naming a
+    version or release (the field names vary by Tools release). Server level:
+    never evidence of what a session uses."""
+    out = {k: data.get(k) for k in DEFAULTCONFIG_KEYS if k in data}
+    for k, v in data.items():
+        if k not in out and isinstance(v, (str, int, float)) and re.search("version|release", k, re.I) and len(str(v)) <= 40:
+            out[k] = v
+    return out
+
+
 def session_context_from_token_response(data: dict[str, Any]) -> dict[str, Any]:
     user = data.get("userInfo") or {}
     out = {"environment": data.get("environment"), "role": data.get("role"), "jasserver": data.get("jasserver"),
@@ -97,22 +110,49 @@ class ReadResult:
 
 
 def live_allowed_by_deployment() -> bool:
-    return os.environ.get(LIVE_ENABLED_ENV, "").strip().lower() == "true"
+    """Live discovery is on only when the deployment enables it AND its TLS
+    trust is usable. A configured CA bundle that is missing, unreadable or
+    not a certificate keeps live discovery OFF -- there is never a fallback
+    to unverified TLS."""
+    if os.environ.get(LIVE_ENABLED_ENV, "").strip().lower() != "true":
+        return False
+    return tls_trust()[0]
+
+
+def live_status_detail() -> str:
+    if os.environ.get(LIVE_ENABLED_ENV, "").strip().lower() != "true":
+        return f"live discovery is switched off for this deployment ({LIVE_ENABLED_ENV} is not true)"
+    ok, detail = tls_trust()
+    return "enabled" if ok else f"live discovery is held OFF because TLS trust is unusable: {detail}"
+
+
+def tls_context() -> ssl.SSLContext:
+    """The one TLS configuration every live AIS request uses (token request,
+    server defaults, reads, logout). With JDE_DISCOVERY_CA_BUNDLE it trusts
+    that bundle ONLY; certificate and hostname/IP checks stay on. Raises if
+    the bundle cannot be loaded."""
+    path = os.environ.get(CA_BUNDLE_ENV, "").strip()
+    ctx = ssl.create_default_context(cafile=path) if path else ssl.create_default_context()
+    if ctx.verify_mode != ssl.CERT_REQUIRED or not ctx.check_hostname:  # defensive: never weaker than the default
+        raise ssl.SSLError("TLS context is not verifying certificates and host names")
+    return ctx
 
 
 def tls_trust() -> tuple[bool, str]:
     """(usable, description) of the certificate trust the live transport uses."""
     path = os.environ.get(CA_BUNDLE_ENV, "").strip()
-    if not path:
-        return True, "the server's default public CA trust store"
-    if not os.path.isfile(path):
+    try:
+        tls_context()
+    except FileNotFoundError:
         return False, f"{CA_BUNDLE_ENV} points to {path}, which does not exist on the server"
-    return True, f"the CA bundle configured on the server ({os.path.basename(path)}) plus nothing else"
-
-
-def _verify_setting():
-    path = os.environ.get(CA_BUNDLE_ENV, "").strip()
-    return path if path else True
+    except PermissionError:
+        return False, f"{CA_BUNDLE_ENV} points to {path}, which the backend cannot read"
+    except (ssl.SSLError, OSError, ValueError) as exc:
+        return False, f"{CA_BUNDLE_ENV} ({os.path.basename(path)}) is not a usable certificate bundle ({type(exc).__name__})"
+    if not path:
+        return True, "the server's default public CA trust store, with certificate and host-name checks"
+    return True, (f"only the CA bundle configured on the server ({os.path.basename(path)}), with certificate and "
+                  "host-name/IP checks")
 
 
 def diagnose(exc: Exception, host: str) -> str:
@@ -278,9 +318,7 @@ class LiveAisTransport:
     def __init__(self, company_id: str, base_url: str, timeout_seconds: int,
                  *, transport: Optional[httpx.BaseTransport] = None) -> None:
         if not live_allowed_by_deployment():
-            raise DestinationNotAllowed(
-                f"live discovery is switched off for this deployment ({LIVE_ENABLED_ENV} is not true)"
-            )
+            raise DestinationNotAllowed(live_status_detail())
         host = (urlparse(base_url).hostname or "").lower()
         if urlparse(base_url).scheme != "https":
             raise DestinationNotAllowed("live discovery only uses https")
@@ -294,8 +332,10 @@ class LiveAisTransport:
         if not trust_ok:
             raise DestinationNotAllowed(f"TLS trust is misconfigured on the server: {trust_detail}")
         self.host = host
+        self.tls_detail = trust_detail
+        # ONE client, ONE verifying TLS context, for every request of this transport.
         self._client = httpx.Client(
-            verify=_verify_setting(), follow_redirects=False, timeout=httpx.Timeout(timeout_seconds), transport=transport,
+            verify=tls_context(), follow_redirects=False, timeout=httpx.Timeout(timeout_seconds), transport=transport,
         )
 
     def _send(self, method: str, path: str, *, token: Optional[str] = None,
@@ -326,7 +366,7 @@ class LiveAisTransport:
     def check_reachability(self) -> str:
         method, path = capabilities.READ_ENDPOINTS["defaultconfig"]
         self._send(method, path)
-        return "endpoint answered over verified TLS"
+        return f"endpoint answered over verified TLS ({self.tls_detail})"
 
     def authenticate(self, username: str, password: str, environment: str, role: str) -> Session:
         method, path = AUTH_ENDPOINTS["token_request"]
@@ -351,8 +391,7 @@ class LiveAisTransport:
         token = session.token if isinstance(session, Session) else session
         data = self._send(plan.method, plan.path, token=token, body=plan.body)
         if plan.endpoint == "defaultconfig":
-            return ReadResult([{k: data.get(k) for k in DEFAULTCONFIG_KEYS if k in data}],
-                              meta={"endpoint": "defaultconfig", "shape": "unverified"})
+            return ReadResult([server_defaults_from(data)], meta={"endpoint": "defaultconfig", "shape": "unverified"})
         if plan.endpoint == "poservice":
             options = data.get("processingOptions") or {}
             rows = [{"option": k, "value": (v or {}).get("value") if isinstance(v, dict) else v}
