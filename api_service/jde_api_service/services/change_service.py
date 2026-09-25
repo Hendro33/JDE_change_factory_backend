@@ -151,7 +151,7 @@ def _latest_change_record_for(story_id: str) -> Optional[dict[str, Any]]:
 
 
 _LEGACY_SECTION_RE = re.compile(
-    r"\n\n(business_context|acceptance_criteria|test_script|open_questions):\s*", re.MULTILINE
+    r"\n\n(business_context|acceptance_criteria|business_rules|test_script|open_questions):\s*", re.MULTILINE
 )
 _LEGACY_AC_LINE_RE = re.compile(r"^-\s*(AC\d+):\s*(.+?)(?:\s+verified_by:\s*(\S.*))?$")
 _LEGACY_OPEN_Q_LINE_RE = re.compile(r"^\d+\.\s*(.+)$")
@@ -205,9 +205,13 @@ def _parse_legacy_backlog_story(raw: str) -> Optional[UserStory]:
         if m:
             open_questions.append(m.group(1).strip())
 
+    business_rules = [ln.strip()[2:].strip() for ln in sections.get("business_rules", "").splitlines()
+                      if ln.strip().startswith("- ")]
+
     return UserStory(
         statement=statement,
         business_context=sections.get("business_context", ""),
+        business_rules=business_rules,
         acceptance_criteria=acceptance_criteria,
         test_script=test_script,
         open_questions=open_questions,
@@ -338,6 +342,12 @@ def _change_from_story(
         user_story = run.user_story
     else:
         user_story = _parse_legacy_backlog_story(statement) or UserStory(statement=statement, quality_status="passed")
+    # A person-applied story revision (process refinement) supersedes both.
+    from ..process import refinement
+
+    revised = refinement.latest_story(customer_id, story_id)
+    if revised is not None:
+        user_story = revised
 
     # backlog.py's own record only ever carries the AI-generated
     # statement (propose_to_backlog's user_story parameter is a plain

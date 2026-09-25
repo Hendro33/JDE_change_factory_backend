@@ -36,7 +36,8 @@ def _dependencies(record: dict) -> dict:
 
 def invalidate_affected(company_id: str, *, source: str, story_id: Optional[str] = None,
                         changed_targets: Iterable[str] = (), unverified_targets: Iterable[str] = (),
-                        revised_artifacts: Iterable[str] = (), profile_material_hash: Optional[str] = None) -> list[dict]:
+                        revised_artifacts: Iterable[str] = (), profile_material_hash: Optional[str] = None,
+                        story_revised: Optional[int] = None) -> list[dict]:
     """Record an invalidation on every pending or approved change of the
     company (optionally one story) that the evidence change touches.
     Returns what was affected and why."""
@@ -65,6 +66,9 @@ def invalidate_affected(company_id: str, *, source: str, story_id: Optional[str]
         bound_profile = (((record.get("binding") or {}).get("design") or {}).get("profile_material_hash"))
         if profile_material_hash and bound_profile and bound_profile != profile_material_hash:
             reasons.append(("environment_profile_changed", "the discovery profile the design used has materially changed"))
+        if story_revised and story_id:
+            reasons.append(("story_revised", f"the approved story was revised (revision {story_revised}) after this "
+                                             "work was proposed"))
         for kind, detail in reasons:
             binding.record_invalidation(record["change_id"], kind=kind, detail=detail, source=source)
         if reasons:

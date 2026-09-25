@@ -85,19 +85,59 @@ def _technical(company_id: str, story_id: str) -> Optional[dict]:
     }
 
 
-def _functional(change) -> Optional[dict]:
+def _functional(company_id: str, story_id: str, change) -> Optional[dict]:
+    """The exact change as recorded by the gate: target, before and approved
+    values, the approval and its binding, every write and test attempt, and
+    a read-back of the target from the (simulated) DEV environment now."""
+    from ..services.change_service import _latest_change_record_for
+
     if not change or not change.exact_change:
         return None
-    ec = change.exact_change
-    return {"exact_change": ec.model_dump(mode="json"),
-            "approval": change.change_approval.model_dump(mode="json") if change.change_approval else None}
+    record = _latest_change_record_for(story_id) or {}
+    op = record.get("operation") or {}
+    ex = record.get("execution") or {}
+    attempts = {k: [{a_k: a.get(a_k) for a_k in ("attempt_id", "outcome", "detail", "before_value", "started_at",
+                                                 "finished_at", "actor")} for a in (ex.get(k) or {}).get("attempts", [])]
+                for k in ("write", "test")}
+    readback = None
+    if op.get("tool") == "set_processing_option":
+        try:
+            from jde_mcp_server.ais_client import client as ais
+
+            value = ais.read_processing_option_value(company_id, op["application"], op["version"], op["option"])
+            readback = {"value": value, "matches_approved": str(value) == str(op.get("value")),
+                        "source": "read-back from the simulated DEV estate (SIMULATION)"}
+        except Exception as exc:  # noqa: BLE001 -- shown as a limitation, never guessed
+            readback = {"value": None, "matches_approved": False, "source": f"read-back unavailable: {exc}"}
+    binding = record.get("binding") or {}
+    return {"exact_change": change.exact_change.model_dump(mode="json"),
+            "change_id": record.get("change_id"), "capability_id": record.get("capability_id"),
+            "environment": record.get("environment"), "operation": op,
+            "approval": change.change_approval.model_dump(mode="json") if change.change_approval else None,
+            "approver_authority": record.get("approver_authority"),
+            "binding": {"design": binding.get("design"), "before_state": binding.get("before_state")},
+            "invalidations": record.get("invalidations") or [],
+            "attempts": attempts, "readback": readback,
+            "test_orchestration": op.get("test_orchestration") or "",
+            "test_note": ("In simulation the test orchestration's PASS is a fixed mock answer, not a simulated run; "
+                          "the read-back of the target is the verification evidence.")}
+
+
+def _story_revision(company_id: str, story_id: str) -> Optional[dict]:
+    from . import refinement
+
+    revs = refinement.revisions(company_id, story_id)
+    if not revs:
+        return None
+    r = revs[0]
+    return {k: r[k] for k in ("revision", "author_name", "created_at", "applied_findings", "process_refs", "story_sha256")}
 
 
 def gather(company_id: str, story_id: str, change) -> dict:
     """Everything the record is generated from, read now."""
     route = (change.architect_decision.recommended_route if change and change.architect_decision else None)
     tech = _technical(company_id, story_id) if route in TECHNICAL_ROUTES else None
-    func = _functional(change) if route not in TECHNICAL_ROUTES else None
+    func = _functional(company_id, story_id, change) if route not in TECHNICAL_ROUTES else None
     us = change.user_story.model_dump(mode="json") if change and change.user_story else None
     return {
         "story": {"story_id": story_id, "title": change.title if change else story_id,
@@ -106,9 +146,27 @@ def gather(company_id: str, story_id: str, change) -> dict:
                   "approved": bool(change and change.state not in ("RECEIVED", "REFINING", "BACKLOG_READY", "REJECTED"))},
         "process": {"mapping": story_process.mapping_view(company_id, story_id),
                     "maps": {k: maps.latest_version(company_id, story_id, k) for k in maps.KINDS}},
+        "story_revision": _story_revision(company_id, story_id),
         "design": _design(company_id, story_id, change), "route": route,
         "implementation": {"technical": tech, "functional": func},
     }
+
+
+def _design_approved(src: dict) -> tuple:
+    d = src["design"]
+    if src["route"] in TECHNICAL_ROUTES:
+        a = d["design_approval"]
+        return ("design_approved", "Architect design approved", a is not None,
+                f"design revision {a['design_revision']} by {a['approved_by']}" if a else "no approval of the current design")
+    # Functional route: a person approves the design together with its exact
+    # change in Architecture Review, bound to the design baseline.
+    f = src["implementation"]["functional"] or {}
+    bound = ((f.get("binding") or {}).get("design") or {})
+    b = d["baseline"]
+    ok = bool(f.get("approval")) and bool(b) and bound.get("design_revision") == b["design_revision"]
+    return ("design_approved", "Architect design approved (with its exact change, in Architecture Review)", ok,
+            f"approved by {f['approval'].get('approved_by')} against baseline {bound.get('baseline_id')}"
+            if f.get("approval") else "the exact change has not been approved")
 
 
 def _checkpoints(src: dict) -> list[dict]:
@@ -122,9 +180,7 @@ def _checkpoints(src: dict) -> list[dict]:
          f"mapping revision {m['revision']} ({m['status']}) by {m['reviewer_name']}" if m else "no reviewer decision"),
         ("to_be_map", "To-be process map recorded", to_be is not None or (m is not None and m["status"] == "no_mapping"),
          f"version {to_be['version']}" if to_be else "none (no mapping applies)" if m and m["status"] == "no_mapping" else "none"),
-        ("design_approved", "Architect design approved", d["design_approval"] is not None,
-         f"design revision {d['design_approval']['design_revision']} by {d['design_approval']['approved_by']}"
-         if d["design_approval"] else "no approval of the current design"),
+        _design_approved(src),
         ("design_current", "Design not awaiting reassessment", bool(b) and b["status"] == "current",
          (b["status"].replace("_", " ") + (f": {b['reassessment'][-1]['detail']}" if b["reassessment"] else "")) if b else "no design baseline"),
     ]
@@ -147,11 +203,14 @@ def _checkpoints(src: dict) -> list[dict]:
         ]
     else:
         ex = ((func or {}).get("exact_change") or {}).get("execution") or {}
+        rb = (func or {}).get("readback")
         cps += [
             ("implementation_approved", "Exact change approved", bool(func and func["approval"]),
              "approved" if func and func["approval"] else "no approved exact change"),
             ("applied", "Change applied", ex.get("write_state") == "applied", ex.get("write_state") or "not started"),
-            ("verified", "Test verified", ex.get("test_state") in ("passed", "verified"), ex.get("test_state") or "not run"),
+            ("tested", "Approved test orchestration run", ex.get("test_state") == "completed", ex.get("test_state") or "not run"),
+            ("verified", "Target read back with the approved value", bool(rb) and rb["matches_approved"],
+             (f"{rb['value']!r} ({rb['source']})" if rb else "no read-back")),
         ]
     return [{"id": i, "label": label, "complete": bool(ok), "detail": detail} for i, label, ok, detail in cps]
 
@@ -179,6 +238,13 @@ def _deviations_and_limits(src: dict) -> tuple[list[str], list[str]]:
         if tech["mode"] == "simulation":
             lim.append("Delivery and verification ran in the simulated DEV estate with a synthetic source format; "
                        "nothing was built or tested in a JD Edwards system.")
+    f = src["implementation"]["functional"]
+    if f:
+        for inv in f["invalidations"]:
+            lim.append(f"Approval invalidation recorded: {inv.get('kind')} -- {inv.get('detail')}")
+        if f["readback"] and "SIMULATION" in f["readback"]["source"]:
+            lim.append("The configuration change was applied to and read back from the simulated DEV estate; no JD "
+                       "Edwards system was changed. The test orchestration's PASS is a fixed mock answer.")
     b = d["baseline"]
     if b and b["reassessment"]:
         for r in b["reassessment"]:
@@ -217,7 +283,7 @@ def build(company_id: str, story_id: str, change) -> dict:
         from jde_mcp_server.config import settings as mcp_settings
 
         simulated = bool(mcp_settings.mock_mode)
-    content = {"story": src["story"], "process": src["process"], "design": src["design"], "route": src["route"],
+    content = {"story": src["story"], "story_revision": src["story_revision"], "process": src["process"], "design": src["design"], "route": src["route"],
                "implementation": src["implementation"], "checkpoints": checkpoints,
                "all_checkpoints_complete": all(c["complete"] for c in checkpoints),
                "deviations": dev, "limitations": lim,
@@ -244,6 +310,13 @@ def markdown(record: dict) -> str:
     for cp in c["checkpoints"]:
         L.append(f"- [{'x' if cp['complete'] else ' '}] {cp['label']} -- {cp['detail']}")
     L += ["", "## Story", "", us.get("statement") or "(no refined statement)", ""]
+    sr = c.get("story_revision")
+    if sr:
+        L.append(f"Story revision {sr['revision']} by {sr['author_name']} ({sr['created_at']}), applying "
+                 f"{len(sr['applied_findings'])} finding(s); process mapping revision {sr['process_refs'].get('mapping_revision')}.")
+        L.append("")
+    if us.get("business_rules"):
+        L += ["Requirements and controls:", ""] + [f"- {r}" for r in us["business_rules"]] + [""]
     if us.get("acceptance_criteria"):
         L += ["Acceptance criteria:", ""] + [f"- {a['id']}: {a['text']}" for a in us["acceptance_criteria"]] + [""]
     m = c["process"]["mapping"]
@@ -301,14 +374,28 @@ def markdown(record: dict) -> str:
             L.append(f"- CNC activation of {ca['package_name']} by {ca['by']} ({ca['evidence_reference']})"
                      + (" -- SIMULATED" if ca.get("simulated") else ""))
     elif f:
-        ec = f["exact_change"]
-        L.append(f"Exact change: {ec.get('tool')} {ec.get('application')}/{ec.get('version')} option {ec.get('option')}: "
-                 f"{ec.get('current_value')} -> {ec.get('proposed_value')}")
+        op, bs = f["operation"], (f["binding"] or {}).get("before_state") or {}
+        L.append(f"Exact change {f['change_id']} ({f['capability_id']}), environment {f['environment']}: "
+                 f"`{op.get('tool')}` {op.get('application')}/{op.get('version')} option {op.get('option')}: "
+                 f"{bs.get('value')!r} -> {op.get('value')!r}")
+        ap = f["approval"] or {}
+        L.append(f"Approved by {ap.get('approved_by')} at {ap.get('approved_at')} "
+                 f"(roles: {', '.join((f.get('approver_authority') or {}).get('roles') or [])})")
+        L.append("")
+        for kind in ("write", "test"):
+            for a in f["attempts"][kind]:
+                L.append(f"- {kind} attempt {a.get('attempt_id')}: {a.get('outcome')} -- {a.get('detail')}")
     else:
         L.append("No implementation recorded.")
     L += ["", "## Verification", ""]
     v = (t or {}).get("verification")
-    if v:
+    if f and not t:
+        rb = f.get("readback") or {}
+        L.append(f"Test orchestration {f['test_orchestration'] or '(none)'}: {f['exact_change']['execution']['test_state']}. "
+                 f"{f['test_note']}")
+        L.append(f"Read-back of the target: {rb.get('value')!r} -- {'matches' if rb.get('matches_approved') else 'DOES NOT match'} "
+                 f"the approved value ({rb.get('source')})")
+    elif v:
         L += ["| Test | Kind | Result |", "|---|---|---|"] + [
             f"| {r['name']} | {r['kind']} | {'passed' if r['passed'] else 'FAILED'} |" for r in v["results"]]
         L.append("")

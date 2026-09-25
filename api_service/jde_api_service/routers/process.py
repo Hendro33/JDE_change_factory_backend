@@ -23,12 +23,13 @@ from ..config import settings
 from ..dependencies import (AuthContext, require_customer_access, require_domain_owner_access, require_role,
                             require_write_access)
 from ..models.base import ApiModel
-from ..process import agent, asbuilt, framework, maps, story as story_process
+from ..process import agent, asbuilt, framework, maps, refinement, story as story_process
 from ..services import membership_service
 from ..services.registry import get_change_service, get_customer_link_service, get_domain_review_service
 
 router = APIRouter(tags=["process"])
-_REFUSALS = (framework.FrameworkRefused, story_process.MappingRefused, maps.MapRefused, asbuilt.AsBuiltRefused)
+_REFUSALS = (framework.FrameworkRefused, story_process.MappingRefused, maps.MapRefused, asbuilt.AsBuiltRefused,
+             refinement.RefinementRefused)
 
 
 def _refusal(exc: Exception) -> HTTPException:
@@ -294,6 +295,73 @@ def save_map(story_id: str, kind: Literal["as_is", "to_be"], payload: MapInput,
     except _REFUSALS as exc:
         raise _refusal(exc)
     return {"saved": saved, "view": story_process_view(story_id, ctx)}
+
+
+# ---------------------------------------------------------------------
+# Story refinement from findings
+# ---------------------------------------------------------------------
+class FindingSelection(ApiModel):
+    finding_ids: list[str]
+
+
+class ApplyInput(FindingSelection):
+    note: str = ""
+    expected_revision: int
+
+
+class FindingStatusInput(ApiModel):
+    status: Literal["rejected", "deferred", "proposed"]
+    reason: str = ""
+
+
+def _current_story(change):
+    from ..models.change import UserStory
+
+    return change.user_story if change and change.user_story else UserStory(statement=change.title if change else "")
+
+
+@router.get("/changes/{story_id}/process/refinement")
+def refinement_view(story_id: str, ctx: AuthContext = Depends(require_customer_access)) -> dict:
+    change = _change(story_id, ctx.customer_id)
+    return {**refinement.view(ctx.customer_id, story_id), "story": _current_story(change).model_dump(mode="json"),
+            "can_review": _can_review(ctx, story_id)}
+
+
+@router.post("/changes/{story_id}/process/refinement/preview")
+def refinement_preview(story_id: str, payload: FindingSelection, ctx: AuthContext = Depends(require_customer_access)) -> dict:
+    change = _change(story_id, ctx.customer_id)
+    try:
+        p = refinement.preview(ctx.customer_id, story_id, _current_story(change), payload.finding_ids)
+    except (*_REFUSALS, LookupError) as exc:
+        raise _refusal(exc)
+    return {"diff": p["diff"], "story": p["story"].model_dump(mode="json")}
+
+
+@router.post("/changes/{story_id}/process/refinement/apply")
+def refinement_apply(story_id: str, payload: ApplyInput, ctx: AuthContext = Depends(require_write_access)) -> dict:
+    change = _change(story_id, ctx.customer_id)
+    _require_reviewer(ctx, story_id)
+    try:
+        refinement.apply(ctx.customer_id, story_id, _current_story(change), payload.finding_ids,
+                         expected_revision=payload.expected_revision, note=payload.note,
+                         actor=ctx.identity.display_name, actor_user_id=ctx.identity.id,
+                         roles=sorted(membership_service.roles_for(ctx.identity.id, ctx.customer_id)))
+    except (*_REFUSALS, LookupError) as exc:
+        raise _refusal(exc)
+    return refinement_view(story_id, ctx)
+
+
+@router.post("/changes/{story_id}/process/refinement/findings/{finding_id}")
+def refinement_finding_status(story_id: str, finding_id: str, payload: FindingStatusInput,
+                              ctx: AuthContext = Depends(require_write_access)) -> dict:
+    _change(story_id, ctx.customer_id)
+    _require_reviewer(ctx, story_id)
+    try:
+        refinement.set_status(ctx.customer_id, story_id, finding_id, status=payload.status, reason=payload.reason,
+                              actor=ctx.identity.display_name, actor_user_id=ctx.identity.id)
+    except (*_REFUSALS, LookupError) as exc:
+        raise _refusal(exc)
+    return refinement_view(story_id, ctx)
 
 
 # ---------------------------------------------------------------------

@@ -515,4 +515,46 @@ MIGRATIONS: list[tuple[int, str]] = [
         );
         """,
     ),
+    (
+        8,
+        """
+        -- Findings from process analysis (refinement agent, Architect), each
+        -- with its own review status. Applying one creates a story revision.
+        CREATE TABLE story_findings (
+            finding_id TEXT PRIMARY KEY,
+            company_id TEXT NOT NULL,
+            story_id TEXT NOT NULL,
+            source TEXT NOT NULL,
+            source_ref TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            text TEXT NOT NULL,
+            status TEXT NOT NULL,
+            reason TEXT NOT NULL DEFAULT '',
+            decided_by TEXT,
+            decided_by_user_id TEXT,
+            decided_at TEXT,
+            applied_in_revision INTEGER,
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX idx_story_findings_story ON story_findings(company_id, story_id);
+        -- Person-applied revisions of an approved story; revision 1 is the
+        -- story as it was before the first applied change.
+        CREATE TABLE story_revisions (
+            company_id TEXT NOT NULL,
+            story_id TEXT NOT NULL,
+            revision INTEGER NOT NULL,
+            source TEXT NOT NULL,
+            user_story TEXT NOT NULL,
+            story_sha256 TEXT NOT NULL,
+            applied_findings TEXT NOT NULL DEFAULT '[]',
+            process_refs TEXT NOT NULL DEFAULT '{}',
+            author_name TEXT NOT NULL,
+            author_user_id TEXT NOT NULL,
+            roles TEXT NOT NULL DEFAULT '[]',
+            note TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (company_id, story_id, revision)
+        );
+        """,
+    ),
 ]

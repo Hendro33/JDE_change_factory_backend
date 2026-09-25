@@ -51,6 +51,9 @@ from jde_mcp_server import backlog, technical_sim  # noqa: E402
 
 company = sys.argv[1] if len(sys.argv) > 1 else "bwm"
 STORY = "S-DEMO-TECH-1"
+if backlog._load(STORY) is not None:  # noqa: SLF001 -- idempotent: never seeds over existing records
+    print(json.dumps({"story": STORY, "seeded": "already"}))
+    sys.exit(0)
 SOURCE = """// SYNTHETIC SIMULATION SOURCE (jade_sim_er) -- not a JD Edwards export.
 OBJECT P554210 FORM W554210A SYSTEM 55
 INPUT BC OrderTotal NUMBER
@@ -176,7 +179,7 @@ store.finish_run(run["run_id"], status="completed", outcome={**tools.outcome, "s
 
 # 6. A throwaway CNC operator for the demonstration.
 cnc_pw = os.environ.get("JADE_E2E_CNC_PASSWORD")
-if cnc_pw:
+if cnc_pw and auth_service.get_user_by_email("cnc@e2e.local") is None:
     auth_service.create_user("cnc@e2e.local", cnc_pw, "E2E CNC Operator", user_id="u-e2e-cnc")
     membership_service.create_membership("u-e2e-cnc", company, ["cnc_operator"], created_by=admin_id or "demo seed")
 print(json.dumps({"story": STORY, "package": out.get("revision"), "submitted": out.get("submitted")}))

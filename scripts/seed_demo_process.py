@@ -185,12 +185,21 @@ story_process.finish_analysis(run["run_id"], status="completed", result={**findi
 story_process.decide(COMPANY, STORY, status="confirmed",
                      refs=[{"framework_id": FID, "version": 1, "node_key": s["node_key"], "rationale": s["rationale"]}
                            for s in findings["suggested_processes"] if s["node_key"] != "SYN-6.2.1"],
-                     no_mapping_reason="", analysis_run_id=run["run_id"],
-                     findings={"accepted_controls": findings["missing_controls"][:1],
-                               "accepted_acceptance_criteria": findings["missing_acceptance_criteria"][:1],
-                               "dismissed": ["SYN-6.2.1 reporting: a separate story (demo decision)"]},
+                     no_mapping_reason="", analysis_run_id=run["run_id"], findings={},
                      note="demo seed (throwaway identity)", reviewer_name=ADMIN, reviewer_user_id=admin_id,
                      roles=sorted(roles), expected_revision=0)
+
+# -- 4b. story refinement: the demo admin applies two findings as a story revision;
+#        the other findings stay proposed for the person trying the preview -----------
+from jde_api_service.process import refinement  # noqa: E402
+from jde_api_service.services.registry import get_change_service  # noqa: E402
+
+refinement.sync_findings(COMPANY, STORY)
+pick = {"No dealer credit before the inspection outcome is recorded", "A return with an expired authorisation number is refused"}
+refinement.apply(COMPANY, STORY, get_change_service().get_for_customer(STORY, COMPANY).user_story,
+                 [f["finding_id"] for f in refinement.findings(COMPANY, STORY) if f["text"] in pick],
+                 expected_revision=0, note="demo seed (throwaway identity)", actor=ADMIN, actor_user_id=admin_id,
+                 roles=sorted(roles))
 
 
 def ref(key):

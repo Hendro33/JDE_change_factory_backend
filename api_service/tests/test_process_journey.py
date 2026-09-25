@@ -359,3 +359,146 @@ def test_process_analysis_agent_suggestions_are_validated(client):
     assert "4.4.3" in done["result"]["rejected_suggestions"][0]
     assert set(captured["allowed"]) == {"Task", *agent.ALLOWED_TOOLS}
     assert json.dumps(done["result"]).count(fid) >= 1
+
+
+def test_functional_route_as_built_records_the_actual_change_and_refuses_incomplete_or_stale(client, monkeypatch):
+    """A bounded SIMULATED Functional delivery: processing-option change through
+    the existing gate, into a finalised as-built record."""
+    from jde_mcp_server.ais_client import client as ais
+
+    from ._discovery import ready_company
+    from jde_mcp_server import approval
+
+    from .test_architect_discovery import _run
+    from .test_stage1_execution_safeguards import OPERATION, _approve, _approved_story, _execute, _full_scope, _save_scope
+
+    story = "S-PROC-FUNC"
+    ready_company(client)
+    _save_scope(client, "vdb", _full_scope())
+    _approved_story(story)
+    fid = _import(client, 1)["framework"]["framework_id"]
+    r = client.post(f"/changes/{story}/process/mapping", headers=headers(), json={
+        "status": "confirmed", "expectedRevision": 0,
+        "refs": [{"framework_id": fid, "version": 1, "node_key": "SYN-3.2", "rationale": "order entry default"}]})
+    assert r.status_code == 200, r.text
+    assert client.put(f"/changes/{story}/process/maps/to_be", headers=headers(),
+                      json={"content": _to_be(fid), "expectedVersion": 0}).status_code == 200
+    change = {}
+
+    def architect(tools):  # scripted stand-in: reads the target, consults the process context, proposes
+        tools.read("processing_option_values", "P4210|CIQ0001")
+        tools.process_context()
+        change.update(approval.propose_change(story, {**OPERATION, "story_id": story, "test_orchestration": "ORCH_SO"},
+                                              "processing_option_update"))
+        return {}
+
+    _run(monkeypatch, architect, story=story)
+
+    def record():
+        return client.post(f"/changes/{story}/as-built", headers=headers()).json()
+
+    def cps(rec):
+        return {c["id"]: c["complete"] for c in rec["content"]["checkpoints"]}
+
+    pending = record()
+    assert cps(pending)["design_approved"] is False and cps(pending)["applied"] is False
+    assert client.post(f"/changes/{story}/as-built/{pending['version']}/finalise", headers=headers()).status_code == 422
+
+    _approve(change["change_id"])
+    _execute(story, change["change_id"])
+    applied_only = record()
+    assert cps(applied_only)["applied"] and not cps(applied_only)["tested"]
+    assert client.post(f"/changes/{story}/as-built/{applied_only['version']}/finalise", headers=headers()).status_code == 422
+
+    ais.run_orchestration(story, change["change_id"], "ORCH_SO", {})
+    done = record()
+    assert done["content"]["all_checkpoints_complete"], done["content"]["checkpoints"]
+    f = done["content"]["implementation"]["functional"]
+    assert (f["operation"]["option"], f["operation"]["value"], f["binding"]["before_state"]["value"]) == ("PDOCTYPE", "SO", "S3")
+    assert f["readback"] == {"value": "SO", "matches_approved": True,
+                             "source": "read-back from the simulated DEV estate (SIMULATION)"}
+    assert f["attempts"]["write"][0]["outcome"] == "applied" and f["attempts"]["test"][0]["outcome"] == "completed"
+    assert done["content"]["process"]["mapping"]["refs"][0]["node_key"] == "SYN-3.2"
+    assert done["content"]["process"]["maps"]["to_be"]["version"] == 1
+    assert done["content"]["design"]["baseline"]["process_context"]["mapping_revision"] == 1
+    assert any("fixed mock answer" in x for x in done["content"]["limitations"])
+
+    # Stale: the to-be map changes after generation -> the draft cannot be finalised.
+    changed = _to_be(fid)
+    changed["steps"][1]["controls"].append("second check")
+    assert client.put(f"/changes/{story}/process/maps/to_be", headers=headers(),
+                      json={"content": changed, "expectedVersion": 1}).status_code == 200
+    stale = client.post(f"/changes/{story}/as-built/{done['version']}/finalise", headers=headers())
+    assert stale.status_code == 422 and "changed since this draft" in stale.json()["detail"]
+    # ...and the map change flagged the design, so a new draft is incomplete too.
+    again = record()
+    assert cps(again)["design_current"] is False
+    assert client.post(f"/changes/{story}/as-built/{again['version']}/finalise", headers=headers()).status_code == 422
+    md = client.get(f"/changes/{story}/as-built/{again['version']}/markdown", headers=headers()).text
+    assert "SIMULATED DELIVERY" in md and "'S3' -> 'SO'" in md and "Read-back of the target: 'SO'" in md
+
+
+def test_accepted_findings_become_a_reviewed_story_revision(client, monkeypatch, viewer_client):
+    """Findings are only proposals; a reviewer applies selected ones as a new,
+    attributed story revision -- once -- and dependent work is flagged."""
+    from jde_mcp_server import approval, backlog
+
+    from jde_api_service.process import story as story_process
+
+    fid = _import(client, 1)["framework"]["framework_id"]
+    t._approved_story(STORY, "vdb")
+    run = story_process.start_analysis("vdb", STORY, initiated_by="u-hendro", scripted=True)
+    story_process.finish_analysis(run["run_id"], status="completed", result=story_process.normalise_findings("vdb", fid, 1, {
+        "missing_requirements": ["State how long a return authorisation stays valid"],
+        "missing_controls": ["No dealer credit before inspection"],
+        "missing_acceptance_criteria": ["An expired authorisation is refused", "Credit equals the value adjustment"]}))
+    assert _confirm(client, fid).status_code == 200
+    _design_with_process(client, monkeypatch)
+    t.prepare("vdb", STORY)  # pending work that rests on the current story text
+    base = f"/changes/{STORY}/process/refinement"
+
+    view = client.get(base, headers=headers()).json()
+    by_text = {f["text"]: f for f in view["findings"]}
+    assert len(by_text) == 4 and {f["status"] for f in view["findings"]} == {"proposed"} and view["current_revision"] == 0
+    chosen = [by_text["No dealer credit before inspection"]["finding_id"], by_text["An expired authorisation is refused"]["finding_id"]]
+
+    diff = client.post(f"{base}/preview", headers=headers(), json={"findingIds": chosen}).json()["diff"]
+    added = [d["line"] for d in diff if d["op"] == "+"]
+    assert added == ["Control: No dealer credit before inspection", "AC1: An expired authorisation is refused"]
+    assert viewer_client.post(f"{base}/apply", headers=headers(), json={"findingIds": chosen, "expectedRevision": 0}).status_code == 403
+
+    r = client.post(f"{base}/apply", headers=headers(), json={"findingIds": chosen, "note": "reviewed", "expectedRevision": 0})
+    assert r.status_code == 200, r.text
+    view = r.json()
+    rev = view["revisions"][0]
+    assert (rev["revision"], rev["author_name"], rev["source"]) == (2, "Hendro", "process_refinement")
+    assert view["revisions"][1]["source"] == "approved_story"  # the approved text is kept as revision 1
+    assert {a["finding_id"] for a in rev["applied_findings"]} == set(chosen)
+    assert rev["process_refs"]["mapping_revision"] == 1 and rev["process_refs"]["refs"][0]["node_key"] == "SYN-5.1.3"
+    assert {f["finding_id"]: f["applied_in_revision"] for f in view["findings"] if f["status"] == "applied"} == {c: 2 for c in chosen}
+
+    # Once only, and never over a newer revision.
+    again = client.post(f"{base}/apply", headers=headers(), json={"findingIds": chosen[:1], "expectedRevision": 2})
+    assert again.status_code == 422 and "applied at most once" in again.json()["detail"]
+    other = by_text["Credit equals the value adjustment"]["finding_id"]
+    stale = client.post(f"{base}/apply", headers=headers(), json={"findingIds": [other], "expectedRevision": 0})
+    assert stale.status_code == 409
+    # Rejected and deferred findings keep their status and reason.
+    req = by_text["State how long a return authorisation stays valid"]["finding_id"]
+    client.post(f"{base}/findings/{req}", headers=headers(), json={"status": "deferred", "reason": "ask the customer first"})
+    client.post(f"{base}/findings/{other}", headers=headers(), json={"status": "rejected", "reason": "covered by finance"})
+    statuses = {f["finding_id"]: (f["status"], f["reason"]) for f in client.get(base, headers=headers()).json()["findings"]}
+    assert statuses[req] == ("deferred", "ask the customer first") and statuses[other] == ("rejected", "covered by finance")
+
+    # The story everyone reads is the new revision; the Architect's copy too.
+    change = client.get(f"/changes/{STORY}", headers=headers()).json()
+    assert "Control: No dealer credit before inspection" in change["userStory"]["businessRules"]
+    assert [a["text"] for a in change["userStory"]["acceptanceCriteria"]][-1] == "An expired authorisation is refused"
+    record = backlog.get_approved_story(STORY)
+    assert "AC1: An expired authorisation is refused" in record["user_story"] and record["story_revisions"][0]["revision"] == 2
+    # Design flagged; pending work invalidated.
+    assert _baseline()["reassessment"][-1]["kind"] == "story_revised"
+    from jde_api_service.technical import store
+
+    pkg = store.get_package("vdb", STORY)
+    assert approval._load(pkg["change_id"])["invalidations"][-1]["kind"] == "story_revised"
