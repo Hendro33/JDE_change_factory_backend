@@ -204,6 +204,12 @@ async def submit_domain_owner_edit(
         service.set_stage(change_id, "domain_owner_requested_revision")
         service.set_stage(change_id, "reviewer_agent_refining")
 
+    from ..services import agent_settings
+
+    try:
+        agent_settings.require_enabled(ctx.customer_id, "improve-agent")
+    except agent_settings.AgentDisabled as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
     try:
         revised = await run_reviewer_agent(
             story_id=change_id,
@@ -277,6 +283,12 @@ async def ask_about_requirement_endpoint(
         raise HTTPException(status_code=422, detail="a question is required")
 
     current_story = review.history[-1].user_story
+    from ..services import agent_settings
+
+    try:
+        agent_settings.require_enabled(ctx.customer_id, "improve-agent")
+    except agent_settings.AgentDisabled as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
     try:
         result = await ask_about_requirement(
             story_id=change_id,
@@ -438,6 +450,16 @@ def application_manager_approve(
         note=payload.note,
     )
 
+    from ..services import agent_settings
+
+    try:
+        agent_settings.require_enabled(ctx.customer_id, "architect")
+    except agent_settings.AgentDisabled as exc:
+        # Approval stands; the automatic review is recorded as not started, visibly.
+        review_runs = get_architecture_review_service()
+        review_runs.start(change_id)
+        review_runs.fail(change_id, str(exc))
+        return updated
     background_tasks.add_task(
         run_architecture_review,
         story_id=change_id,

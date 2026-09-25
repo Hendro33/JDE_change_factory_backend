@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Jade local preview: the real backend and the frontend on this machine,
-# with the BicycleWorks demonstration data. JDE is SIMULATED throughout --
-# nothing here connects to any JD Edwards system.
+# Jade on this machine: the real backend and frontend, always the latest
+# code of the checked-out branches. BicycleWorks (and the other seeded
+# customers) are DEMO customers with test data; a customer you create in
+# Admin > Customer Setup is real and only ever uses live connections.
 #
 #   scripts/run_local_preview.sh           # start; the first run installs and seeds
 #   scripts/run_local_preview.sh --reset   # ONLY when asked: throws the preview data away (asks to confirm)
@@ -24,6 +25,19 @@ if [ "${1:-}" = "--reset" ]; then
   if [ "$answer" = "yes" ]; then rm -rf "$DATA"; else echo "Nothing deleted."; exit 1; fi
 fi
 [ -d "$FRONTEND/src" ] || { echo "Frontend not found at $FRONTEND -- clone it next to the backend, or set JADE_FRONTEND_DIR"; exit 1; }
+
+# -- Always run the latest code: bring both clones up to date with their branch ---------
+# (fast-forward only, and only when there are no local edits; nothing is ever overwritten)
+for repo in "$BACKEND" "$FRONTEND"; do
+  if [ "${JADE_PREVIEW_NO_UPDATE:-}" != "1" ] && git -C "$repo" rev-parse --abbrev-ref '@{u}' >/dev/null 2>&1; then
+    if [ -z "$(git -C "$repo" status --porcelain --untracked-files=no)" ]; then
+      git -C "$repo" pull --ff-only -q 2>/dev/null || echo "Could not update $repo (offline or diverged); running what is there."
+    else
+      echo "Not updating $repo: it has local edits."
+    fi
+  fi
+  echo "  $(basename "$repo"): $(git -C "$repo" rev-parse --abbrev-ref HEAD) @ $(git -C "$repo" rev-parse --short=10 HEAD)"
+done
 
 # -- Python 3.11+ in a private virtual environment ---------------------------
 PY=""
@@ -66,7 +80,7 @@ export JDE_CREDENTIAL_KEY="$CREDENTIAL_KEY" JDE_API_ALLOWED_ORIGINS="http://loca
 # Used only if the admin account does not exist yet; an existing account is never reset.
 export JDE_BOOTSTRAP_ADMIN_EMAIL=admin@e2e.local JDE_BOOTSTRAP_ADMIN_NAME="E2E Admin" JDE_BOOTSTRAP_ADMIN_PASSWORD="$ADMIN_PW"
 export JADE_E2E_CNC_PASSWORD="$CNC_PW" JADE_E2E_DO_PASSWORD="$DO_PW"
-# JDE writes always stay simulated in the preview.
+# JDE writes: live writes are not enabled. Simulated writes run only for demo customers.
 export JDE_MCP_MOCK_MODE=true
 # Server-managed trust controls for LIVE read-only discovery. Off unless the
 # person running this machine creates $DATA/server.env (see docs/PREVIEW.md).
@@ -99,7 +113,7 @@ curl -sf "http://localhost:$UI_PORT" >/dev/null || { echo "Frontend did not star
 if [ -f "$DATA/seeded" ]; then touch "$DATA/seeded-technical" "$DATA/seeded-process"; fi   # earlier preview versions
 for seed in technical process functional; do
   if [ ! -f "$DATA/seeded-$seed" ]; then
-    echo "Adding the $seed demonstration story (scripted stand-ins, SIMULATED JDE)..."
+    echo "Adding the $seed demonstration story to the DEMO customer (scripted stand-ins, simulated JDE)..."
     (cd "$BACKEND" && "$VENV/bin/python" "scripts/seed_demo_$seed.py" bwm) >> "$DATA/seed.log" 2>&1 \
       || { echo "Seeding failed; see $DATA/seed.log"; exit 1; }
     touch "$DATA/seeded-$seed"
@@ -108,10 +122,10 @@ done
 
 cat <<INFO
 
-  Jade local preview -- JDE is SIMULATED (no JD Edwards system is contacted)
+  Jade -- running on this computer
 
   Open:      http://localhost:$UI_PORT   (in a browser on this computer)
-  Company:   BicycleWorks Manufacturing BV
+  Demo customer: BicycleWorks Manufacturing BV (test data). Create your real customer in Admin > Customer Setup.
 
   Demo users (throwaway, local only). Passwords are in: $CRED
     admin@e2e.local  (ADMIN_PW)  admin + product manager: frameworks, reviews, finalising
@@ -120,7 +134,7 @@ cat <<INFO
 
   JDE connection: Admin > Integrations (JDE panel). Live read-only access: ${JDE_DISCOVERY_LIVE_ENABLED:-off}
     ${JDE_DISCOVERY_ALLOWED_HOSTS:+permitted AIS host(s): $JDE_DISCOVERY_ALLOWED_HOSTS}
-  JDE writes: always simulated in this preview.
+  JDE writes: not enabled for real customers; simulated only inside demo customers.
 
   Start at Delivery > Process & Maps > S-BW-RETURNS, then follow the journey bar.
   Stop with Ctrl-C; start again to continue with the same data.

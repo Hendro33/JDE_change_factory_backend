@@ -97,6 +97,12 @@ def start_run(story_id: str, payload: RunInput, background: BackgroundTasks,
               ctx: AuthContext = Depends(require_role("product_manager", "admin"))) -> dict:
     """Start the Technical Agent (the real runtime) for one purpose."""
     _require_story(story_id, ctx.customer_id)
+    from ..services import agent_settings
+
+    try:
+        agent_settings.require_enabled(ctx.customer_id, "technical-agent")
+    except agent_settings.AgentDisabled as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
     try:
         run = service.start_run(ctx.customer_id, story_id, purpose=payload.purpose, initiated_by=ctx.identity.id)
     except _REFUSALS as exc:

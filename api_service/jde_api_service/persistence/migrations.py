@@ -557,4 +557,16 @@ MIGRATIONS: list[tuple[int, str]] = [
         );
         """,
     ),
+    (
+        9,
+        """
+        -- Demo customers are labelled everywhere. Simulated JDE (discovery
+        -- and execution) is only ever available inside a demo customer; a
+        -- real customer gets live connections or nothing.
+        ALTER TABLE companies ADD COLUMN is_demo INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE companies ADD COLUMN updated_at TEXT;
+        ALTER TABLE companies ADD COLUMN updated_by TEXT;
+        UPDATE companies SET is_demo = 1 WHERE id IN ('vdb', 'nhd', 'mrv', 'bwm');
+        """,
+    ),
 ]

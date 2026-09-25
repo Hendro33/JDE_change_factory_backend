@@ -55,6 +55,12 @@ async def enhance_change(
     if existing is not None and existing.stage in ("receiving", "improving", "checking"):
         raise HTTPException(status_code=409, detail=f"enhancement already in progress for {change_id}")
 
+    from ..services import agent_settings
+
+    try:
+        agent_settings.require_enabled(ctx.customer_id, "receive-agent", "improve-agent", "check-agent")
+    except agent_settings.AgentDisabled as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
     source = ", ".join(p for p in (cr.business_source, cr.source_reference) if p)
     background_tasks.add_task(
         run_enhancement,

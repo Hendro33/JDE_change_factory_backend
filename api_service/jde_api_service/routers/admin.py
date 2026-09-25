@@ -45,6 +45,8 @@ Business Domain writes also now require the Admin role, the same
 
 from __future__ import annotations
 
+from typing import Optional
+
 import httpx
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -52,10 +54,12 @@ from fastapi import APIRouter, Depends, HTTPException
 from jde_mcp_server import config as mcp_config
 
 from ..dependencies import AuthContext, require_customer_access, require_role, require_write_access
+from ..models.base import ApiModel
 from ..models.admin import (
     AgentHealth,
     AgentRunSummary,
     AisConnectionStatus,
+    CustomerInput,
     CustomerProfile,
     ErpLandscape,
     FeedbackSummary,
@@ -78,12 +82,13 @@ from ..models.jira_integration import (
     JiraTestConnectionResult,
 )
 from ..models.session import Customer as CustomerOut
-from ..services import credential_crypto
+from ..persistence.db import connection
+from ..services import auth_service, credential_crypto, customer_service
 from ..services.company_settings_service import CompanySettingsService
 from ..services.customer_service import get_registry
 from ..services.jira_gateway import InvalidJiraBaseUrl, JiraGatewayError, test_live_connection
 from ..services.jira_sync_service import JiraNotConfigured
-from ..services.membership_service import list_company_members
+from ..services.membership_service import ActorNoLongerAuthorised, list_company_members
 from ..services.registry import (
     get_agent_registry_service,
     get_agent_run_service,
@@ -115,6 +120,9 @@ def get_customer_profile(ctx: AuthContext = Depends(require_customer_access)) ->
         for m in list_company_members(ctx.customer_id)
         if m["status"] == "active"
     ]
+    with connection() as conn:
+        row = conn.execute("SELECT updated_at, updated_by FROM companies WHERE id = ?", (ctx.customer_id,)).fetchone()
+    by = auth_service.get_user_by_id(row["updated_by"]) if row and row["updated_by"] else None
     return CustomerProfile(
         customer=CustomerOut(
             id=customer.id,
@@ -122,9 +130,43 @@ def get_customer_profile(ctx: AuthContext = Depends(require_customer_access)) ->
             short_name=customer.short_name,
             tools_release=customer.tools_release,
             environment=customer.environment,
+            is_demo=customer.is_demo,
         ),
         identities=identities,
+        updated_at=row["updated_at"] if row else None,
+        updated_by=(by.display_name if by else (row["updated_by"] if row else None)),
     )
+
+
+@router.put("/customer-profile", response_model=CustomerProfile)
+def update_customer_profile(payload: CustomerInput, ctx: AuthContext = Depends(require_role("admin"))) -> CustomerProfile:
+    """Edit the active customer's own information (Admin only, audited)."""
+    try:
+        customer_service.update_customer(ctx.customer_id, name=payload.name, short_name=payload.short_name,
+                                         tools_release=payload.tools_release, environment=payload.environment,
+                                         actor_user_id=ctx.identity.id)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except ActorNoLongerAuthorised as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
+    return get_customer_profile(ctx)
+
+
+@router.post("/customers", response_model=CustomerOut, status_code=201)
+def create_customer(payload: CustomerInput, ctx: AuthContext = Depends(require_role("admin"))) -> CustomerOut:
+    """Create a new real (non-demo) customer; the creator becomes its first Admin."""
+    try:
+        c = customer_service.create_customer(name=payload.name, short_name=payload.short_name,
+                                             tools_release=payload.tools_release, environment=payload.environment,
+                                             creator_user_id=ctx.identity.id, creator_company_id=ctx.customer_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except ActorNoLongerAuthorised as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
+    return CustomerOut(id=c.id, name=c.name, short_name=c.short_name, tools_release=c.tools_release,
+                       environment=c.environment, is_demo=c.is_demo, roles=["admin", "dashboard_viewer", "product_manager"])
 
 
 # ---------------------------------------------------------------------
@@ -272,6 +314,40 @@ def list_agents(ctx: AuthContext = Depends(require_customer_access)) -> list[Age
     return get_agent_registry_service().list_agents()
 
 
+@router.get("/agent-settings")
+def get_agent_settings(ctx: AuthContext = Depends(require_customer_access)) -> dict:
+    """Which agents are switched on for this customer."""
+    from ..services import agent_settings
+
+    s = agent_settings.stored(ctx.customer_id)
+    return {"agents": [{"name": n, "label": l, "enabled": n not in agent_settings.disabled_agents(ctx.customer_id)}
+                       for n, l in agent_settings.AGENT_LABELS.items()],
+            "revision": s.revision if s else 0, "updatedAt": s.updated_at if s else None,
+            "updatedBy": s.updated_by if s else None}
+
+
+class AgentSettingsInput(ApiModel):
+    disabled: list[str] = []
+    expected_revision: Optional[int] = None
+
+
+@router.put("/agent-settings")
+def put_agent_settings(payload: AgentSettingsInput, ctx: AuthContext = Depends(require_role("admin"))) -> dict:
+    """Switch agents on or off for this customer (Admin only)."""
+    from ..persistence.revisions import RevisionConflict, RevisionRequired
+    from ..services import agent_settings
+
+    try:
+        agent_settings.save(ctx.customer_id, payload.disabled, payload.expected_revision, ctx.identity.display_name)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except RevisionConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except RevisionRequired as exc:
+        raise HTTPException(status_code=428, detail=str(exc))
+    return get_agent_settings(ctx)
+
+
 @router.get("/agents/{agent_name}", response_model=AgentDefinition)
 def get_agent(agent_name: str, ctx: AuthContext = Depends(require_customer_access)) -> AgentDefinition:
     agent = get_agent_registry_service().get_agent(agent_name)
@@ -385,7 +461,9 @@ def list_integrations(ctx: AuthContext = Depends(require_customer_access)) -> li
             connected=ais_live,
             detail=(
                 "Live AIS connection configured (separate from discovery)" if ais_live
-                else "Mock mode -- no JDE writes are possible; separate from discovery"
+                else "Simulated JDE writes, for this demo customer only" if customer_service.is_demo_company(ctx.customer_id)
+                else "Not available: live JDE writes are not enabled in this deployment, and nothing is simulated for a "
+                     "real customer"
             ),
         ),
         IntegrationStatus(name="Jira Service Management", connected=jira_live, detail=jira_detail),

@@ -189,6 +189,20 @@ async def _unhandled_exception_handler(request: Request, exc: Exception) -> JSON
     return JSONResponse(status_code=500, content={"detail": "internal server error"})
 
 
+def _build_commit() -> str:
+    """The backend commit actually running, so the UI can show it."""
+    import subprocess
+
+    try:
+        return subprocess.run(["git", "rev-parse", "--short=10", "HEAD"], cwd=os.path.dirname(__file__),
+                              capture_output=True, text=True, timeout=5).stdout.strip() or "unknown"
+    except (OSError, subprocess.SubprocessError):
+        return "unknown"
+
+
+_BUILD_COMMIT = _build_commit()
+
+
 @app.get("/health", tags=["health"])
 def health() -> dict:
-    return {"status": "ok"}
+    return {"status": "ok", "commit": _BUILD_COMMIT}

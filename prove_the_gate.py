@@ -106,10 +106,13 @@ def set_approver_roles(roles: list[str], membership_status: str = "active") -> N
         "CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, is_active INTEGER NOT NULL);"
         "CREATE TABLE IF NOT EXISTS company_memberships (id TEXT PRIMARY KEY, user_id TEXT, company_id TEXT, status TEXT);"
         "CREATE TABLE IF NOT EXISTS membership_roles (membership_id TEXT, role TEXT);"
-        "DELETE FROM users; DELETE FROM company_memberships; DELETE FROM membership_roles;"
+        # Mock-mode proof: the gate's own test company is a demo customer (simulated execution only exists there).
+        "CREATE TABLE IF NOT EXISTS companies (id TEXT PRIMARY KEY, is_demo INTEGER NOT NULL DEFAULT 0);"
+        "DELETE FROM users; DELETE FROM company_memberships; DELETE FROM membership_roles; DELETE FROM companies;"
     )
     conn.execute("INSERT INTO users VALUES (?, 1)", (APPROVER_ID,))
     conn.execute("INSERT INTO company_memberships VALUES ('m-gate', ?, ?, ?)", (APPROVER_ID, COMPANY, membership_status))
+    conn.execute("INSERT INTO companies VALUES (?, 1)", (COMPANY,))
     conn.executemany("INSERT INTO membership_roles VALUES ('m-gate', ?)", [(r,) for r in roles])
     conn.commit()
     conn.close()

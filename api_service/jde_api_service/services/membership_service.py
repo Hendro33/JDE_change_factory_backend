@@ -104,7 +104,7 @@ def companies_for_user(user_id: str) -> list[dict]:
     /session bootstrap and the company switcher need."""
     with connection() as conn:
         rows = conn.execute(
-            "SELECT m.id as membership_id, m.company_id, c.name, c.short_name, c.tools_release, c.environment "
+            "SELECT m.id as membership_id, m.company_id, c.name, c.short_name, c.tools_release, c.environment, c.is_demo "
             "FROM company_memberships m JOIN companies c ON c.id = m.company_id "
             "WHERE m.user_id = ? AND m.status = 'active' ORDER BY c.name",
             (user_id,),
@@ -117,6 +117,7 @@ def companies_for_user(user_id: str) -> list[dict]:
             result.append({
                 "company_id": row["company_id"], "name": row["name"], "short_name": row["short_name"],
                 "tools_release": row["tools_release"], "environment": row["environment"],
+                "is_demo": bool(row["is_demo"]),
                 "roles": sorted(r["role"] for r in role_rows),
             })
         return result

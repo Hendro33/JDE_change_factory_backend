@@ -414,5 +414,12 @@ class LiveAisTransport:
 def transport_for(company_id: str, config, *, live_transport: Optional[httpx.BaseTransport] = None):
     """The transport the profile asks for -- never a substitute."""
     if config.connection_mode == "simulation":
+        from ..services.customer_service import is_demo_company
+
+        if not is_demo_company(company_id):
+            raise DestinationNotAllowed(
+                "this connection is set to Simulation, which only exists for demo customers; switch it to Live "
+                "and enter the customer's real AIS address"
+            )
         return SimulatedAisEndpoint(company_id, config.environment)
     return LiveAisTransport(company_id, config.ais_base_url, config.limits.timeout_seconds, transport=live_transport)

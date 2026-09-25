@@ -309,6 +309,13 @@ def _require_live_approval(change_id: str) -> tuple[dict, dict]:
             f"change {change_id} was recorded for company {record.get('company_id')!r} but its story now "
             f"belongs to {company_id!r} -- refusing."
         )
+    from .config import settings as _settings
+
+    if _settings.mock_mode:
+        try:
+            authority.require_simulation_allowed(company_id)
+        except (authority.SimulationNotAllowed, authority.AuthorityUnverifiable) as exc:
+            raise ChangeApprovalError(f"change {change_id}: {exc}") from exc
     scope = load_company_scope(company_id)
     policy = require_approval_policy(scope)
     recorded = record.get("approver_authority") or {}
@@ -450,6 +457,9 @@ def preflight(change_id: str) -> dict:
     op = record.get("operation", {})
     check("Story approved (Gate 2)", lambda: backlog.require_approved(record["story_id"]))
     check("Exact change approved, unexpired, same company, approver authority current", lambda: _require_live_approval(change_id))
+    if settings.mock_mode:
+        check("Simulated execution allowed (demo customers only; live JDE writes are not enabled)",
+              lambda: authority.require_simulation_allowed(company_for_story(record["story_id"])))
     # The company's scope is read on its own, so its checks are reported
     # even while the approval itself is still missing.
     scope = check("Company scope saved for the story's company",

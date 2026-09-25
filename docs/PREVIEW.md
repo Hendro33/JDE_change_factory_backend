@@ -1,7 +1,12 @@
-# Trying Jade on your Mac (local preview)
+# Running Jade on your Mac
 
-The preview runs the real backend and frontend on your own Mac. JD Edwards is **simulated**: nothing connects to any
-JDE system. The process framework is a **synthetic fixture** (SYN- ids), not APQC content.
+This runs the real backend and frontend on your own Mac, always from the latest `main` of both repositories (the
+launcher updates them on every start). The footer shows the frontend and backend commits that are running.
+
+- **Your real customers:** create them in **Admin › Customer Setup › New customer**. A real customer only ever uses
+  live connections; nothing is simulated for it.
+- **Demo customers** (BicycleWorks and three others) hold test data. They carry a DEMO badge and a banner on every
+  page, and only they may use a simulated JDE. The process framework in BicycleWorks is a synthetic fixture.
 
 ## One-time setup
 
@@ -22,8 +27,8 @@ JDE system. The process framework is a **synthetic fixture** (SYN- ids), not APQ
 
    ```bash
    mkdir -p ~/jade && cd ~/jade
-   gh repo clone Hendro33/JDE_change_factory_backend  -- -b claude/stage1-setup-and-safeguards
-   gh repo clone Hendro33/JDE_change_factory_frontend -- -b claude/focused-gates-gtay96
+   gh repo clone Hendro33/JDE_change_factory_backend
+   gh repo clone Hendro33/JDE_change_factory_frontend
    ```
 
 ## Start (every time)
@@ -82,6 +87,15 @@ and stop the preview with Ctrl-C.
      with its licence reference.
 6. Open a private window, sign in as `do@e2e.local` and open the same story. It shows the same saved data. The
    Domain Owner can review and edit maps in their own domain.
+
+## Your customer: configuration in the app
+
+Everything below is done in the browser and saved on Jade's backend:
+- **Admin › Customer Setup:** the customer's name, Tools release and JDE environment; links to all its settings.
+- **Admin › Integrations:** the JDE connection (address, environment, role, user and password, approved reads,
+  Test Connection, sample read) and Jira (site, project, statuses, fields, API token, Test Connection, Sync).
+- **Admin › Business Domains, Process Framework, Agents** (switch an agent on or off for this customer), **Users**.
+- **Admin › ERP / JDE Landscape:** engagement scope and approval policy.
 
 ## First read-only JDE connection (prepared; not yet authorised)
 

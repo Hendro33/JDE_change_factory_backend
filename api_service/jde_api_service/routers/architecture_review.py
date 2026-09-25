@@ -88,6 +88,12 @@ async def ask_about_solution_endpoint(
     if not payload.question.strip():
         raise HTTPException(status_code=422, detail="a question is required")
 
+    from ..services import agent_settings
+
+    try:
+        agent_settings.require_enabled(ctx.customer_id, "architect")
+    except agent_settings.AgentDisabled as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
     try:
         result = await ask_about_solution(
             story_id=change_id,
@@ -126,6 +132,12 @@ def start_architecture_review(
     existing = run_service.get(change_id)
     if existing is not None and existing.stage == "analyzing":
         raise HTTPException(status_code=409, detail=f"architecture review already in progress for {change_id}")
+    from ..services import agent_settings
+
+    try:
+        agent_settings.require_enabled(ctx.customer_id, "architect")
+    except agent_settings.AgentDisabled as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
 
     background_tasks.add_task(
         run_architecture_review,

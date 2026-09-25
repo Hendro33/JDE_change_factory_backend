@@ -18,6 +18,8 @@ class Customer(ApiModel):
     short_name: str
     tools_release: str
     environment: str
+    # Demo customers hold test data; simulated JDE exists only inside them.
+    is_demo: bool = False
     # This user's roles on THIS company specifically -- a user can hold
     # different roles on different companies. See models/auth.py's own
     # docstring for what each role means.

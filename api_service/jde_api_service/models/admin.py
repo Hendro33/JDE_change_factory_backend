@@ -23,6 +23,15 @@ class IdentitySummary(ApiModel):
 class CustomerProfile(ApiModel):
     customer: Customer
     identities: list[IdentitySummary] = []
+    updated_at: Optional[str] = None
+    updated_by: Optional[str] = None
+
+
+class CustomerInput(ApiModel):
+    name: str
+    short_name: str = ""
+    tools_release: str = ""
+    environment: str = ""
 
 
 class AisConnectionStatus(ApiModel):

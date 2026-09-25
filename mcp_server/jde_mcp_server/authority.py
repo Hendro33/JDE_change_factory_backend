@@ -45,6 +45,27 @@ def _connect() -> sqlite3.Connection:
     return conn
 
 
+def require_simulation_allowed(company_id: str) -> None:
+    """Simulated JDE execution exists only for demo customers. A real
+    customer never gets a simulated write presented as a delivery."""
+    conn = _connect()
+    try:
+        row = conn.execute("SELECT is_demo FROM companies WHERE id = ?", (company_id,)).fetchone()
+    except sqlite3.Error as exc:
+        raise AuthorityUnverifiable(f"whether {company_id} is a demo customer cannot be read: {exc}") from exc
+    finally:
+        conn.close()
+    if row is None or not row["is_demo"]:
+        raise SimulationNotAllowed(
+            "live JDE writes are not enabled in this deployment, and simulated execution is only available for "
+            "demo customers -- nothing was executed"
+        )
+
+
+class SimulationNotAllowed(Exception):
+    """Simulated execution was requested for a real (non-demo) customer."""
+
+
 def current_roles(user_id: str, company_id: str) -> frozenset[str]:
     """Roles held right now; empty for an inactive user or membership."""
     conn = _connect()
