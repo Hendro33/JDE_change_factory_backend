@@ -99,16 +99,17 @@ def test_live_and_simulation_never_switch_or_mix(client, monkeypatch):
 
     ready_company(client)  # simulation, enabled
     grant, _ = service.admin_grant("vdb", "u-hendro", "t"), None
-    monkeypatch.delenv("JDE_DISCOVERY_LIVE_ENABLED", raising=False)
+    monkeypatch.setenv("JDE_DISCOVERY_LIVE_ENABLED", "false")  # the operator's lock
     save_profile(client, connectionMode="live")
     view = client.get("/admin/jde/profile", headers=headers("vdb")).json()
     assert not view["discoveryEnabled"] and view["modeLabel"].startswith("LIVE")
     r = client.post("/admin/jde/test-connection", headers=headers("vdb")).json()
-    assert r["outcome"] == "blocked" and "switched off for this deployment" in r["detail"]  # no fallback to simulation
+    assert r["outcome"] == "blocked" and "locked off" in r["detail"]  # no fallback to simulation
     with pytest.raises(service.DiscoveryBlocked):  # a grant from the simulation revision cannot read live
         service.execute_read(grant, "udc_values", "00/DT", [], [], 1)
     server = {p["id"]: p for p in view["serverPrerequisites"]}
-    assert not server["live_enabled"]["satisfied"] and not server["allowlist"]["satisfied"]
+    # Locked by the operator; the saved address itself is the permitted destination.
+    assert not server["live_enabled"]["satisfied"] and server["allowlist"]["satisfied"]
 
 
 def test_forbidden_reads_are_blocked_before_any_request(client, monkeypatch):
@@ -133,7 +134,7 @@ def test_tls_and_network_failures_are_explained_and_never_bypassed(client, monke
 
     _live(client, monkeypatch, tls_fail)
     r = client.post("/admin/jde/test-connection", headers=headers("vdb")).json()
-    assert r["outcome"] == "failed" and "JDE_DISCOVERY_CA_BUNDLE" in r["detail"] and "never switched off" in r["detail"]
+    assert r["outcome"] == "failed" and "upload the AIS certificate" in r["detail"] and "never switched off" in r["detail"]
 
     def unreachable(request):
         raise httpx.ConnectError("[Errno -2] Name or service not known")

@@ -137,16 +137,19 @@ Each company has one read-only **discovery profile**, set up under Admin → Int
 
 All of it is covered by the backup script.
 
-**Deployment controls.** Both default to off, and both are needed before anything live is contacted:
+**Connection settings and operator overrides.** A company Admin configures the live connection in the app: the AIS
+address (the one permitted destination), the AIS certificate (uploaded, stored in `jde_ca_certificates`, trusted only
+for that connection), the credential (encrypted, bound to that address and certificate) and the mode. Certificate and
+host-name/IP verification are never switched off. The server needs no settings; these optional overrides remain:
 
 | Variable | Meaning |
 |---|---|
-| `JDE_DISCOVERY_LIVE_ENABLED` | `true` allows profiles in *live* mode. Unset means only the labelled simulation works. |
-| `JDE_DISCOVERY_ALLOWED_HOSTS` | Comma-separated AIS host names a live profile may use. Anything else is refused before a connection is opened. |
-| `JDE_DISCOVERY_CA_BUNDLE` | Optional PEM file trusted for the AIS certificate. It is used for every AIS request: sign-in, defaultconfig, reads and sign-out. Hostname or IP checks stay on. If the file is missing, unreadable or unusable, live access stays off and the startup log says why. There is never a fallback to unverified TLS. |
+| `JDE_DISCOVERY_LIVE_ENABLED` | `false` locks live discovery off for every company. |
+| `JDE_DISCOVERY_ALLOWED_HOSTS` | If set, only these AIS hosts may be used, whatever a company saves. |
+| `JDE_DISCOVERY_CA_BUNDLE` | Fallback CA file for connections without an uploaded certificate. If it is unusable, those connections stay off. |
 
 **Readiness.** A live profile can be enabled only when every required item in five separately shown groups is satisfied:
-- **Connectivity:** live enabled, TLS trust usable, host allowlisted, endpoint reached over verified TLS.
+- **Connectivity:** live access not locked, TLS trust usable, the saved address permitted, endpoint reached over verified TLS.
 - **Identity:** signed in, and the session's environment, role, application release and Tools / server release captured. Environment names are compared exactly and never aliased (`JPS920` is not `PS920`). A `*ALL` role proves only that sign-in works. The path code comes only from JDE's F00941 answer, never from the environment name.
 - **JDE authorisation:** a dedicated user and non-`*ALL` role, verified independently with a linked evidence document, and the approved sample read succeeding within its bounds. The customer's JDE permissions are the primary boundary; Jade's approved reads are an extra restriction.
 - **Network restriction:** AIS accepts only the backend's source address, with evidence.

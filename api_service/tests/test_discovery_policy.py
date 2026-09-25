@@ -253,10 +253,11 @@ def test_no_discovery_action_can_invoke_a_write_capability():
 def _live(client, monkeypatch, handler, *, allow_host=True, enable=True):
     from jde_api_service.discovery import service
 
-    if enable:
-        monkeypatch.setenv("JDE_DISCOVERY_LIVE_ENABLED", "true")
-    if allow_host:
-        monkeypatch.setenv("JDE_DISCOVERY_ALLOWED_HOSTS", "ais-vdb.customer.example")
+    # Live needs no server settings; the operator can still lock it off or narrow destinations.
+    if not enable:
+        monkeypatch.setenv("JDE_DISCOVERY_LIVE_ENABLED", "false")
+    if not allow_host:
+        monkeypatch.setenv("JDE_DISCOVERY_ALLOWED_HOSTS", "some-other-ais.example")
     monkeypatch.setattr(service, "LIVE_HTTP_TRANSPORT", httpx.MockTransport(handler))
     save_profile(client, connectionMode="live")
     save_credential(client)
@@ -278,19 +279,19 @@ def _ais_ok(requests: list):
     return handler
 
 
-def test_live_is_off_unless_the_deployment_enables_it_and_never_falls_back(client, monkeypatch, calls):
+def test_the_server_operator_can_lock_live_off_and_it_never_falls_back(client, monkeypatch, calls):
     requests: list = []
     _live(client, monkeypatch, _ais_ok(requests), enable=False)
     r = client.post("/admin/jde/test-connection", headers=headers("vdb")).json()
-    assert r["outcome"] == "blocked" and "switched off" in r["detail"]
+    assert r["outcome"] == "blocked" and "locked off" in r["detail"]
     assert requests == [] and calls == []  # neither live nor a silent simulation
 
 
-def test_live_destination_must_be_allowlisted(client, monkeypatch):
+def test_the_server_operator_can_narrow_destinations(client, monkeypatch):
     requests: list = []
     _live(client, monkeypatch, _ais_ok(requests), allow_host=False)
     r = client.post("/admin/jde/test-connection", headers=headers("vdb")).json()
-    assert r["outcome"] == "blocked" and "allowlist" in r["detail"] and requests == []
+    assert r["outcome"] == "blocked" and "not a permitted destination" in r["detail"] and requests == []
 
 
 def test_live_test_connection_uses_only_fixed_endpoints_and_verified_tls(client, monkeypatch):
@@ -303,7 +304,8 @@ def test_live_test_connection_uses_only_fixed_endpoints_and_verified_tls(client,
     assert set(requests) <= {("GET", "/jderest/defaultconfig"), ("POST", "/jderest/v2/tokenrequest"),
                              ("POST", "/jderest/v2/tokenrequest/logout")}
     live = transport.LiveAisTransport("vdb", "https://ais-vdb.customer.example", 5,
-                                      transport=httpx.MockTransport(_ais_ok([])))
+                                      transport=httpx.MockTransport(_ais_ok([])),
+                                      trust=transport.Trust(host="ais-vdb.customer.example"))
     assert live._client.follow_redirects is False
 
 

@@ -569,4 +569,24 @@ MIGRATIONS: list[tuple[int, str]] = [
         UPDATE companies SET is_demo = 1 WHERE id IN ('vdb', 'nhd', 'mrv', 'bwm');
         """,
     ),
+    (
+        10,
+        """
+        -- The AIS server certificate (or its CA) an Admin uploads for a
+        -- company's JDE connection. It only ever ADDS trust for that one
+        -- connection; verification is never switched off.
+        CREATE TABLE jde_ca_certificates (
+            company_id TEXT NOT NULL,
+            sha256 TEXT NOT NULL,
+            pem TEXT NOT NULL,
+            summary TEXT NOT NULL,
+            uploaded_by TEXT NOT NULL,
+            uploaded_at TEXT NOT NULL,
+            PRIMARY KEY (company_id, sha256)
+        );
+        -- The address + certificate a saved JDE password was entered for; a
+        -- different destination never receives it.
+        ALTER TABLE jde_profiles ADD COLUMN credential_destination TEXT;
+        """,
+    ),
 ]

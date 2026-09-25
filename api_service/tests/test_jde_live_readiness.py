@@ -151,7 +151,7 @@ def test_the_ca_bundle_is_used_for_every_request_with_hostname_checks(https_ais,
 
     # No bundle: the default trust store refuses the private certificate before any HTTP is exchanged.
     monkeypatch.delenv("JDE_DISCOVERY_CA_BUNDLE", raising=False)
-    with pytest.raises(transport.TransportError, match="JDE_DISCOVERY_CA_BUNDLE"):
+    with pytest.raises(transport.TransportError, match="upload the AIS certificate"):
         transport.LiveAisTransport("vdb", base, 5).check_reachability()
     # The wrong CA is refused too.
     monkeypatch.setenv("JDE_DISCOVERY_CA_BUNDLE", https_ais["other_cert"])
