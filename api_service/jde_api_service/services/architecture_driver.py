@@ -91,7 +91,7 @@ Add one more top-level key, "evidence", in the same json block:
     "gaps": [{"kind": "missing" | "stale" | "conflict" | "incompatible" | "unavailable", "description": "...", "question": "<targeted question for the customer/CNC>", "blocked_step": "<design step that cannot proceed, or empty>"}],
     "contradictions": ["<evidence that disagrees with other evidence>"],
     "confidence_limitations": ["<what limits confidence>"],
-    "process_findings": {"affected_processes": ["<framework node_key: why>"], "missing_requirements": ["..."], "missing_controls": ["..."], "missing_acceptance_criteria": ["..."]}
+    "process_findings": {"affected_processes": ["<framework node_key: why>"], "missing_requirements": ["<the exact requirement sentence to add to the story>"], "missing_controls": ["<the exact control sentence to add>"], "missing_acceptance_criteria": ["<a testable acceptance criterion to add>"]}
   }
 Use "observed" only for what a discovery_read or an imported artifact actually showed in THIS run, citing its id; "customer_attestation" for what the customer states (runtime correspondence, the profile's confirmations); everything else is an "assumption". Missing evidence becomes a gap with a targeted question or a blocked step -- never invented functionality. Jade checks every citation against what this run actually read.
 Never report an object, version, or processing option you did not actually confirm via discovery_read or an imported artifact -- leave objects_affected honestly incomplete rather than guessing. If you are not confident in the recommended route, say so in existing_functionality_found or dependencies_and_conflicts rather than picking a route to fill the field.

@@ -367,13 +367,34 @@ Render provisions HTTPS for it automatically once that CNAME resolves.
     applied, built, CNC activation, verified.
   - Simulated delivery carries the SIMULATED DELIVERY notice in the record and its Markdown.
 
+## Story refinement from findings
+
+- Findings: missing requirements, controls and acceptance criteria from the refinement process analysis and from
+  the Architect's `process_findings`. Each is registered in `story_findings` with its own status
+  (proposed / applied / rejected / deferred, plus reason and decider). Agents never change a story.
+- A reviewer (a Product Manager, or the Domain Owner assigned to the story's domain):
+  - previews the change as a diff (`/changes/{id}/process/refinement/preview`);
+  - applies selected findings (`.../apply`, compare-and-set on the story revision).
+- Applying writes the following:
+  - a `story_revisions` row, attributed to the reviewer and linked to the findings and to the exact process
+    references in force. Revision 1 is the story as approved.
+  - the backlog record's text, which the Architect reads, with the previous text kept in `story_revisions`.
+- A finding is applied at most once.
+- Applying one flags the current design (`story_revised`) and invalidates pending or approved work for the story.
+
 ## Local preview
 
-`scripts/run_local_preview.sh [--reset]` does the following:
+`scripts/run_local_preview.sh` does the following:
+- creates its own virtual environment on the first run and installs the backend and frontend;
 - starts the real backend (:8000) and the frontend (:5173);
-- seeds the BicycleWorks demonstration on first run (`seed_demo_technical.py`, `seed_demo_process.py`: scripted
-  stand-ins, synthetic framework, simulated JDE);
-- prints throwaway local logins.
+- adds each demonstration story once, only if it is absent:
+  - `seed_demo_technical.py`, `seed_demo_process.py` and `seed_demo_functional.py`;
+  - they use scripted stand-ins, the synthetic framework and simulated JDE.
 
-Data and those credentials stay in `.preview-data/` (git-ignored), so a restart resumes where you left off.
+Everything is kept in `.preview-data/` (git-ignored) and reused on every start:
+- the database, with accounts, password hashes and encrypted credentials;
+- data files, frameworks and their original workbooks, mappings, maps and records.
+
+Throwaway demo passwords are generated once into `.preview-data/credentials.env` (mode 600) and never printed or
+logged. An existing admin account is never reset. `--reset` deletes the data only after typed confirmation.
 Browser demonstration: frontend `e2e/process/`.
