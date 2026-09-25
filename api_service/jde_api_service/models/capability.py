@@ -53,6 +53,12 @@ class Capability(ApiModel):
     verification: dict = {}
     recovery: dict = {}
     delivery: dict = {}
+    # The machine-readable contract the execution gate enforces. Absent
+    # means the capability cannot execute (proposal only).
+    enforcement: Optional[dict] = None
+    # Technical capabilities: what the technical executor enforces
+    # (formats, adapters per mode, CNC activation roles).
+    technical_enforcement: Optional[dict] = None
     validation: CapabilityValidation
 
 

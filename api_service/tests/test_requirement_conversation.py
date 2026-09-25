@@ -137,7 +137,7 @@ def test_ask_requires_a_question(client, monkeypatch):
 
 
 def test_ask_requires_a_requirement_to_exist(client, monkeypatch):
-    change_id = _seed_and_enhance_t001(client, monkeypatch)
+    change_id = _seed_and_enhance_t001(client, monkeypatch, triaged=False)
     # No GET /domain-review yet -- ensure() never ran, so no DomainReview record exists.
     r = client.post(
         f"/changes/{change_id}/domain-review/ask",

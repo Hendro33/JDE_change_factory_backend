@@ -209,6 +209,20 @@ def require_approved(story_id: str) -> dict:
     return record
 
 
+def record_story_revision(story_id: str, user_story: str, *, revision: int, revised_by: str, reason: str) -> dict:
+    """A person-applied revision of an approved story's text (for example
+    accepted process-analysis findings). The previous text is kept in the
+    record's history; the approval decision itself is not changed -- the
+    caller flags dependent designs and approvals for reassessment."""
+    record = require_approved(story_id)
+    record.setdefault("story_revisions", []).append({
+        "revision": revision, "previous_user_story": record["user_story"], "revised_by": revised_by,
+        "reason": reason, "revised_at": time.time()})
+    record["user_story"] = user_story
+    _save(story_id, record)
+    return record
+
+
 def get_approved_story(story_id: str) -> dict:
     """The one call an Architect subagent should make first. Returns the
     full backlog record if -- and only if -- Gate 2 has been cleared."""

@@ -2,7 +2,7 @@
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "mcp__jde-change-factory__set_processing_option",
+        "matcher": "mcp__jde-change-factory__(set_processing_option|run_orchestration)",
         "hooks": [
           {
             "type": "command",

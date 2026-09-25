@@ -60,7 +60,10 @@ class JiraIntegrationConfig(ApiModel):
     # simply not captured; Work Type and Priority (both standard Jira
     # fields) are always captured regardless of this setting.
     request_type_field: str = ""
+    # 0 = never saved; see persistence/revisions.py.
+    revision: int = 0
     updated_at: Optional[str] = None
+    # Always the authenticated user who saved -- never client-supplied.
     updated_by: Optional[str] = None
 
     def is_configured(self) -> bool:
@@ -74,7 +77,9 @@ class JiraIntegrationConfigUpdate(ApiModel):
     post_pickup_status: str
     jade_id_field: str
     request_type_field: str = ""
-    updated_by: str
+    # The revision the client loaded; required once a config exists.
+    # Any client-sent updatedBy is ignored -- the actor is the session.
+    expected_revision: Optional[int] = None
 
 
 class JiraCredentials(ApiModel):
@@ -86,14 +91,19 @@ class JiraCredentials(ApiModel):
     customer_id: str
     email: str = ""
     api_token: str = ""
+    revision: int = 0
     updated_at: Optional[str] = None
     updated_by: Optional[str] = None
 
 
 class JiraCredentialsUpdate(ApiModel):
+    """Write-only replacement: the stored token is never shown back, so
+    a client has nothing to compare against -- replacing it is always a
+    deliberate overwrite, attributed to the authenticated user. (No
+    expected_revision, unlike the config.)"""
+
     email: str
     api_token: str
-    updated_by: str
 
 
 class JiraTestConnectionInput(ApiModel):
@@ -120,9 +130,18 @@ class JiraConnectionStatus(ApiModel):
     own JiraCredentials record (see this module's own docstring) --
     still never the value itself."""
 
+    # True only in explicit demo mode (JDE_JIRA_MOCK_MODE=true).
     mock_mode: bool
     credentials_configured: bool
     config_configured: bool
+    # demo / live / unavailable (see registry.jira_mode); never a silent mock.
+    state: str = "unavailable"
+    unavailable_reason: str = ""
+    # How the stored token is held: none / encrypted / plaintext (legacy) /
+    # unreadable (encrypted under a key this server does not have).
+    credential_storage: str = "none"
+    # Whether this server can save a credential at all (encryption key set).
+    credential_encryption_available: bool = False
 
 
 class JiraSyncError(ApiModel):

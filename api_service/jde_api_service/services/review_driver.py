@@ -22,6 +22,7 @@ from __future__ import annotations
 
 from typing import Optional
 
+from . import agent_runtime
 from ..models.change import UserStory
 from .orchestration_driver import _ALLOWED_TOOLS, _extract_json, _user_story_from_summary
 
@@ -100,7 +101,7 @@ async def run_reviewer_agent(
 
     import claude_agent_sdk as sdk
 
-    options = sdk.ClaudeAgentOptions(
+    options = agent_runtime.options(
         cwd=repo_root,
         permission_mode=PERMISSION_MODE,
         allowed_tools=_ALLOWED_TOOLS,

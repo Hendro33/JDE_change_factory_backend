@@ -77,16 +77,24 @@ def test_forgot_password_never_reveals_whether_an_email_is_registered(client):
     unknown = client.post("/auth/forgot-password", json={"email": "nobody@test.local"})
     assert known.status_code == 200 and unknown.status_code == 200
     assert known.json()["ok"] is True and unknown.json()["ok"] is True
-    # Dev-preview mode surfaces a link only when the account exists --
-    # see email_service.py's own docstring on this being an accepted
-    # prototype trade-off.
-    assert known.json()["previewUrl"] is not None
+    # The anonymous endpoint never returns the link, even in dev-preview
+    # mode: that would let anyone reset anyone's password.
+    assert known.json()["previewUrl"] is None
     assert unknown.json()["previewUrl"] is None
 
 
+def _admin_reset_link(client, email: str, company: str = "vdb") -> str:
+    """Without an email provider, a company Admin issues the reset link."""
+    members = client.get("/admin/users", headers=headers(customer=company)).json()["members"]
+    membership_id = next(m["membershipId"] for m in members if m["email"] == email)
+    r = client.post(f"/admin/users/{membership_id}/password-reset-link", headers=headers(customer=company))
+    assert r.status_code == 200, r.text
+    assert r.json()["sent"] is False  # dev-preview: handed over by the Admin, not emailed
+    return r.json()["previewUrl"]
+
+
 def test_password_reset_end_to_end_and_revokes_existing_sessions(client):
-    forgot = client.post("/auth/forgot-password", json={"email": "hendro@test.local"})
-    token = _token_from(forgot.json()["previewUrl"], "resetToken")
+    token = _token_from(_admin_reset_link(client, "hendro@test.local"), "resetToken")
 
     reset = client.post("/auth/reset-password", json={"token": token, "newPassword": "a-new-password-999"})
     assert reset.status_code == 200
@@ -102,8 +110,7 @@ def test_password_reset_end_to_end_and_revokes_existing_sessions(client):
 
 
 def test_reset_token_is_single_use(client):
-    forgot = client.post("/auth/forgot-password", json={"email": "hendro@test.local"})
-    token = _token_from(forgot.json()["previewUrl"], "resetToken")
+    token = _token_from(_admin_reset_link(client, "hendro@test.local"), "resetToken")
 
     first = client.post("/auth/reset-password", json={"token": token, "newPassword": "first-new-password"})
     assert first.status_code == 200
@@ -115,10 +122,22 @@ def test_reset_token_is_single_use(client):
 # Invitations
 # ---------------------------------------------------------------------
 def test_invite_preview_accept_new_user_end_to_end(client):
-    invite = client.post(
+    # Domain assignments grant Domain Owner authority, so they must be
+    # this company's own domains: another company's domain is refused.
+    foreign = client.post(
         "/admin/users/invite",
         headers=headers(customer="vdb"),
         json={"email": "newbie@test.local", "roles": ["domain_owner"], "domainIds": ["DOM-BWM-WAREHOUSE"]},
+    )
+    assert foreign.status_code == 422
+    vdb_domain = client.post(
+        "/admin/business-domains", headers=headers(customer="vdb"),
+        json={"apqcCode": "4.4", "name": "Warehousing", "level": "4.4"},
+    ).json()["id"]
+    invite = client.post(
+        "/admin/users/invite",
+        headers=headers(customer="vdb"),
+        json={"email": "newbie@test.local", "roles": ["domain_owner"], "domainIds": [vdb_domain]},
     )
     assert invite.status_code == 200
     body = invite.json()
@@ -155,7 +174,7 @@ def test_invite_preview_accept_new_user_end_to_end(client):
     member = next(m for m in listing.json()["members"] if m["email"] == "newbie@test.local")
     assert member["status"] == "active"
     assert member["roles"] == ["domain_owner"]
-    assert member["domainIds"] == ["DOM-BWM-WAREHOUSE"]
+    assert member["domainIds"] == [vdb_domain]
 
 
 def test_expired_invitation_cannot_be_accepted(client, monkeypatch):
@@ -306,7 +325,7 @@ def test_cannot_demote_the_last_active_admin(client):
 
     r = client.put(
         f"/admin/users/{hendro_membership['membershipId']}/roles", headers=headers(customer="mrv"),
-        json={"roles": ["domain_owner"], "domainIds": []},  # dropping admin
+        json={"roles": ["domain_owner"], "domainIds": [], "expectedRevision": hendro_membership["revision"]},  # dropping admin
     )
     assert r.status_code == 409
 
@@ -315,7 +334,10 @@ def test_cannot_deactivate_the_last_active_admin(client):
     listing = client.get("/admin/users", headers=headers(customer="mrv")).json()
     hendro_membership = next(m for m in listing["members"] if m["email"] == "hendro@test.local")
 
-    r = client.post(f"/admin/users/{hendro_membership['membershipId']}/deactivate", headers=headers(customer="mrv"))
+    r = client.post(
+        f"/admin/users/{hendro_membership['membershipId']}/deactivate", headers=headers(customer="mrv"),
+        json={"expectedRevision": hendro_membership["revision"]},
+    )
     assert r.status_code == 409
 
 
@@ -323,7 +345,10 @@ def test_deactivating_a_non_admin_membership_succeeds_and_blocks_access(client, 
     listing = client.get("/admin/users", headers=headers(customer="vdb")).json()
     ellen_membership = next(m for m in listing["members"] if m["email"] == "ellen@test.local")
 
-    r = client.post(f"/admin/users/{ellen_membership['membershipId']}/deactivate", headers=headers(customer="vdb"))
+    r = client.post(
+        f"/admin/users/{ellen_membership['membershipId']}/deactivate", headers=headers(customer="vdb"),
+        json={"expectedRevision": ellen_membership["revision"]},
+    )
     assert r.status_code == 200
     assert r.json()["status"] == "inactive"
 
@@ -366,7 +391,11 @@ def test_jira_settings_survive_a_simulated_restart(client, isolated_dirs):
         assert login.status_code == 200, "the users table itself must also have survived the restart"
 
         status = restarted.get("/admin/jira-integration/status", headers=headers(customer="vdb"))
-        assert status.json() == {"mockMode": False, "credentialsConfigured": True, "configConfigured": True}
+        assert status.json() == {
+            "mockMode": False, "credentialsConfigured": True, "configConfigured": True,
+            "state": "live", "unavailableReason": "",
+            "credentialStorage": "encrypted", "credentialEncryptionAvailable": True,
+        }
 
         config = restarted.get("/admin/jira-integration", headers=headers(customer="vdb"))
         assert config.json()["baseUrl"] == "https://durable-test.atlassian.net"

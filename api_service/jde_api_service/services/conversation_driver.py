@@ -28,6 +28,7 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
+from . import agent_runtime
 from ..models.architecture_review import ArchitectAnalysisVersion
 from ..models.change import UserStory
 from ..models.domain_review import ConversationTurn
@@ -114,7 +115,7 @@ async def ask_about_requirement(
 
     import claude_agent_sdk as sdk
 
-    options = sdk.ClaudeAgentOptions(
+    options = agent_runtime.options(
         cwd=repo_root, permission_mode=PERMISSION_MODE, allowed_tools=_ALLOWED_TOOLS, max_turns=MAX_TURNS,
     )
     prompt = _build_prompt(story_id, current_story, question, asked_by, prior_turns)
@@ -151,12 +152,12 @@ async def ask_about_requirement(
 # endpoint's own stage precondition, enforced here instead by simply
 # never giving the agent the tools that could execute anything.
 # ---------------------------------------------------------------------
+# No JDE reads here: the conversation explains the recorded analysis and
+# its evidence baseline. New evidence comes only from a governed
+# Architect run or Refresh Evidence (discovery/), never from this chat.
 _SOLUTION_ALLOWED_TOOLS = [
     "Task",
     "mcp__jde-change-factory__get_approved_story",
-    "mcp__jde-change-factory__get_object",
-    "mcp__jde-change-factory__get_version",
-    "mcp__jde-change-factory__get_processing_options",
 ]
 
 _SOLUTION_ANSWER_SCHEMA_INSTRUCTIONS = """
@@ -193,7 +194,7 @@ rollback_strategy: {latest_version.architect_decision.rollback_strategy}
 implementation sequence: {latest_version.implementation_spec.sequence}
 validation_approach: {latest_version.implementation_spec.validation_approach}"""
 
-    return f"""Use the architect subagent to answer a question about the solution already analysed for story {story_id}, exactly as its own instructions describe -- you already know this analysis from what follows; you have read-only discovery tools only (get_approved_story, get_object, get_version, get_processing_options) and no tools to propose or execute a change here, so never attempt to call propose_change or resolve_without_change.
+    return f"""Use the architect subagent to answer a question about the solution already analysed for story {story_id}, exactly as its own instructions describe -- you already know this analysis from what follows; you have get_approved_story only -- no JDE reads and no tools to propose or execute a change here; answer from the recorded analysis and its evidence baseline, so never attempt to call propose_change or resolve_without_change.
 
 story_id: {story_id}
 
@@ -235,7 +236,7 @@ async def ask_about_solution(
 
     import claude_agent_sdk as sdk
 
-    options = sdk.ClaudeAgentOptions(
+    options = agent_runtime.options(
         cwd=repo_root, permission_mode=PERMISSION_MODE, allowed_tools=_SOLUTION_ALLOWED_TOOLS, max_turns=MAX_TURNS,
     )
     prompt = _build_solution_prompt(story_id, latest_version, question, asked_by, prior_turns)

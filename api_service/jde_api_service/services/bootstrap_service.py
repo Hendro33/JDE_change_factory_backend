@@ -15,7 +15,7 @@ resets a password an Admin has since changed.
 from __future__ import annotations
 
 from ..config import settings
-from ..models.auth import ALL_ROLES
+from ..models.auth import BOOTSTRAP_ROLES
 from . import auth_service, membership_service
 from .customer_service import get_registry
 
@@ -31,4 +31,4 @@ def ensure_bootstrap_admin() -> None:
     )
     company_ids = settings.bootstrap_admin_companies or [c.id for c in get_registry().list_companies()]
     for company_id in company_ids:
-        membership_service.create_membership(user.id, company_id, ALL_ROLES, created_by=user.id)
+        membership_service.create_membership(user.id, company_id, BOOTSTRAP_ROLES, created_by=user.id)

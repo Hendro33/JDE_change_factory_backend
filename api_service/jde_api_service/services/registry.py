@@ -107,24 +107,51 @@ def get_jira_credentials_service() -> JiraCredentialsService:
     return JiraCredentialsService()
 
 
-def jira_is_live_for_customer(customer_id: str) -> bool:
-    """The actual live/mock decision for one customer's Jira connector:
-    live only when the deployment hasn't force-disabled it AND this
-    customer has their own email + API token saved (Admin >
-    Integrations > Jira) -- no other switch. See config.py's own
-    comment on jira_mock_mode for why that flag is a force-mock
-    override now, not something that has to be flipped for a normal
-    customer to go live."""
+class JiraUnavailable(RuntimeError):
+    """Real mode, but this company's Jira cannot be used: nothing is
+    fetched, nothing is written, and nothing is quietly mocked."""
+
+
+def jira_mode(customer_id: str) -> tuple[str, str]:
+    """(mode, reason) for one company's Jira connector.
+
+    demo        -- only when the deployment explicitly runs Jira in demo
+                   mode (JDE_JIRA_MOCK_MODE=true); the mock gateway is used.
+    live        -- a readable credential and a complete configuration.
+    unavailable -- anything else, with the reason. There is no automatic
+                   fallback to the mock: a real-mode deployment with a
+                   missing, unreadable or incomplete setup says so and
+                   blocks every Jira operation."""
     if settings.jira_mock_mode:
-        return False
-    return get_jira_credentials_service().is_configured(customer_id)
+        return "demo", "This deployment runs Jira in demo mode (JDE_JIRA_MOCK_MODE=true); nothing reaches a real Jira."
+    credentials = get_jira_credentials_service()
+    storage = credentials.storage_status(customer_id)
+    if storage == "none":
+        return "unavailable", "No Jira credential is saved for this company. An Admin must enter it under Admin > Integrations > Jira."
+    if storage == "unreadable":
+        return "unavailable", (
+            "The saved Jira token cannot be decrypted with this server's key. Restore the matching key, "
+            "or have an Admin re-enter the token."
+        )
+    if not credentials.is_configured(customer_id):
+        return "unavailable", "The saved Jira credential is incomplete (email or token missing)."
+    config = get_jira_integration_service().get_for_customer(customer_id)
+    if config is None or not config.is_configured():
+        return "unavailable", "The Jira site, project or status configuration is not complete."
+    return "live", ""
+
+
+def jira_is_live_for_customer(customer_id: str) -> bool:
+    return jira_mode(customer_id)[0] == "live"
 
 
 def get_jira_gateway(customer_id: str) -> JiraGateway:
-    if not jira_is_live_for_customer(customer_id):
+    mode, reason = jira_mode(customer_id)
+    if mode == "demo":
         return JiraMockGateway()
+    if mode == "unavailable":
+        raise JiraUnavailable(reason)
     creds = get_jira_credentials_service().get_for_customer(customer_id)
-    assert creds is not None  # jira_is_live_for_customer already confirmed this
     return JiraHttpGateway(email=creds.email, api_token=creds.api_token)
 
 

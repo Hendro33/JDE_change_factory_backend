@@ -13,16 +13,20 @@ customer must not be visible or selectable, full stop.
 from __future__ import annotations
 
 import uuid
+from datetime import datetime, timezone
 
 from ..models.business_domain import BusinessDomain, BusinessDomainCreate, BusinessDomainStatus
 from ..persistence.json_file_store import JsonFileStore
+from ..persistence.revisions import next_revision
 
 
 class BusinessDomainService:
     def __init__(self, directory: str) -> None:
         self._store = JsonFileStore(directory)
 
-    def create(self, payload: BusinessDomainCreate, customer_id: str, domain_id: str | None = None) -> BusinessDomain:
+    def create(
+        self, payload: BusinessDomainCreate, customer_id: str, domain_id: str | None = None, actor: str | None = None
+    ) -> BusinessDomain:
         """domain_id defaults to a random id; pilot seeding passes a
         stable one so re-seeding is idempotent (same convention as
         change_request_service.create_direct)."""
@@ -34,6 +38,9 @@ class BusinessDomainService:
             level=payload.level,
             description=payload.description,
             domain_owner=payload.domain_owner,
+            revision=1,
+            updated_at=datetime.now(timezone.utc).isoformat(),
+            updated_by=actor,
         )
         self._store.put(domain.id, domain.model_dump(mode="json", by_alias=False))
         return domain
@@ -54,14 +61,21 @@ class BusinessDomainService:
             return None
         return BusinessDomain.model_validate(doc)
 
-    def update_status(self, domain_id: str, status: BusinessDomainStatus) -> BusinessDomain:
+    def update_status(
+        self, domain_id: str, status: BusinessDomainStatus, expected_revision: int | None, actor: str
+    ) -> BusinessDomain:
         """Caller (the router) must have already confirmed the domain
         belongs to the caller's customer via get_for_customer -- this
         method itself trusts domain_id, same convention append_version
-        etc. use elsewhere once existence/ownership is already checked."""
-        doc = self._store.get(domain_id)
-        assert doc is not None
-        domain = BusinessDomain.model_validate(doc)
-        domain.status = status
-        self._store.put(domain.id, domain.model_dump(mode="json", by_alias=False))
-        return domain
+        etc. use elsewhere once existence/ownership is already checked.
+        Raises RevisionConflict/RevisionRequired on a stale save."""
+        with self._store.locked():
+            doc = self._store.get(domain_id)
+            assert doc is not None
+            domain = BusinessDomain.model_validate(doc)
+            domain.revision = next_revision(domain.revision, expected_revision)
+            domain.status = status
+            domain.updated_at = datetime.now(timezone.utc).isoformat()
+            domain.updated_by = actor
+            self._store.put(domain.id, domain.model_dump(mode="json", by_alias=False))
+            return domain

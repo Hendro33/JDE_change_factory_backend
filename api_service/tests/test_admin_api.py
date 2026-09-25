@@ -15,7 +15,7 @@ import claude_agent_sdk as sdk
 
 from jde_mcp_server import backlog
 
-from .conftest import headers
+from .conftest import headers, place_in_owned_domain
 from .test_domain_governance import _fake_enhance_success, _result, _seed_and_enhance_t001
 
 
@@ -44,7 +44,7 @@ def test_erp_landscape_never_exposes_credentials(client):
     dumped = str(body).lower()
     for forbidden in ("password", "username", "token"):
         assert forbidden not in dumped
-    assert "not yet customer-specific" in body["scopeGloballySharedNote"]
+    assert "deployment-wide" in body["scopeGloballySharedNote"]
 
 
 def test_engagement_scope_is_customer_scoped_and_editable(client):
@@ -81,7 +81,7 @@ def test_agents_list_reflects_the_real_md_files(client):
     r = client.get("/admin/agents", headers=headers())
     assert r.status_code == 200
     names = {a["name"] for a in r.json()}
-    assert names == {"architect", "check-agent", "functional-agent", "improve-agent", "receive-agent"}
+    assert names == {"architect", "check-agent", "functional-agent", "improve-agent", "receive-agent", "technical-agent"}
     architect = next(a for a in r.json() if a["name"] == "architect")
     assert "mcp__jde-change-factory__get_approved_story" in architect["declaredTools"]
     assert len(architect["version"]) == 12  # short content hash
@@ -117,7 +117,7 @@ def test_business_domain_create_and_status_transition(client):
     assert domain_id not in [d["id"] for d in r.json()]
 
     r = client.put(
-        f"/admin/business-domains/{domain_id}/status", headers=headers(customer="vdb"), json={"status": "retired"}
+        f"/admin/business-domains/{domain_id}/status", headers=headers(customer="vdb"), json={"status": "retired", "expectedRevision": 1}
     )
     assert r.status_code == 200
     assert r.json()["status"] == "retired"
@@ -133,7 +133,9 @@ def test_integrations_status_is_honest_about_what_is_not_connected(client):
     r = client.get("/admin/integrations", headers=headers())
     assert r.status_code == 200
     by_name = {i["name"]: i for i in r.json()}
-    assert by_name["JD Edwards (AIS)"]["connected"] is False  # mock mode in tests
+    assert by_name["JD Edwards execution gate"]["connected"] is False  # mock mode in tests
+    # Discovery is its own row, and a simulation is never reported as connected.
+    assert by_name["JD Edwards discovery (Architect)"]["connected"] is False
     assert by_name["Topdesk"]["connected"] is False
     assert by_name["Slack / Teams approvals"]["connected"] is False
 
@@ -152,6 +154,7 @@ def test_domain_owner_approval_records_identity_and_feedback(client, monkeypatch
     )
     change_id = r.json()["id"]
     client.post(f"/changes/{change_id}/enhance", headers=headers(customer="bwm"))
+    place_in_owned_domain(client, change_id)
 
     client.get(f"/changes/{change_id}/domain-review", headers=headers(customer="bwm"))
     client.post(f"/changes/{change_id}/domain-review/start", headers=headers(customer="bwm"), json={"decidedBy": "Ellen Vos"})

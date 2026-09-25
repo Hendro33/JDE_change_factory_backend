@@ -31,6 +31,9 @@ import sys
 # once it's proven read-only.
 WRITE_TOOLS = {
     "mcp__jde-change-factory__set_processing_option",
+    # A test run is an action in JDE too (it can create orders or other
+    # records), so it gets the same interactive confirmation.
+    "mcp__jde-change-factory__run_orchestration",
 }
 
 

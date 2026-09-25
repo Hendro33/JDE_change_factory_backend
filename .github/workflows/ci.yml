@@ -1,0 +1,44 @@
+name: CI
+
+# Runs on every pull request, on pushes to main and the claude/** working
+# branches, and by hand. Nothing here
+# deploys, and nothing talks to JDE or Jira: the tests and the gate proof run
+# in mock mode against throwaway directories.
+on:
+  pull_request:
+  push:
+    # Also the working branches, so a branch shows its status before a PR exists.
+    branches: [main, "claude/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            api_service/pyproject.toml
+            mcp_server/pyproject.toml
+
+      - name: Install
+        run: pip install -e "./api_service[test]" -e ./mcp_server
+
+      - name: Backend tests
+        working-directory: api_service
+        run: python -m pytest -q
+
+      - name: Execution gate proof
+        run: python prove_the_gate.py

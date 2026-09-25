@@ -36,6 +36,30 @@ def isolated_dirs(tmp_path, monkeypatch):
     monkeypatch.setattr(api_settings, "data_dir", str(api_data_dir))
     monkeypatch.setattr(backlog_module, "BACKLOG_DIR", str(backlog_dir))
     monkeypatch.setattr(approval_module, "CHANGE_DIR", str(change_dir))
+    # The one shared simulated DEV estate: per test, never shared between runs.
+    monkeypatch.setenv("JDE_SIM_ESTATE_DIR", str(tmp_path / "sim_estate"))
+    # The execution gate reads each company's saved scope and the
+    # story -> company links from this service's own data directory
+    # (main._wire_execution_gate does the same at startup).
+    from jde_mcp_server import scope as scope_module
+
+    for env_name, attr, sub in (
+        ("JDE_COMPANY_SCOPE_DIR", "COMPANY_SCOPE_DIR", "engagement_scope"),
+        ("JDE_STORY_COMPANY_DIR", "STORY_COMPANY_DIR", "customer_links"),
+    ):
+        monkeypatch.setenv(env_name, str(api_data_dir / sub))
+        monkeypatch.setattr(scope_module, attr, str(api_data_dir / sub))
+    # The gate re-reads the approver's current roles from this database.
+    monkeypatch.setenv("JDE_AUTH_DB_PATH", str(api_data_dir / "jde.sqlite3"))
+    monkeypatch.setenv("JDE_WRITE_PAUSE_FILE", str(tmp_path / "WRITE_PAUSED"))
+    monkeypatch.setenv("JDE_DESIGN_BASELINE_DIR", str(api_data_dir / "design_baselines"))
+    # Discovery: a fresh simulated estate and closed circuit breakers per test;
+    # live discovery stays switched off unless a test turns it on.
+    from jde_api_service.discovery import transport as discovery_transport
+
+    discovery_transport._breakers.clear()
+    monkeypatch.delenv("JDE_DISCOVERY_LIVE_ENABLED", raising=False)
+    monkeypatch.delenv("JDE_DISCOVERY_ALLOWED_HOSTS", raising=False)
     # mcp_server's Settings is frozen (by design, and it isn't ours to
     # modify) -- rebind the module-level `settings` name to a fresh
     # instance instead of mutating the existing one. change_service.py
@@ -50,6 +74,12 @@ def isolated_dirs(tmp_path, monkeypatch):
     # A cross-origin cookie policy would refuse the TestClient's
     # same-origin requests -- irrelevant to what these tests verify.
     monkeypatch.setattr(api_settings, "cookie_secure", False)
+    # Stored credentials are encrypted with a key from the environment
+    # (services/credential_crypto.py); a fresh throwaway key per test.
+    from cryptography.fernet import Fernet
+
+    monkeypatch.setenv("JDE_CREDENTIAL_KEY", Fernet.generate_key().decode())
+    monkeypatch.delenv("JDE_CREDENTIAL_KEY_PREVIOUS", raising=False)
 
     # Schema migrations normally run via the app's startup lifespan
     # (main.py) -- applied here too so a test that talks to a service
@@ -179,3 +209,29 @@ def headers(customer: str | None = "vdb") -> dict:
     if customer is not None:
         h["X-Customer-Id"] = customer
     return h
+
+
+def place_in_owned_domain(client, change_id: str, customer: str = "bwm", domain_id: str = "DOM-BWM-ORDER-FULFIL") -> None:
+    """What triage does before a Domain Owner can act: the story is placed
+    in a business domain (Product Manager/Admin), and the fixture's
+    Domain Owners are assigned to that domain (Admin > Users). Without
+    both, require_domain_owner_access refuses -- a story with no domain,
+    or a Domain Owner without the assignment, has no authority."""
+    from jde_api_service.persistence.db import connection
+
+    client.get(f"/changes/{change_id}/domain-review", headers=headers(customer=customer))
+    r = client.post(
+        f"/changes/{change_id}/domain-review/assign-domain", headers=headers(customer=customer),
+        json={"businessDomainId": domain_id, "uncertain": False, "note": ""},
+    )
+    assert r.status_code == 200, r.text
+    with connection() as conn:
+        for user_id in ("u-hendro", "u-ellen"):
+            row = conn.execute(
+                "SELECT id FROM company_memberships WHERE user_id = ? AND company_id = ?", (user_id, customer)
+            ).fetchone()
+            if row is not None:
+                conn.execute(
+                    "INSERT OR IGNORE INTO domain_assignments (membership_id, business_domain_id) VALUES (?, ?)",
+                    (row["id"], domain_id),
+                )

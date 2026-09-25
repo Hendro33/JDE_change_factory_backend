@@ -27,6 +27,7 @@ import json
 import re
 from typing import Any, Optional
 
+from . import agent_runtime
 from ..models.change import AcceptanceCriterion, BusinessImpact, TestStep, UserStory
 from ..persistence.pilot_data_bicycleworks import CUSTOMER_ID as BICYCLEWORKS_CUSTOMER_ID
 from .customer_link_service import CustomerLinkService
@@ -38,11 +39,12 @@ _SUBAGENT_TO_STAGE = {
     "check-agent": "checking",
 }
 
+# No JDE reads in Phase 1: intake refines the request as the requester
+# stated it; the Architect confirms objects later through governed,
+# company-scoped discovery (discovery/). The former unrestricted
+# get_object/get_version/get_processing_options tools no longer exist.
 _ALLOWED_TOOLS = [
     "Task",
-    "mcp__jde-change-factory__get_object",
-    "mcp__jde-change-factory__get_version",
-    "mcp__jde-change-factory__get_processing_options",
     "mcp__jde-change-factory__propose_to_backlog",
 ]
 
@@ -179,7 +181,7 @@ async def run_enhancement(
     try:
         import claude_agent_sdk as sdk
 
-        options = sdk.ClaudeAgentOptions(
+        options = agent_runtime.options(
             cwd=repo_root,
             permission_mode=PERMISSION_MODE,
             allowed_tools=_ALLOWED_TOOLS,

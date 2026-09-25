@@ -36,6 +36,8 @@ from .backlog import (
     StoryNotApproved,
 )
 from .approval import propose_change as _propose_change, ChangeApprovalError
+from .design_baseline import get_design_baseline as _get_design_baseline
+from .approved_target import read_approved_target as _read_approved_target
 
 mcp = _MCPServerClass("jde-change-factory")
 
@@ -90,8 +92,10 @@ def propose_change(story_id: str, operation: dict, capability_id: str, environme
     the Functional Agent intends to execute against an already-approved
     story (Section 15.3), and the catalogue capability it is exercising
     (capability_catalog.json's capability_id -- Functional Agent design
-    update Section 5.2). Fails closed if capability_id is unknown, or if
-    'environment' isn't a confirmed-isolated DEV (scope.json). Returns a
+    update Section 5.2). Fails closed if capability_id is unknown, if
+    'environment' isn't DEV, or if the story isn't linked to a company
+    (the company is taken from the story's intake record, never from
+    this call). Returns a
     pending change record with a change_id -- this does NOT approve
     anything. A human approves it separately via backlog_review.py
     before set_processing_option will accept the matching change_id."""
@@ -125,34 +129,21 @@ def get_capability_status(capability_id: str) -> dict:
 
 
 # ---------------------------------------------------------------------
-# Discovery (Section 7.2: proven, since Tools Release 9.1.4.6). NOT
-# gated on story approval -- the Improve Agent (Phase 1) needs these
-# long before any backlog approval exists, and Section 7.2 treats
-# discovery as universally safe. The gate lives on the write and
-# test-execution tools below, where an unapproved story could actually
-# cause something to happen in JDE.
+# No unrestricted JDE reads. The former get_object / get_version /
+# get_processing_options tools read any object from the execution AIS
+# connection with no company scope, so they are not exposed here at all.
+# JDE research goes through the Architect's governed discovery tools
+# (api_service discovery/, company-bound, validated before dispatch); the
+# Functional Agent reads only its own approved change's target, below.
 # ---------------------------------------------------------------------
 
 @mcp.tool()
-def get_object(object_name: str) -> dict:
-    """Look up a JDE object (application, table, business view, etc.) by
-    name. Read-only discovery -- safe to call freely, in any phase."""
-    return client.get_object(object_name)
-
-
-@mcp.tool()
-def get_version(application: str, version: str) -> dict:
-    """Look up a specific version of a JDE application. Read-only
-    discovery -- safe to call freely, in any phase."""
-    return client.get_version(application, version)
-
-
-@mcp.tool()
-def get_processing_options(application: str, version: str) -> dict:
-    """Read the current processing option values for a version, via the
-    AIS processingOption capability. Read-only -- safe to call freely,
-    in any phase."""
-    return client.get_processing_options(application, version)
+def read_approved_target(story_id: str, change_id: str) -> dict:
+    """The current value of the ONE target an approved (or pending) exact
+    change names -- nothing else can be read. For the Functional Agent's
+    pre-write confirmation and rollback value. In live mode this reports
+    that a live read is not implemented yet (read the value in JDE)."""
+    return _read_approved_target(story_id, change_id)
 
 
 # ---------------------------------------------------------------------
@@ -212,6 +203,21 @@ def verify_evidence_chain(story_id: str) -> dict:
     tamper-evidence rather than assume it -- e.g. before an Application
     Manager or CNC relies on a story's evidence package for sign-off."""
     return _verify_chain(story_id)
+
+
+@mcp.tool()
+def get_design_baseline(story_id: str) -> dict:
+    """The Architect's instructions for this story together with the exact
+    evidence manifest the design was based on (environment profile
+    revision, observations, artifact revisions/checksums, documents,
+    gaps). Call it before anything else. It is a snapshot: it does not
+    authorise any write, and a status of needs_reassessment means the
+    evidence changed after the design -- stop and send it back to the
+    Architect. 'change' is the exact change this design revision proposed
+    and its current approval state: execute only that change_id, and only
+    when its status is approved. Re-validate every live precondition you
+    rely on."""
+    return _get_design_baseline(story_id)
 
 
 def main() -> None:

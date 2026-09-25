@@ -218,6 +218,23 @@ class JiraHttpGateway:
         return names
 
 
+def _explain_request_error(exc: httpx.RequestError) -> str:
+    """Plain words for an administrator; never includes the credential."""
+    if isinstance(exc, (httpx.ConnectTimeout, httpx.ReadTimeout, httpx.WriteTimeout, httpx.PoolTimeout)):
+        return "it did not answer in time (timeout). Check the site URL and that this server can reach it."
+    if isinstance(exc, httpx.ProxyError):
+        return ("the network proxy of the machine running Jade's backend refused the connection. That machine must be "
+                "allowed to reach this Jira site.")
+    if isinstance(exc, httpx.ConnectError):
+        text = str(exc)
+        if "Name or service not known" in text or "nodename nor servname" in text or "getaddrinfo" in text:
+            return "the site name could not be found (DNS). Check the site URL."
+        if "CERTIFICATE_VERIFY_FAILED" in text:
+            return "its security certificate could not be verified."
+        return "the connection could not be opened. Check the site URL and this server's network access."
+    return f"the request failed ({exc.__class__.__name__})."
+
+
 def test_live_connection(
     *,
     base_url: str,
@@ -253,7 +270,7 @@ def test_live_connection(
         try:
             resp = http.get(f"{base_url}/rest/api/3/myself", auth=(email, api_token))
         except httpx.RequestError as exc:
-            return False, f"Could not reach {base_url}: {exc.__class__.__name__}"
+            return False, f"Could not reach {base_url}: {_explain_request_error(exc)}"
 
         if resp.status_code == 401:
             return False, "Authentication failed -- check the email and API token."

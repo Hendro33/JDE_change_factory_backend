@@ -21,7 +21,7 @@ import os
 import time
 from typing import Any
 
-from .config import settings
+from . import config
 
 GENESIS_HASH = "GENESIS"
 
@@ -35,8 +35,8 @@ def _entry_hash(prev_hash: str, record_without_hash: dict) -> str:
 
 
 def capture_evidence(story_id: str, payload: dict[str, Any]) -> dict[str, Any]:
-    os.makedirs(settings.evidence_dir, exist_ok=True)
-    path = os.path.join(settings.evidence_dir, f"{story_id}.json")
+    os.makedirs(config.settings.evidence_dir, exist_ok=True)
+    path = os.path.join(config.settings.evidence_dir, f"{story_id}.json")
 
     existing: list[dict] = []
     if os.path.exists(path):
@@ -60,7 +60,7 @@ def verify_chain(story_id: str) -> dict[str, Any]:
     is intact -- proof the tamper-evidence is actually checkable, not
     just a field nobody looks at. Returns the first broken index, if
     any, so a real discrepancy is easy to locate."""
-    path = os.path.join(settings.evidence_dir, f"{story_id}.json")
+    path = os.path.join(config.settings.evidence_dir, f"{story_id}.json")
     if not os.path.exists(path):
         return {"story_id": story_id, "valid": True, "entries": 0, "note": "no evidence recorded yet"}
 

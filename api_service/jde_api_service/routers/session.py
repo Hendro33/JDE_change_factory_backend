@@ -15,7 +15,7 @@ def get_session(identity: Identity = Depends(resolve_identity)) -> SessionOut:
     customers = [
         Customer(
             id=c["company_id"], name=c["name"], short_name=c["short_name"],
-            tools_release=c["tools_release"], environment=c["environment"], roles=c["roles"],
+            tools_release=c["tools_release"], environment=c["environment"], is_demo=c.get("is_demo", False), roles=c["roles"],
         )
         for c in companies
     ]

@@ -22,7 +22,7 @@ from three things it must never be conflated with:
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Literal, Optional
 
 from .base import ApiModel
 
@@ -39,8 +39,18 @@ class BusinessDomain(ApiModel):
     # full catalogue below Level 3 are out of scope for this increment.
     level: str
     description: str = ""
+    # Legacy free-text note, kept for existing records and never used for
+    # authority. Who may act as Domain Owner comes only from
+    # domain_assignments (Admin > Users); see assigned_owners.
     domain_owner: str = ""
     status: BusinessDomainStatus = "active"
+    # Derived on read from domain_assignments: active members holding the
+    # domain_owner role who are assigned to this domain. Never stored.
+    assigned_owners: list[str] = []
+    # Records created before revisions existed load as revision 1.
+    revision: int = 1
+    updated_at: Optional[str] = None
+    updated_by: Optional[str] = None
 
 
 class BusinessDomainCreate(ApiModel):
@@ -53,3 +63,5 @@ class BusinessDomainCreate(ApiModel):
 
 class BusinessDomainStatusUpdate(ApiModel):
     status: BusinessDomainStatus
+    # The revision the client loaded; a different current revision is a 409.
+    expected_revision: Optional[int] = None

@@ -157,4 +157,416 @@ MIGRATIONS: list[tuple[int, str]] = [
         CREATE INDEX idx_password_resets_user ON password_reset_tokens(user_id);
         """,
     ),
+    (
+        2,
+        """
+        -- Optimistic concurrency (persistence/revisions.py): existing
+        -- rows start at revision 1.
+        ALTER TABLE jira_integrations ADD COLUMN revision INTEGER NOT NULL DEFAULT 1;
+        ALTER TABLE jira_credentials ADD COLUMN revision INTEGER NOT NULL DEFAULT 1;
+
+        -- Small company-level settings (dashboard thresholds, approval
+        -- policy, ...), each a JSON value under a fixed key, revisioned
+        -- and attributed to the authenticated user who saved it.
+        CREATE TABLE company_settings (
+            company_id TEXT NOT NULL,
+            key TEXT NOT NULL,
+            value TEXT NOT NULL,
+            revision INTEGER NOT NULL,
+            updated_at TEXT NOT NULL,
+            updated_by TEXT NOT NULL,
+            PRIMARY KEY (company_id, key)
+        );
+        """,
+    ),
+    (
+        3,
+        """
+        -- Failed sign-in attempts, for rate limiting (services/login_throttle.py).
+        -- scope is 'account' (key = lower-cased email) or 'client' (key =
+        -- client address). Old rows are pruned as new ones arrive.
+        CREATE TABLE login_failures (
+            scope TEXT NOT NULL,
+            key TEXT NOT NULL,
+            failed_at REAL NOT NULL
+        );
+        CREATE INDEX idx_login_failures ON login_failures(scope, key, failed_at);
+        """,
+    ),
+    (
+        4,
+        """
+        -- Optimistic concurrency for role, domain and status changes
+        -- (membership_service.py): an Admin's edit is refused if the
+        -- membership changed since they loaded it.
+        ALTER TABLE company_memberships ADD COLUMN revision INTEGER NOT NULL DEFAULT 1;
+        """,
+    ),
+    (
+        5,
+        """
+        -- Architect Environment Discovery (discovery/). Company-specific,
+        -- read-only JDE discovery profile: non-secret settings are JSON in
+        -- config; the credential secret is encrypted (credential_crypto);
+        -- every saved revision is kept in jde_profile_revisions.
+        CREATE TABLE jde_profiles (
+            company_id TEXT PRIMARY KEY,
+            revision INTEGER NOT NULL,
+            config TEXT NOT NULL,
+            material_hash TEXT NOT NULL,
+            credential_username TEXT,
+            credential_secret TEXT,
+            credential_revision INTEGER NOT NULL DEFAULT 0,
+            credential_updated_at TEXT,
+            credential_updated_by TEXT,
+            health TEXT NOT NULL DEFAULT '{}',
+            capability_checks TEXT NOT NULL DEFAULT '{}',
+            discovery_enabled INTEGER NOT NULL DEFAULT 0,
+            enabled_material_hash TEXT,
+            enabled_by TEXT,
+            enabled_at TEXT,
+            disabled INTEGER NOT NULL DEFAULT 0,
+            disabled_by TEXT,
+            disabled_at TEXT,
+            updated_at TEXT NOT NULL,
+            updated_by TEXT NOT NULL
+        );
+        CREATE TABLE jde_profile_revisions (
+            company_id TEXT NOT NULL,
+            revision INTEGER NOT NULL,
+            config TEXT NOT NULL,
+            material_hash TEXT NOT NULL,
+            credential_revision INTEGER NOT NULL,
+            saved_at TEXT NOT NULL,
+            saved_by TEXT NOT NULL,
+            PRIMARY KEY (company_id, revision)
+        );
+        -- Sanitised: operation, target shape, counts and outcome only --
+        -- never credentials, tokens, filter values or business payloads.
+        CREATE TABLE discovery_activity (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            request_id TEXT NOT NULL,
+            company_id TEXT NOT NULL,
+            profile_revision INTEGER,
+            actor_user_id TEXT,
+            agent_run_id TEXT,
+            story_id TEXT,
+            operation TEXT NOT NULL,
+            target TEXT NOT NULL,
+            mode TEXT,
+            started_at TEXT NOT NULL,
+            duration_ms INTEGER,
+            result_count INTEGER,
+            outcome TEXT NOT NULL,
+            reason TEXT NOT NULL DEFAULT ''
+        );
+        CREATE INDEX idx_discovery_activity_company ON discovery_activity(company_id, id);
+        -- Immutable: a refresh adds a new row (refresh_of) instead of editing.
+        CREATE TABLE discovery_observations (
+            id TEXT PRIMARY KEY,
+            company_id TEXT NOT NULL,
+            story_id TEXT,
+            agent_run_id TEXT,
+            actor_user_id TEXT,
+            profile_revision INTEGER NOT NULL,
+            capability_id TEXT NOT NULL,
+            request TEXT NOT NULL,
+            observed_at TEXT NOT NULL,
+            mode TEXT NOT NULL,
+            sharing_policy TEXT NOT NULL,
+            evidence TEXT NOT NULL,
+            payload_sha256 TEXT NOT NULL,
+            result_count INTEGER NOT NULL,
+            refresh_of TEXT
+        );
+        CREATE INDEX idx_discovery_observations_story ON discovery_observations(company_id, story_id);
+        -- Technical exports and reference documents: immutable revisions.
+        CREATE TABLE technical_artifacts (
+            artifact_id TEXT NOT NULL,
+            revision INTEGER NOT NULL,
+            company_id TEXT NOT NULL,
+            domain_id TEXT,
+            kind TEXT NOT NULL,
+            meta TEXT NOT NULL,
+            sha256 TEXT NOT NULL,
+            size_bytes INTEGER NOT NULL,
+            storage_key TEXT NOT NULL,
+            extraction_status TEXT NOT NULL,
+            extraction_note TEXT NOT NULL DEFAULT '',
+            uploaded_by TEXT NOT NULL,
+            uploaded_at TEXT NOT NULL,
+            PRIMARY KEY (artifact_id, revision)
+        );
+        CREATE INDEX idx_technical_artifacts_company ON technical_artifacts(company_id);
+        -- One immutable evidence manifest per Architect design revision (and
+        -- per refresh). Only status/reassessment change afterwards.
+        CREATE TABLE design_baselines (
+            baseline_id TEXT PRIMARY KEY,
+            company_id TEXT NOT NULL,
+            story_id TEXT NOT NULL,
+            design_revision INTEGER NOT NULL,
+            baseline_revision INTEGER NOT NULL,
+            created_at TEXT NOT NULL,
+            trigger TEXT NOT NULL,
+            manifest TEXT NOT NULL,
+            manifest_sha256 TEXT NOT NULL,
+            status TEXT NOT NULL,
+            reassessment TEXT NOT NULL DEFAULT '[]'
+        );
+        CREATE INDEX idx_design_baselines_story ON design_baselines(company_id, story_id);
+        """,
+    ),
+    (
+        6,
+        """
+        -- A person's approval of one Architect design revision for technical
+        -- implementation. Separate from (and a precondition for) the exact
+        -- implementation approval of a package revision.
+        CREATE TABLE design_approvals (
+            id TEXT PRIMARY KEY,
+            company_id TEXT NOT NULL,
+            story_id TEXT NOT NULL,
+            design_revision INTEGER NOT NULL,
+            baseline_id TEXT NOT NULL,
+            manifest_sha256 TEXT NOT NULL,
+            approved_by TEXT NOT NULL,
+            approver_user_id TEXT NOT NULL,
+            roles TEXT NOT NULL,
+            note TEXT NOT NULL DEFAULT '',
+            approved_at TEXT NOT NULL
+        );
+        CREATE INDEX idx_design_approvals_story ON design_approvals(company_id, story_id);
+        -- Technical Agent runs: progress, failures, model usage, outcome.
+        CREATE TABLE technical_runs (
+            run_id TEXT PRIMARY KEY,
+            company_id TEXT NOT NULL,
+            story_id TEXT NOT NULL,
+            purpose TEXT NOT NULL,
+            status TEXT NOT NULL,
+            design_revision INTEGER,
+            baseline_id TEXT,
+            design_approval_id TEXT,
+            expected_package_revision INTEGER NOT NULL DEFAULT 0,
+            initiated_by TEXT,
+            started_at TEXT NOT NULL,
+            finished_at TEXT,
+            error TEXT,
+            outcome TEXT NOT NULL DEFAULT '{}',
+            model TEXT,
+            usage TEXT NOT NULL DEFAULT '{}',
+            events TEXT NOT NULL DEFAULT '[]'
+        );
+        CREATE INDEX idx_technical_runs_story ON technical_runs(company_id, story_id);
+        -- Implementation packages: immutable content per revision.
+        CREATE TABLE technical_packages (
+            package_id TEXT NOT NULL,
+            revision INTEGER NOT NULL,
+            company_id TEXT NOT NULL,
+            story_id TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            created_by_run TEXT,
+            content TEXT NOT NULL,
+            content_sha256 TEXT NOT NULL,
+            change_id TEXT,
+            superseded_by INTEGER,
+            PRIMARY KEY (package_id, revision)
+        );
+        CREATE INDEX idx_technical_packages_story ON technical_packages(company_id, story_id);
+        """,
+    ),
+    (
+        7,
+        """
+        -- Process frameworks: a company's imported process hierarchy
+        -- (authorised APQC content or its own). A version is immutable once
+        -- activated; nodes of every version are kept so historical
+        -- references stay resolvable after the framework changes.
+        CREATE TABLE process_frameworks (
+            framework_id TEXT PRIMARY KEY,
+            company_id TEXT NOT NULL,
+            name TEXT NOT NULL,
+            source_kind TEXT NOT NULL,
+            created_by TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        CREATE UNIQUE INDEX idx_process_frameworks_name ON process_frameworks(company_id, name);
+        CREATE TABLE framework_versions (
+            framework_id TEXT NOT NULL,
+            version INTEGER NOT NULL,
+            company_id TEXT NOT NULL,
+            status TEXT NOT NULL,
+            file_name TEXT NOT NULL,
+            file_sha256 TEXT NOT NULL,
+            file_size INTEGER NOT NULL,
+            storage_key TEXT NOT NULL,
+            sheet_name TEXT NOT NULL,
+            column_mapping TEXT NOT NULL,
+            source_statement TEXT NOT NULL,
+            validation TEXT NOT NULL,
+            node_count INTEGER NOT NULL,
+            content_sha256 TEXT NOT NULL,
+            changes TEXT NOT NULL DEFAULT '{}',
+            uploaded_by TEXT NOT NULL,
+            uploaded_at TEXT NOT NULL,
+            activated_by TEXT,
+            activated_at TEXT,
+            superseded_at TEXT,
+            PRIMARY KEY (framework_id, version)
+        );
+        CREATE TABLE framework_nodes (
+            framework_id TEXT NOT NULL,
+            version INTEGER NOT NULL,
+            node_key TEXT NOT NULL,
+            parent_key TEXT,
+            level INTEGER NOT NULL,
+            position INTEGER NOT NULL,
+            name TEXT NOT NULL,
+            description TEXT NOT NULL DEFAULT '',
+            node_type TEXT NOT NULL DEFAULT '',
+            external_ref TEXT NOT NULL DEFAULT '',
+            node_sha256 TEXT NOT NULL,
+            PRIMARY KEY (framework_id, version, node_key)
+        );
+        -- Which framework a company works with (revisioned setting).
+        CREATE TABLE process_settings (
+            company_id TEXT PRIMARY KEY,
+            selected_framework_id TEXT,
+            revision INTEGER NOT NULL,
+            updated_by TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        -- Agent suggestions for a story's processes (refinement analysis).
+        CREATE TABLE process_analysis_runs (
+            run_id TEXT PRIMARY KEY,
+            company_id TEXT NOT NULL,
+            story_id TEXT NOT NULL,
+            status TEXT NOT NULL,
+            framework_id TEXT,
+            framework_version INTEGER,
+            initiated_by TEXT,
+            started_at TEXT NOT NULL,
+            finished_at TEXT,
+            error TEXT,
+            model TEXT,
+            usage TEXT NOT NULL DEFAULT '{}',
+            result TEXT NOT NULL DEFAULT '{}',
+            scripted INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE INDEX idx_process_analysis_story ON process_analysis_runs(company_id, story_id);
+        -- A reviewer's decision on a story's processes: append-only
+        -- revisions, each with exact framework/version/node references.
+        CREATE TABLE story_process_mappings (
+            company_id TEXT NOT NULL,
+            story_id TEXT NOT NULL,
+            revision INTEGER NOT NULL,
+            status TEXT NOT NULL,
+            refs TEXT NOT NULL,
+            no_mapping_reason TEXT NOT NULL DEFAULT '',
+            findings TEXT NOT NULL DEFAULT '{}',
+            analysis_run_id TEXT,
+            reviewer_name TEXT NOT NULL,
+            reviewer_user_id TEXT NOT NULL,
+            roles TEXT NOT NULL,
+            note TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (company_id, story_id, revision)
+        );
+        -- As-is / to-be process maps beside a story; immutable versions.
+        CREATE TABLE process_maps (
+            map_id TEXT PRIMARY KEY,
+            company_id TEXT NOT NULL,
+            story_id TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            title TEXT NOT NULL,
+            created_by TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        CREATE UNIQUE INDEX idx_process_maps_story ON process_maps(company_id, story_id, kind);
+        CREATE TABLE process_map_versions (
+            map_id TEXT NOT NULL,
+            version INTEGER NOT NULL,
+            company_id TEXT NOT NULL,
+            content TEXT NOT NULL,
+            content_sha256 TEXT NOT NULL,
+            material_sha256 TEXT NOT NULL,
+            material_change INTEGER NOT NULL,
+            note TEXT NOT NULL DEFAULT '',
+            created_by TEXT NOT NULL,
+            created_by_user_id TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (map_id, version)
+        );
+        -- As-built records: generated, versioned, finalised once.
+        CREATE TABLE as_built_records (
+            company_id TEXT NOT NULL,
+            story_id TEXT NOT NULL,
+            version INTEGER NOT NULL,
+            status TEXT NOT NULL,
+            delivery_mode TEXT NOT NULL,
+            inputs_sha256 TEXT NOT NULL,
+            content TEXT NOT NULL,
+            markdown TEXT NOT NULL,
+            content_sha256 TEXT NOT NULL,
+            generated_by TEXT NOT NULL,
+            generated_at TEXT NOT NULL,
+            finalised_by TEXT,
+            finalised_at TEXT,
+            PRIMARY KEY (company_id, story_id, version)
+        );
+        """,
+    ),
+    (
+        8,
+        """
+        -- Findings from process analysis (refinement agent, Architect), each
+        -- with its own review status. Applying one creates a story revision.
+        CREATE TABLE story_findings (
+            finding_id TEXT PRIMARY KEY,
+            company_id TEXT NOT NULL,
+            story_id TEXT NOT NULL,
+            source TEXT NOT NULL,
+            source_ref TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            text TEXT NOT NULL,
+            status TEXT NOT NULL,
+            reason TEXT NOT NULL DEFAULT '',
+            decided_by TEXT,
+            decided_by_user_id TEXT,
+            decided_at TEXT,
+            applied_in_revision INTEGER,
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX idx_story_findings_story ON story_findings(company_id, story_id);
+        -- Person-applied revisions of an approved story; revision 1 is the
+        -- story as it was before the first applied change.
+        CREATE TABLE story_revisions (
+            company_id TEXT NOT NULL,
+            story_id TEXT NOT NULL,
+            revision INTEGER NOT NULL,
+            source TEXT NOT NULL,
+            user_story TEXT NOT NULL,
+            story_sha256 TEXT NOT NULL,
+            applied_findings TEXT NOT NULL DEFAULT '[]',
+            process_refs TEXT NOT NULL DEFAULT '{}',
+            author_name TEXT NOT NULL,
+            author_user_id TEXT NOT NULL,
+            roles TEXT NOT NULL DEFAULT '[]',
+            note TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (company_id, story_id, revision)
+        );
+        """,
+    ),
+    (
+        9,
+        """
+        -- Demo customers are labelled everywhere. Simulated JDE (discovery
+        -- and execution) is only ever available inside a demo customer; a
+        -- real customer gets live connections or nothing.
+        ALTER TABLE companies ADD COLUMN is_demo INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE companies ADD COLUMN updated_at TEXT;
+        ALTER TABLE companies ADD COLUMN updated_by TEXT;
+        UPDATE companies SET is_demo = 1 WHERE id IN ('vdb', 'nhd', 'mrv', 'bwm');
+        """,
+    ),
 ]

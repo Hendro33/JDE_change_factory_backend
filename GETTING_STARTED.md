@@ -203,29 +203,27 @@ this point should be trusted until this passes cleanly.
 
 ---
 
-## Step 8 — Create your real scope file
+## Step 8 — Set up the company's engagement scope
 
-`scope.json` is the file that says exactly what this project is allowed
-to touch — see the design document's Appendix D (Configuration
-Guidelines) and Appendix E (Development Guidelines) for the full
-explanation. Nothing will run against it until it exists.
+Each company's engagement scope says exactly what may be touched for
+that company's stories — see the design document's Appendix D
+(Configuration Guidelines) and Appendix E (Development Guidelines) for
+the full explanation. Nothing will run for a company until it has one.
 
-```
-cp scope.example.json scope.json
-```
-(Windows: `copy scope.example.json scope.json`)
+A company Admin sets it in Jade under **Admin > ERP / JDE Landscape**.
+It is stored as one file per company (the shape is shown in
+`scope.example.json`) and read by the execution gate for that
+company's stories only. Fill in, at minimum:
 
-Open `scope.json` in any plain-text editor (Notepad, TextEdit — set to
-plain text mode — or VS Code) and fill in, at minimum:
-
-- `customer` — the customer's name
-- `tools_release` — their JD Edwards Tools Release, e.g. `9.2.7`
-- `functional_agent.approved_versions` — at least one entry: the exact
-  application, a version name **that does not start with XJDE or
-  ZJDE**, which processing option(s) on it are allowed, and what
-  values they're allowed to be set to
-- `functional_agent.approvers` — your name (or whoever will be
-  approving changes)
+- the DEV environment binding, with isolation confirmed only once it
+  has actually been checked
+- `approved_versions` — at least one entry: the capability it uses, the
+  exact application, a version name **that does not start with XJDE or
+  ZJDE**, which processing option(s) on it are allowed, and what values
+  they're allowed to be set to
+- the approval policy — which roles may approve an exact change, and
+  for how many hours an approval stays valid
+- for a capability still at Needs spike, a dated spike experiment
 
 **Until you have a real JDE story to run, it's fine to leave these as
 clearly-fake placeholder values** — the next steps run in "mock mode",

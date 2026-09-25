@@ -33,7 +33,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 from .. import config as _config  # noqa: F401  (forces the mcp_server sys.path bootstrap)
-from jde_mcp_server import backlog, approval, capability_catalog
+from jde_mcp_server import backlog, approval, capability_catalog, execution
 from jde_mcp_server import config as mcp_config
 from jde_mcp_server import scope as mcp_scope
 
@@ -44,6 +44,8 @@ from ..models.change import (
     Change,
     EvidenceRecord,
     ExactChange,
+    ExecutionStatus,
+    Reconciliation,
     TestStep,
     UserStory,
 )
@@ -125,7 +127,7 @@ def _all_change_records() -> list[dict[str, Any]]:
         return []
     out = []
     for fn in sorted(os.listdir(approval.CHANGE_DIR)):
-        if fn.endswith(".json"):
+        if fn.endswith(".json") and not fn.startswith("."):  # skip in-flight temp files
             with open(os.path.join(approval.CHANGE_DIR, fn), encoding="utf-8") as f:
                 out.append(json.load(f))
     return out
@@ -149,7 +151,7 @@ def _latest_change_record_for(story_id: str) -> Optional[dict[str, Any]]:
 
 
 _LEGACY_SECTION_RE = re.compile(
-    r"\n\n(business_context|acceptance_criteria|test_script|open_questions):\s*", re.MULTILINE
+    r"\n\n(business_context|acceptance_criteria|business_rules|test_script|open_questions):\s*", re.MULTILINE
 )
 _LEGACY_AC_LINE_RE = re.compile(r"^-\s*(AC\d+):\s*(.+?)(?:\s+verified_by:\s*(\S.*))?$")
 _LEGACY_OPEN_Q_LINE_RE = re.compile(r"^\d+\.\s*(.+)$")
@@ -203,14 +205,49 @@ def _parse_legacy_backlog_story(raw: str) -> Optional[UserStory]:
         if m:
             open_questions.append(m.group(1).strip())
 
+    business_rules = [ln.strip()[2:].strip() for ln in sections.get("business_rules", "").splitlines()
+                      if ln.strip().startswith("- ")]
+
     return UserStory(
         statement=statement,
         business_context=sections.get("business_context", ""),
+        business_rules=business_rules,
         acceptance_criteria=acceptance_criteria,
         test_script=test_script,
         open_questions=open_questions,
         quality_status="passed",
     )
+
+
+def _execution_status(change_record: dict) -> ExecutionStatus:
+    write = (change_record.get("execution") or {}).get(execution.WRITE) or {}
+    attempts = write.get("attempts") or []
+    last = attempts[-1] if attempts else {}
+    return ExecutionStatus(
+        write_state=execution.effective_state(change_record, execution.WRITE),
+        test_state=execution.effective_state(change_record, execution.TEST),
+        attempts=len(attempts),
+        last_attempt_at=_iso(last.get("started_at")),
+        last_detail=last.get("detail", "") or "",
+        before_value=next((a.get("before_value") for a in reversed(attempts) if a.get("before_value") is not None), None),
+        write_reconciliations=_reconciliations(change_record, execution.WRITE),
+        test_reconciliations=_reconciliations(change_record, execution.TEST),
+    )
+
+
+def _reconciliations(change_record: dict, kind: str) -> list[Reconciliation]:
+    out = []
+    for r in ((change_record.get("execution") or {}).get(kind) or {}).get("reconciliations", []):
+        out.append(Reconciliation(
+            kind=r.get("kind", f"{kind}_reconciliation"), at=_iso(r["at"]) or "",
+            actor=r.get("actor") or {"display_name": r.get("verified_by", "")},
+            verified_by=r["verified_by"], source=r["source"], outcome=r["outcome"],
+            target=r.get("target") or {}, observed=r.get("observed") or {},
+            observed_value=r.get("observed_value"), evidence_reference=r.get("evidence_reference", ""),
+            evidence_entry_hash=r.get("evidence_entry_hash"), settles_attempt_id=r.get("settles_attempt_id"),
+            note=r.get("note", ""),
+        ))
+    return out
 
 
 def _change_from_story(
@@ -237,14 +274,16 @@ def _change_from_story(
                 capability_status = cap.get("validation", {}).get("status")
                 try:
                     spike = mcp_scope.find_spike_experiment(
+                        mcp_scope.load_company_scope(customer_id),
                         capability_id,
+                        change_record.get("capability_revision", ""),
                         op.get("application", ""),
                         op.get("version", ""),
                         op.get("option", ""),
                         change_record.get("environment", "DEV"),
                     )
                 except mcp_scope.ScopeViolation:
-                    spike = None  # no scope.json for this engagement yet -- can't be spike-approved
+                    spike = None  # no saved scope for this company yet -- can't be spike-approved
                 capability_executable = capability_status == "validated" or (
                     capability_status == "needs_spike" and spike is not None
                 )
@@ -259,6 +298,7 @@ def _change_from_story(
             capability_id=capability_id,
             capability_status=capability_status,
             capability_executable=capability_executable,
+            execution=_execution_status(change_record),
         )
         if change_record.get("status") in ("approved", "rejected"):
             change_approval = ApprovalRecord(
@@ -302,6 +342,12 @@ def _change_from_story(
         user_story = run.user_story
     else:
         user_story = _parse_legacy_backlog_story(statement) or UserStory(statement=statement, quality_status="passed")
+    # A person-applied story revision (process refinement) supersedes both.
+    from ..process import refinement
+
+    revised = refinement.latest_story(customer_id, story_id)
+    if revised is not None:
+        user_story = revised
 
     # backlog.py's own record only ever carries the AI-generated
     # statement (propose_to_backlog's user_story parameter is a plain

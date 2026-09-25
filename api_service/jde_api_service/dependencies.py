@@ -116,6 +116,16 @@ def require_role(*allowed: str):
     return _dependency
 
 
+def require_current_role(ctx: AuthContext, *allowed: str) -> None:
+    """require_role, re-evaluated against the database now rather than
+    the roles loaded at the start of the request -- for use inside a
+    workflow transition's lock."""
+    if not (membership_service.roles_for(ctx.identity.id, ctx.customer_id) & set(allowed)):
+        raise HTTPException(
+            status_code=403, detail=f"you no longer hold one of these roles: {', '.join(allowed)} -- nothing was changed"
+        )
+
+
 _WRITE_METHODS = {"POST", "PUT", "DELETE", "PATCH"}
 
 
@@ -138,10 +148,23 @@ def require_domain_owner_access(ctx: AuthContext, business_domain_id: str | None
     domain is involved -- that isn't known from the URL alone, so this
     can't be a plain Depends(). Raises 403 unless the caller holds the
     domain_owner role on this company AND is assigned to this specific
-    business domain."""
-    if "domain_owner" not in ctx.roles:
+    business domain.
+
+    A story with no business domain has no Domain Owner: it is refused
+    rather than left open to every Domain Owner in the company. Authority
+    comes only from domain_assignments (Admin > Users), never from
+    BusinessDomain.domain_owner, which is a free-text display note."""
+    # Read fresh from the database, not from the request's context: this is
+    # also called inside a review transition's lock, where it must see a
+    # role or assignment removed a moment ago.
+    if "domain_owner" not in membership_service.roles_for(ctx.identity.id, ctx.customer_id):
         raise HTTPException(status_code=403, detail="requires the Domain Owner role")
-    if business_domain_id:
-        assigned = membership_service.domain_ids_for_membership(ctx.identity.id, ctx.customer_id)
-        if business_domain_id not in assigned:
-            raise HTTPException(status_code=403, detail="not assigned to this business domain")
+    if not business_domain_id:
+        raise HTTPException(
+            status_code=403,
+            detail="this story has no business domain, so no Domain Owner can act on it yet -- "
+            "a Product Manager or Admin must assign one first",
+        )
+    assigned = membership_service.domain_ids_for_membership(ctx.identity.id, ctx.customer_id)
+    if business_domain_id not in assigned:
+        raise HTTPException(status_code=403, detail="not assigned to this business domain")

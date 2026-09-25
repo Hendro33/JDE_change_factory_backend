@@ -32,8 +32,12 @@ from typing import Literal, Optional
 
 from .base import ApiModel
 
-Role = Literal["domain_owner", "product_manager", "admin", "dashboard_viewer"]
-ALL_ROLES: tuple[Role, ...] = ("domain_owner", "product_manager", "admin", "dashboard_viewer")
+Role = Literal["domain_owner", "product_manager", "admin", "dashboard_viewer", "cnc_operator"]
+ALL_ROLES: tuple[Role, ...] = ("domain_owner", "product_manager", "admin", "dashboard_viewer", "cnc_operator")
+# The CNC operator records a package deployment/activation that a human CNC
+# performed. It is never granted by default: the bootstrap Admin does not
+# hold it, and it must be assigned to a named person explicitly.
+BOOTSTRAP_ROLES: tuple[Role, ...] = ("domain_owner", "product_manager", "admin", "dashboard_viewer")
 
 MembershipStatus = Literal["active", "inactive"]
 InvitationStatus = Literal["pending", "accepted", "revoked", "expired"]
@@ -59,10 +63,17 @@ class ForgotPasswordResult(ApiModel):
     # own comment on why a login/reset flow must not reveal whether an
     # email is registered.
     ok: bool = True
-    # ONLY populated when JDE_EMAIL_DEV_PREVIEW is on (the default,
-    # since no real email provider is configured) -- see
-    # email_service.py's own docstring. Never populated once a real
-    # provider is wired up.
+    # Always None. This endpoint is anonymous, so returning the link here
+    # would hand any caller a working reset link for any account. Without
+    # an email provider, a company Admin issues the link instead
+    # (POST /admin/users/{membership_id}/password-reset-link).
+    preview_url: Optional[str] = None
+
+
+class PasswordResetLinkOut(ApiModel):
+    # True once a real email provider delivers the link; False in
+    # dev-preview mode, where preview_url is the link for the Admin to hand over.
+    sent: bool
     preview_url: Optional[str] = None
 
 
@@ -103,6 +114,8 @@ class MembershipOut(ApiModel):
     status: MembershipStatus
     roles: list[Role]
     domain_ids: list[str] = []
+    # Send back as expected_revision on the next role/domain/status change.
+    revision: int = 1
 
 
 class InvitationOut(ApiModel):
@@ -129,6 +142,12 @@ class InviteInput(ApiModel):
 class UpdateMembershipInput(ApiModel):
     roles: list[Role]
     domain_ids: list[str] = []
+    # Required: the revision the Admin loaded (428 if absent, 409 if stale).
+    expected_revision: Optional[int] = None
+
+
+class MembershipStatusInput(ApiModel):
+    expected_revision: Optional[int] = None
 
 
 class CompanyUsersOut(ApiModel):

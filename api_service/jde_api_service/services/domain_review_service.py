@@ -12,8 +12,9 @@ orchestration_driver.py already have with the routes that call them.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Callable, Iterable, Iterator, Optional
 
 import uuid
 
@@ -28,6 +29,15 @@ def _now() -> str:
 
 class DomainReviewError(RuntimeError):
     pass
+
+
+class StageConflict(DomainReviewError):
+    """The review is no longer in the stage the caller acted on --
+    someone else's decision landed first."""
+
+    def __init__(self, stage: str) -> None:
+        super().__init__(f"this review is now at stage {stage}; reload it -- someone else acted on it first")
+        self.stage = stage
 
 
 class DomainReviewService:
@@ -60,6 +70,28 @@ class DomainReviewService:
         )
         self._save(review)
         return review
+
+    @contextmanager
+    def transition(
+        self,
+        change_id: str,
+        *,
+        from_stages: Iterable[str],
+        authorise: Optional[Callable[[DomainReview], None]] = None,
+    ) -> Iterator[DomainReview]:
+        """A compare-and-set on the review's stage. Under the store's lock:
+        re-read the review, require it is still in one of `from_stages`,
+        re-check the caller's CURRENT authority on it (`authorise`), and
+        only then let the caller's mutations run. Two decisions on the same
+        review therefore serialise, and the second sees the first's stage;
+        a role or domain assignment removed a moment ago is seen too."""
+        with self._store.locked():
+            review = self._require(change_id)
+            if review.stage not in set(from_stages):
+                raise StageConflict(review.stage)
+            if authorise is not None:
+                authorise(review)
+            yield review
 
     def _require(self, change_id: str) -> DomainReview:
         review = self.get(change_id)

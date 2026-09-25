@@ -27,6 +27,9 @@ class ArchitectureReviewService:
         doc = self._store.get(story_id)
         return ArchitectureReviewRun.model_validate(doc) if doc else None
 
+    def list_all(self) -> list[ArchitectureReviewRun]:
+        return [ArchitectureReviewRun.model_validate(doc) for doc in self._store.list_all()]
+
     def start(self, story_id: str) -> ArchitectureReviewRun:
         """A (re)start -- the manual retrigger, or the automatic run
         Gate 1 schedules. Preserves any existing history/conversation:
@@ -71,6 +74,14 @@ class ArchitectureReviewService:
                 captured_at=now,
             )
         )
+        self._save(run)
+
+    def attach_baseline(self, story_id: str, baseline_id: str, baseline_sha256: str) -> None:
+        run = self.get(story_id)
+        if run is None or not run.history:
+            return
+        run.history[-1].baseline_id = baseline_id
+        run.history[-1].baseline_sha256 = baseline_sha256
         self._save(run)
 
     def fail(self, story_id: str, error: str) -> None:

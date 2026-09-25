@@ -16,7 +16,7 @@ import claude_agent_sdk as sdk
 import pytest
 from jde_mcp_server import backlog
 
-from .conftest import headers
+from .conftest import headers, place_in_owned_domain
 
 
 def _sys(subagent_type: str) -> sdk.SystemMessage:
@@ -66,7 +66,7 @@ async def _fake_enhance_success(*, prompt, options):
     yield _result(f"```json\n{json.dumps(summary)}\n```")
 
 
-def _seed_and_enhance_t001(client, monkeypatch) -> str:
+def _seed_and_enhance_t001(client, monkeypatch, *, triaged: bool = True) -> str:
     """Gets a change all the way to BACKLOG_READY with a real user
     story -- the precondition every domain-governance endpoint needs,
     exactly mirroring how T001 sits in the real pilot data."""
@@ -83,6 +83,8 @@ def _seed_and_enhance_t001(client, monkeypatch) -> str:
     )
     request_id = r.json()["id"]
     client.post(f"/changes/{request_id}/enhance", headers=headers(customer="bwm"))
+    if triaged:
+        place_in_owned_domain(client, request_id)
     return request_id
 
 
@@ -533,7 +535,7 @@ def test_metrics_have_no_domain_breakdown_before_any_story_reaches_backlog(clien
 
 
 def test_metrics_bucket_unclassified_and_classified_domains_separately(client, monkeypatch):
-    change_id = _seed_and_enhance_t001(client, monkeypatch)
+    change_id = _seed_and_enhance_t001(client, monkeypatch, triaged=False)
     # Unclassified until assigned.
     r = client.get("/metrics", headers=headers(customer="bwm"))
     breakdown = r.json()["businessDomainBreakdown"]

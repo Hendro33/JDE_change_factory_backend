@@ -12,8 +12,8 @@ Configuration/Development Guidelines).
 
 The catalogue itself -- CATALOG_FILE below -- is version-controlled
 source, committed to this repo like any other code: it is NOT
-engagement-specific (unlike scope.json, which is per-customer and
-gitignored) and it is NOT something the agent, or this module, can
+engagement-specific (unlike each company's engagement scope, which an
+Admin saves through api_service) and it is NOT something the agent, or this module, can
 promote to Validated. Promotion happens by a human editing the JSON and
 getting it reviewed like any other change -- "the agent cannot certify
 its own capabilities" is enforced simply by there being no write path
@@ -21,10 +21,7 @@ here at all, on purpose, the same way approval.py's approve_change/
 reject_change are human-only with no agent tool wrapping them.
 
 Path resolution is anchored to this file's own location, not to the
-process's current working directory. scope.py's SCOPE_FILE (a plain
-"./scope.json" default) only resolves correctly because every
-documented invocation path happens to run from the repo root; the
-catalogue needs to be found identically whether it's read from
+process's current working directory. The catalogue needs to be found identically whether it's read from
 prove_the_gate.py (repo root), a Claude Code session cwd'd into
 mcp_server (per .mcp.json), or a future api_service import -- so this
 does not repeat that assumption.
@@ -44,7 +41,7 @@ CATALOG_FILE = os.environ.get("JDE_CAPABILITY_CATALOG_FILE", str(_REPO_ROOT / "c
 # and api_service/jde_api_service/models/capability.py's Literal.
 EXECUTABLE_STATUSES = {"validated"}
 # "needs_spike" can still run, but ONLY as an explicitly approved,
-# narrowly-scoped experiment (scope.json's spike_experiments list) --
+# narrowly-scoped experiment (the company scope's spike_experiments list) --
 # never as an ordinary write. See require_executable below.
 SPIKE_ELIGIBLE_STATUSES = {"needs_spike"}
 
@@ -100,10 +97,64 @@ def require_capability(capability_id: str) -> dict:
             f"'{capability_id}' is not a registered capability. A capability "
             "must exist in the catalogue, with a functional owner and a "
             "field-complete entry, before any operation can reference it -- "
-            "this is not something an agent or an engagement's scope.json "
+            "this is not something an agent or a company's engagement scope "
             "can invent on the fly."
         )
     return cap
+
+
+# Closed vocabularies the enforcement contracts and company scopes use.
+MECHANISMS = {"ais_form_service_request", "ais_orchestration"}
+TEST_SIDE_EFFECTS = {"none", "creates_dev_transaction", "posting", "payment", "outbound_integration", "batch_run"}
+
+
+def _validated_enforcement(cap: dict) -> dict:
+    """The capability's enforcement contract, or CapabilityError if it is
+    missing or incomplete. A restriction that exists only as prose in the
+    catalogue is not enforcement, so such a capability cannot execute."""
+    cid = cap.get("capability_id", "?")
+    enf = cap.get("enforcement")
+    if not isinstance(enf, dict):
+        raise CapabilityError(
+            f"capability '{cid}' has no enforcement contract: its target, mechanism and protected-category "
+            "restrictions exist only as documentation, so it cannot execute"
+        )
+    problems = []
+    if not enf.get("tool"):
+        problems.append("tool")
+    if enf.get("mechanism") not in MECHANISMS:
+        problems.append("mechanism")
+    if not enf.get("target"):
+        problems.append("target")
+    cats = enf.get("option_categories")
+    if not isinstance(cats, dict) or not cats or any(not isinstance(v, dict) or not isinstance(v.get("protected"), bool) for v in cats.values()):
+        problems.append("option_categories")
+    test = enf.get("test") or {}
+    if test.get("mechanism") not in MECHANISMS or not test.get("permitted_side_effects") or not set(test["permitted_side_effects"]) <= TEST_SIDE_EFFECTS:
+        problems.append("test")
+    if problems:
+        raise CapabilityError(f"capability '{cid}' has an incomplete enforcement contract ({', '.join(problems)}), so it cannot execute")
+    return enf
+
+
+def require_enforcement(capability_id: str) -> dict:
+    return _validated_enforcement(require_capability(capability_id))
+
+
+def executable_capabilities() -> dict[str, dict]:
+    """capability_id -> enforcement contract, for every capability that has
+    a complete one. Today: processing_option_update only."""
+    out = {}
+    for cap in list_capabilities():
+        try:
+            out[cap["capability_id"]] = _validated_enforcement(cap)
+        except CapabilityError:
+            continue
+    return out
+
+
+def known_option_categories() -> set[str]:
+    return {c for enf in executable_capabilities().values() for c in enf["option_categories"]}
 
 
 def require_executable(capability_id: str, capability_revision: str, environment: str, *, spike_experiment_approved: bool = False) -> dict:
@@ -112,9 +163,9 @@ def require_executable(capability_id: str, capability_revision: str, environment
     alone.
 
     - Validated: executes normally (still subject to every other check
-      -- scope.json, exact-change hash, Oracle-owned-version rule).
+      -- company scope, exact-change hash, Oracle-owned-version rule).
     - Needs spike: executes ONLY if spike_experiment_approved is True,
-      which require_exact_change sets from scope.json's own
+      which require_exact_change sets from the company scope's own
       spike_experiments allowlist (Section 2's "a bounded DEV
       validation experiment requires its own explicit approval") --
       never from the agent's own say-so.
@@ -138,7 +189,7 @@ def require_executable(capability_id: str, capability_revision: str, environment
         raise CapabilityError(
             f"capability execution is DEV-only; '{environment}' is not DEV. "
             "This is a universal rule (Section 1's 'Mandatory boundaries'), "
-            "not something any capability entry or scope.json can override."
+            "not something any capability entry or company scope can override."
         )
     status = cap.get("validation", {}).get("status")
     if status in EXECUTABLE_STATUSES:
@@ -150,7 +201,7 @@ def require_executable(capability_id: str, capability_revision: str, environment
             f"capability '{capability_id}' is Needs spike -- it cannot execute "
             "as an ordinary write. A bounded DEV validation experiment is "
             "possible, but only with its own explicit approval recorded in "
-            "scope.json's spike_experiments (not this exact-change approval "
+            "the company scope's spike_experiments (not this exact-change approval "
             "alone) -- see Section 2/3 of the design update."
         )
     raise CapabilityError(

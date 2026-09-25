@@ -18,6 +18,7 @@ from datetime import datetime, timezone
 from typing import Iterable, Optional
 
 from ..persistence.db import connection
+from ..persistence.revisions import RevisionConflict, RevisionRequired
 
 
 def _now() -> str:
@@ -30,6 +31,32 @@ class LastAdminError(RuntimeError):
 
 class NoSuchMembership(RuntimeError):
     pass
+
+
+class ActorNoLongerAuthorised(RuntimeError):
+    """The acting Admin lost the Admin role (or their membership) before
+    their change could be applied."""
+
+
+def _check_revision(row, expected_revision: Optional[int]) -> None:
+    current = row["revision"]
+    if expected_revision is None:
+        raise RevisionRequired(current)
+    if expected_revision != current:
+        raise RevisionConflict(current)
+
+
+def _require_active_admin(conn, actor_user_id: str, company_id: str) -> None:
+    """Re-checked INSIDE the write transaction: the request's own role
+    check happened earlier and may be stale by now."""
+    ok = conn.execute(
+        "SELECT 1 FROM company_memberships m JOIN membership_roles r ON r.membership_id = m.id "
+        "JOIN users u ON u.id = m.user_id "
+        "WHERE m.user_id = ? AND m.company_id = ? AND m.status = 'active' AND r.role = 'admin' AND u.is_active = 1",
+        (actor_user_id, company_id),
+    ).fetchone()
+    if ok is None:
+        raise ActorNoLongerAuthorised("you no longer hold the Admin role on this company -- nothing was changed")
 
 
 def log_access_change(conn, *, company_id: Optional[str], actor_user_id: Optional[str], action: str,
@@ -77,7 +104,7 @@ def companies_for_user(user_id: str) -> list[dict]:
     /session bootstrap and the company switcher need."""
     with connection() as conn:
         rows = conn.execute(
-            "SELECT m.id as membership_id, m.company_id, c.name, c.short_name, c.tools_release, c.environment "
+            "SELECT m.id as membership_id, m.company_id, c.name, c.short_name, c.tools_release, c.environment, c.is_demo "
             "FROM company_memberships m JOIN companies c ON c.id = m.company_id "
             "WHERE m.user_id = ? AND m.status = 'active' ORDER BY c.name",
             (user_id,),
@@ -90,6 +117,7 @@ def companies_for_user(user_id: str) -> list[dict]:
             result.append({
                 "company_id": row["company_id"], "name": row["name"], "short_name": row["short_name"],
                 "tools_release": row["tools_release"], "environment": row["environment"],
+                "is_demo": bool(row["is_demo"]),
                 "roles": sorted(r["role"] for r in role_rows),
             })
         return result
@@ -127,14 +155,23 @@ def _active_admin_membership_ids(conn, company_id: str) -> set[str]:
     return {r["id"] for r in rows}
 
 
-def update_membership_roles(membership_id: str, roles: set[str], domain_ids: set[str], *, actor_user_id: str) -> None:
-    with connection() as conn:
+def update_membership_roles(
+    membership_id: str, roles: set[str], domain_ids: set[str], *, actor_user_id: str,
+    expected_revision: Optional[int] = None, as_admin: bool = False,
+) -> int:
+    """as_admin=True is an Admin's edit: it must carry the revision the
+    Admin loaded, and the Admin's own authority is re-checked inside the
+    same write transaction. Returns the new revision."""
+    with connection(immediate=True) as conn:
         row = conn.execute(
-            "SELECT company_id, user_id FROM company_memberships WHERE id = ?", (membership_id,)
+            "SELECT company_id, user_id, revision FROM company_memberships WHERE id = ?", (membership_id,)
         ).fetchone()
         if row is None:
             raise NoSuchMembership(membership_id)
         company_id, target_user_id = row["company_id"], row["user_id"]
+        if as_admin:
+            _check_revision(row, expected_revision)
+            _require_active_admin(conn, actor_user_id, company_id)
 
         current_roles = {r["role"] for r in conn.execute(
             "SELECT role FROM membership_roles WHERE membership_id = ?", (membership_id,)
@@ -153,21 +190,30 @@ def update_membership_roles(membership_id: str, roles: set[str], domain_ids: set
                 "INSERT INTO domain_assignments (membership_id, business_domain_id) VALUES (?, ?)",
                 (membership_id, domain_id),
             )
-        conn.execute("UPDATE company_memberships SET updated_at = ? WHERE id = ?", (_now(), membership_id))
+        conn.execute(
+            "UPDATE company_memberships SET updated_at = ?, revision = revision + 1 WHERE id = ?", (_now(), membership_id)
+        )
         log_access_change(
             conn, company_id=company_id, actor_user_id=actor_user_id, action="roles_updated",
             target_user_id=target_user_id, detail=",".join(sorted(roles)),
         )
+        return row["revision"] + 1
 
 
-def set_membership_status(membership_id: str, status: str, *, actor_user_id: str) -> None:
-    with connection() as conn:
+def set_membership_status(
+    membership_id: str, status: str, *, actor_user_id: str,
+    expected_revision: Optional[int] = None, as_admin: bool = False,
+) -> int:
+    with connection(immediate=True) as conn:
         row = conn.execute(
-            "SELECT company_id, user_id, status FROM company_memberships WHERE id = ?", (membership_id,)
+            "SELECT company_id, user_id, status, revision FROM company_memberships WHERE id = ?", (membership_id,)
         ).fetchone()
         if row is None:
             raise NoSuchMembership(membership_id)
         company_id, target_user_id = row["company_id"], row["user_id"]
+        if as_admin:
+            _check_revision(row, expected_revision)
+            _require_active_admin(conn, actor_user_id, company_id)
 
         if status == "inactive" and row["status"] == "active":
             is_admin = conn.execute(
@@ -179,19 +225,20 @@ def set_membership_status(membership_id: str, status: str, *, actor_user_id: str
                     raise LastAdminError("cannot deactivate the last active Admin from a company")
 
         conn.execute(
-            "UPDATE company_memberships SET status = ?, updated_at = ? WHERE id = ?",
+            "UPDATE company_memberships SET status = ?, updated_at = ?, revision = revision + 1 WHERE id = ?",
             (status, _now(), membership_id),
         )
         log_access_change(
             conn, company_id=company_id, actor_user_id=actor_user_id,
             action=f"membership_{status}", target_user_id=target_user_id,
         )
+        return row["revision"] + 1
 
 
 def list_company_members(company_id: str) -> list[dict]:
     with connection() as conn:
         rows = conn.execute(
-            "SELECT m.id as membership_id, m.user_id, m.status, u.email, u.display_name "
+            "SELECT m.id as membership_id, m.user_id, m.status, m.revision, u.email, u.display_name "
             "FROM company_memberships m JOIN users u ON u.id = m.user_id "
             "WHERE m.company_id = ? ORDER BY u.display_name",
             (company_id,),
@@ -206,16 +253,36 @@ def list_company_members(company_id: str) -> list[dict]:
             ).fetchall()
             result.append({
                 "membership_id": row["membership_id"], "user_id": row["user_id"], "email": row["email"],
-                "display_name": row["display_name"], "status": row["status"],
+                "display_name": row["display_name"], "status": row["status"], "revision": row["revision"],
                 "roles": sorted(r["role"] for r in role_rows),
                 "domain_ids": sorted(r["business_domain_id"] for r in domain_rows),
             })
         return result
 
 
+def assigned_domain_owners(company_id: str) -> dict[str, list[str]]:
+    """business_domain_id -> display names of the ACTIVE members who hold
+    the domain_owner role on this company and are assigned to that
+    domain: exactly the people require_domain_owner_access accepts."""
+    with connection() as conn:
+        rows = conn.execute(
+            "SELECT a.business_domain_id, u.display_name FROM domain_assignments a "
+            "JOIN company_memberships m ON m.id = a.membership_id "
+            "JOIN users u ON u.id = m.user_id "
+            "JOIN membership_roles r ON r.membership_id = m.id AND r.role = 'domain_owner' "
+            "WHERE m.company_id = ? AND m.status = 'active' AND u.is_active = 1 "
+            "ORDER BY u.display_name",
+            (company_id,),
+        ).fetchall()
+    owners: dict[str, list[str]] = {}
+    for row in rows:
+        owners.setdefault(row["business_domain_id"], []).append(row["display_name"])
+    return owners
+
+
 def get_membership_by_id(membership_id: str) -> Optional[dict]:
     with connection() as conn:
         row = conn.execute(
-            "SELECT id, user_id, company_id, status FROM company_memberships WHERE id = ?", (membership_id,)
+            "SELECT id, user_id, company_id, status, revision FROM company_memberships WHERE id = ?", (membership_id,)
         ).fetchone()
         return dict(row) if row else None

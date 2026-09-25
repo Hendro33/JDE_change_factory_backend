@@ -45,15 +45,21 @@ Business Domain writes also now require the Admin role, the same
 
 from __future__ import annotations
 
+from typing import Optional
+
+import httpx
+
 from fastapi import APIRouter, Depends, HTTPException
 
 from jde_mcp_server import config as mcp_config
 
 from ..dependencies import AuthContext, require_customer_access, require_role, require_write_access
+from ..models.base import ApiModel
 from ..models.admin import (
     AgentHealth,
     AgentRunSummary,
     AisConnectionStatus,
+    CustomerInput,
     CustomerProfile,
     ErpLandscape,
     FeedbackSummary,
@@ -64,6 +70,7 @@ from ..config import settings as api_settings
 from ..models.agent_registry import AgentDefinition
 from ..models.capability import Capability, CapabilityCatalog
 from ..models.business_domain import BusinessDomain, BusinessDomainCreate, BusinessDomainStatusUpdate
+from ..models.company_settings import DashboardThresholds, DashboardThresholdsUpdate
 from ..models.engagement_scope import EngagementScope, EngagementScopeUpdate
 from ..models.jira_integration import (
     JiraConnectionStatus,
@@ -75,10 +82,13 @@ from ..models.jira_integration import (
     JiraTestConnectionResult,
 )
 from ..models.session import Customer as CustomerOut
+from ..persistence.db import connection
+from ..services import auth_service, credential_crypto, customer_service
+from ..services.company_settings_service import CompanySettingsService
 from ..services.customer_service import get_registry
-from ..services.jira_gateway import InvalidJiraBaseUrl, test_live_connection
+from ..services.jira_gateway import InvalidJiraBaseUrl, JiraGatewayError, test_live_connection
 from ..services.jira_sync_service import JiraNotConfigured
-from ..services.membership_service import list_company_members
+from ..services.membership_service import ActorNoLongerAuthorised, list_company_members
 from ..services.registry import (
     get_agent_registry_service,
     get_agent_run_service,
@@ -88,8 +98,9 @@ from ..services.registry import (
     get_engagement_scope_service,
     get_jira_credentials_service,
     get_jira_integration_service,
+    JiraUnavailable,
     get_jira_sync_service,
-    jira_is_live_for_customer,
+    jira_mode,
 )
 
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -109,6 +120,9 @@ def get_customer_profile(ctx: AuthContext = Depends(require_customer_access)) ->
         for m in list_company_members(ctx.customer_id)
         if m["status"] == "active"
     ]
+    with connection() as conn:
+        row = conn.execute("SELECT updated_at, updated_by FROM companies WHERE id = ?", (ctx.customer_id,)).fetchone()
+    by = auth_service.get_user_by_id(row["updated_by"]) if row and row["updated_by"] else None
     return CustomerProfile(
         customer=CustomerOut(
             id=customer.id,
@@ -116,20 +130,53 @@ def get_customer_profile(ctx: AuthContext = Depends(require_customer_access)) ->
             short_name=customer.short_name,
             tools_release=customer.tools_release,
             environment=customer.environment,
+            is_demo=customer.is_demo,
         ),
         identities=identities,
+        updated_at=row["updated_at"] if row else None,
+        updated_by=(by.display_name if by else (row["updated_by"] if row else None)),
     )
+
+
+@router.put("/customer-profile", response_model=CustomerProfile)
+def update_customer_profile(payload: CustomerInput, ctx: AuthContext = Depends(require_role("admin"))) -> CustomerProfile:
+    """Edit the active customer's own information (Admin only, audited)."""
+    try:
+        customer_service.update_customer(ctx.customer_id, name=payload.name, short_name=payload.short_name,
+                                         tools_release=payload.tools_release, environment=payload.environment,
+                                         actor_user_id=ctx.identity.id)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except ActorNoLongerAuthorised as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
+    return get_customer_profile(ctx)
+
+
+@router.post("/customers", response_model=CustomerOut, status_code=201)
+def create_customer(payload: CustomerInput, ctx: AuthContext = Depends(require_role("admin"))) -> CustomerOut:
+    """Create a new real (non-demo) customer; the creator becomes its first Admin."""
+    try:
+        c = customer_service.create_customer(name=payload.name, short_name=payload.short_name,
+                                             tools_release=payload.tools_release, environment=payload.environment,
+                                             creator_user_id=ctx.identity.id, creator_company_id=ctx.customer_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except ActorNoLongerAuthorised as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
+    return CustomerOut(id=c.id, name=c.name, short_name=c.short_name, tools_release=c.tools_release,
+                       environment=c.environment, is_demo=c.is_demo, roles=["admin", "dashboard_viewer", "product_manager"])
 
 
 # ---------------------------------------------------------------------
 # ERP / JDE Landscape
 # ---------------------------------------------------------------------
 _SCOPE_SHARED_NOTE = (
-    "mcp_server's JDE (AIS) connection and its scope.json engagement file are still a single, global "
-    "configuration shared by every customer in this deployment -- they are not yet customer-specific. The "
-    "Engagement Scope below is this customer's own intended configuration; it is the source an operator would "
-    "export into scope.json for this engagement, but it is not yet wired into mcp_server's live enforcement. "
-    "Making the JDE connection and scope genuinely per-customer is a larger change, out of scope here."
+    "The Engagement Scope below is this company's own and is what the execution gate enforces for its "
+    "stories: approved versions, dated spike experiments, the DEV environment binding and the approval "
+    "policy. The JDE (AIS) connection itself is still one deployment-wide setting shared by every company; "
+    "making it per-company is a later step."
 )
 
 
@@ -158,9 +205,75 @@ def get_erp_landscape(ctx: AuthContext = Depends(require_customer_access)) -> Er
             environment=ais.ais_environment or None,
             role=ais.ais_role or None,
         ),
+        discovery_profile=_discovery_summary(ctx.customer_id),
         engagement_scope_configured=configured,
         scope_globally_shared_note=_SCOPE_SHARED_NOTE,
     )
+
+
+def _jde_discovery_row(company_id: str) -> IntegrationStatus:
+    from ..discovery import profile_service
+
+    v = profile_service.view(company_id)
+    if not v.configured or v.config is None:
+        return IntegrationStatus(name="JD Edwards discovery (Architect)", connected=False,
+                                 detail="Not configured -- see the JDE section below")
+    mode = "SIMULATION" if v.config.connection_mode == "simulation" else "live"
+    state = "enabled" if v.discovery_enabled else ("disabled" if v.disabled else "off until verified and enabled")
+    return IntegrationStatus(
+        name="JD Edwards discovery (Architect)",
+        connected=v.discovery_enabled and v.config.connection_mode == "live",
+        detail=f"{mode}, {v.config.environment}, profile revision {v.revision}: discovery {state}",
+    )
+
+
+def _discovery_summary(company_id: str):
+    from ..discovery import profile_service
+    from ..models.admin import DiscoveryProfileSummary
+
+    v = profile_service.view(company_id)
+    if not v.configured or v.config is None:
+        return DiscoveryProfileSummary(configured=False)
+    return DiscoveryProfileSummary(
+        configured=True, revision=v.revision, connection_name=v.config.connection_name, environment=v.config.environment,
+        environment_purpose=v.config.environment_purpose, path_code=v.config.path_code,
+        application_release=v.config.expected_application_release, tools_release=v.config.expected_tools_release,
+        mode=v.config.connection_mode, discovery_enabled=v.discovery_enabled, disabled=v.disabled,
+        health={k: c.state for k, c in v.health.items()},
+    )
+
+
+_DASHBOARD_THRESHOLDS_KEY = "dashboard_thresholds"
+
+
+def _thresholds_out(stored) -> DashboardThresholds:
+    if stored is None:
+        return DashboardThresholds()
+    return DashboardThresholds(
+        warn_at=stored.value["warn_at"], critical_at=stored.value["critical_at"], configured=True,
+        revision=stored.revision, updated_at=stored.updated_at, updated_by=stored.updated_by,
+    )
+
+
+@router.get("/dashboard-thresholds", response_model=DashboardThresholds)
+def get_dashboard_thresholds(ctx: AuthContext = Depends(require_customer_access)) -> DashboardThresholds:
+    """Readable by every member -- the Home dashboard colours its KPIs
+    with these. Defaults (configured=False, revision 0) until saved."""
+    return _thresholds_out(CompanySettingsService().get(ctx.customer_id, _DASHBOARD_THRESHOLDS_KEY))
+
+
+@router.put("/dashboard-thresholds", response_model=DashboardThresholds)
+def update_dashboard_thresholds(
+    payload: DashboardThresholdsUpdate, ctx: AuthContext = Depends(require_role("admin"))
+) -> DashboardThresholds:
+    stored = CompanySettingsService().put(
+        ctx.customer_id,
+        _DASHBOARD_THRESHOLDS_KEY,
+        {"warn_at": payload.warn_at, "critical_at": payload.critical_at},
+        payload.expected_revision,
+        actor=ctx.identity.display_name,
+    )
+    return _thresholds_out(stored)
 
 
 @router.get("/engagement-scope", response_model=EngagementScope)
@@ -178,7 +291,7 @@ def get_engagement_scope(ctx: AuthContext = Depends(require_customer_access)) ->
 def update_engagement_scope(
     payload: EngagementScopeUpdate, ctx: AuthContext = Depends(require_role("admin"))
 ) -> EngagementScope:
-    return get_engagement_scope_service().upsert(ctx.customer_id, payload)
+    return get_engagement_scope_service().upsert(ctx.customer_id, payload, actor=ctx.identity.display_name)
 
 
 # ---------------------------------------------------------------------
@@ -199,6 +312,40 @@ _AGENT_FEEDBACK_KINDS: dict[str, list[str]] = {
 @router.get("/agents", response_model=list[AgentDefinition])
 def list_agents(ctx: AuthContext = Depends(require_customer_access)) -> list[AgentDefinition]:
     return get_agent_registry_service().list_agents()
+
+
+@router.get("/agent-settings")
+def get_agent_settings(ctx: AuthContext = Depends(require_customer_access)) -> dict:
+    """Which agents are switched on for this customer."""
+    from ..services import agent_settings
+
+    s = agent_settings.stored(ctx.customer_id)
+    return {"agents": [{"name": n, "label": l, "enabled": n not in agent_settings.disabled_agents(ctx.customer_id)}
+                       for n, l in agent_settings.AGENT_LABELS.items()],
+            "revision": s.revision if s else 0, "updatedAt": s.updated_at if s else None,
+            "updatedBy": s.updated_by if s else None}
+
+
+class AgentSettingsInput(ApiModel):
+    disabled: list[str] = []
+    expected_revision: Optional[int] = None
+
+
+@router.put("/agent-settings")
+def put_agent_settings(payload: AgentSettingsInput, ctx: AuthContext = Depends(require_role("admin"))) -> dict:
+    """Switch agents on or off for this customer (Admin only)."""
+    from ..persistence.revisions import RevisionConflict, RevisionRequired
+    from ..services import agent_settings
+
+    try:
+        agent_settings.save(ctx.customer_id, payload.disabled, payload.expected_revision, ctx.identity.display_name)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except RevisionConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except RevisionRequired as exc:
+        raise HTTPException(status_code=428, detail=str(exc))
+    return get_agent_settings(ctx)
 
 
 @router.get("/agents/{agent_name}", response_model=AgentDefinition)
@@ -274,7 +421,7 @@ def get_capability(capability_id: str, ctx: AuthContext = Depends(require_custom
 def create_business_domain(
     payload: BusinessDomainCreate, ctx: AuthContext = Depends(require_role("admin"))
 ) -> BusinessDomain:
-    return get_business_domain_service().create(payload, ctx.customer_id)
+    return get_business_domain_service().create(payload, ctx.customer_id, actor=ctx.identity.display_name)
 
 
 @router.put("/business-domains/{domain_id}/status", response_model=BusinessDomain)
@@ -284,7 +431,9 @@ def update_business_domain_status(
     domain = get_business_domain_service().get_for_customer(domain_id, ctx.customer_id)
     if domain is None:
         raise HTTPException(status_code=404, detail=f"no such business domain: {domain_id}")
-    return get_business_domain_service().update_status(domain_id, payload.status)
+    return get_business_domain_service().update_status(
+        domain_id, payload.status, payload.expected_revision, actor=ctx.identity.display_name
+    )
 
 
 # ---------------------------------------------------------------------
@@ -296,24 +445,25 @@ def list_integrations(ctx: AuthContext = Depends(require_customer_access)) -> li
     ais_live = (not ais.mock_mode) and bool(ais.ais_base_url)
 
     jira_config = get_jira_integration_service().get_for_customer(ctx.customer_id)
-    jira_credentials_ok = get_jira_credentials_service().is_configured(ctx.customer_id)
-    jira_live = jira_is_live_for_customer(ctx.customer_id) and bool(jira_config and jira_config.is_configured())
-    if api_settings.jira_mock_mode:
-        jira_detail = "This deployment is force-mocked (JDE_JIRA_MOCK_MODE) -- see Jira below to configure and try a sync"
-    elif not jira_credentials_ok:
-        jira_detail = "No Jira credential configured for this customer yet -- see Jira below"
-    elif not jira_config or not jira_config.is_configured():
-        jira_detail = "Credential is set, but the site/project/status configuration is not complete -- see Jira below"
+    mode, reason = jira_mode(ctx.customer_id)
+    jira_live = mode == "live"
+    if mode == "demo":
+        jira_detail = "Demo mode: this deployment uses a simulated Jira (JDE_JIRA_MOCK_MODE=true)"
+    elif mode == "unavailable":
+        jira_detail = f"Unavailable: {reason}"
     else:
         jira_detail = f"Connected to project {jira_config.project_key}"
 
     return [
+        _jde_discovery_row(ctx.customer_id),
         IntegrationStatus(
-            name="JD Edwards (AIS)",
+            name="JD Edwards execution gate",
             connected=ais_live,
             detail=(
-                "Live AIS connection configured" if ais_live
-                else "Running in mock mode -- see ERP / JDE Landscape for connection status"
+                "Live AIS connection configured (separate from discovery)" if ais_live
+                else "Simulated JDE writes, for this demo customer only" if customer_service.is_demo_company(ctx.customer_id)
+                else "Not available: live JDE writes are not enabled in this deployment, and nothing is simulated for a "
+                     "real customer"
             ),
         ),
         IntegrationStatus(name="Jira Service Management", connected=jira_live, detail=jira_detail),
@@ -348,9 +498,26 @@ def update_jira_integration(
     payload: JiraIntegrationConfigUpdate, ctx: AuthContext = Depends(require_role("admin")),
 ) -> JiraIntegrationConfig:
     try:
-        return get_jira_integration_service().upsert(ctx.customer_id, payload)
+        return get_jira_integration_service().upsert(ctx.customer_id, payload, actor=ctx.identity.display_name)
     except InvalidJiraBaseUrl as exc:
         raise HTTPException(status_code=422, detail=str(exc))
+
+
+def _jira_status(customer_id: str) -> JiraConnectionStatus:
+    """Status only -- whether a credential exists and how it is held,
+    never the credential itself."""
+    config = get_jira_integration_service().get_for_customer(customer_id)
+    credentials = get_jira_credentials_service()
+    mode, reason = jira_mode(customer_id)
+    return JiraConnectionStatus(
+        mock_mode=mode == "demo",
+        state=mode,
+        unavailable_reason=reason if mode == "unavailable" else "",
+        credentials_configured=credentials.is_configured(customer_id),
+        config_configured=bool(config and config.is_configured()),
+        credential_storage=credentials.storage_status(customer_id),
+        credential_encryption_available=credential_crypto.is_configured(),
+    )
 
 
 @router.get("/jira-integration/status", response_model=JiraConnectionStatus)
@@ -360,12 +527,7 @@ def get_jira_integration_status(ctx: AuthContext = Depends(require_customer_acce
     # complete), not the configuration itself, and Demand > Requests
     # reads it too (to explain why "Retrieve new requests" is disabled),
     # open to any active member including Dashboard Viewer.
-    config = get_jira_integration_service().get_for_customer(ctx.customer_id)
-    return JiraConnectionStatus(
-        mock_mode=not jira_is_live_for_customer(ctx.customer_id),
-        credentials_configured=get_jira_credentials_service().is_configured(ctx.customer_id),
-        config_configured=bool(config and config.is_configured()),
-    )
+    return _jira_status(ctx.customer_id)
 
 
 @router.put("/jira-credentials", response_model=JiraConnectionStatus)
@@ -378,31 +540,24 @@ def update_jira_credentials(
     and never echoed back by this or any other endpoint: the response
     is status only, exactly like get_jira_integration_status above.
     Saving a valid credential here is, by itself, enough to make this
-    customer's connector live (jira_is_live_for_customer) -- no
-    JDE_JIRA_MOCK_MODE or other backend file edit required."""
-    get_jira_credentials_service().upsert(ctx.customer_id, payload)
-    config = get_jira_integration_service().get_for_customer(ctx.customer_id)
-    return JiraConnectionStatus(
-        mock_mode=not jira_is_live_for_customer(ctx.customer_id),
-        credentials_configured=True,
-        config_configured=bool(config and config.is_configured()),
-    )
+    customer's connector live (registry.jira_mode), once the site/project
+    configuration is complete too -- no backend file edit required."""
+    try:
+        get_jira_credentials_service().upsert(ctx.customer_id, payload, actor=ctx.identity.display_name)
+    except credential_crypto.CredentialKeyMissing as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    return _jira_status(ctx.customer_id)
 
 
 @router.delete("/jira-credentials", response_model=JiraConnectionStatus)
 def delete_jira_credentials(ctx: AuthContext = Depends(require_role("admin"))) -> JiraConnectionStatus:
     """"Disconnect" -- removes this customer's stored Jira credential
-    entirely. The connector falls back to JiraMockGateway immediately
-    (jira_is_live_for_customer), same as before one was ever entered;
+    entirely. The connector becomes unavailable immediately
+    (registry.jira_mode) -- never a silent mock;
     site/project/status configuration (JiraIntegrationConfig) is left
     alone, so reconnecting later doesn't mean re-typing all of it."""
     get_jira_credentials_service().delete(ctx.customer_id)
-    config = get_jira_integration_service().get_for_customer(ctx.customer_id)
-    return JiraConnectionStatus(
-        mock_mode=not jira_is_live_for_customer(ctx.customer_id),
-        credentials_configured=False,
-        config_configured=bool(config and config.is_configured()),
-    )
+    return _jira_status(ctx.customer_id)
 
 
 @router.post("/jira-integration/test-connection", response_model=JiraTestConnectionResult)
@@ -424,5 +579,13 @@ def test_jira_connection(
 def sync_jira_integration(ctx: AuthContext = Depends(require_write_access)) -> JiraSyncResult:
     try:
         return get_jira_sync_service(ctx.customer_id).sync_for_customer(ctx.customer_id)
-    except JiraNotConfigured as exc:
-        raise HTTPException(status_code=409, detail=str(exc))
+    except (JiraNotConfigured, JiraUnavailable) as exc:
+        raise HTTPException(status_code=409, detail=f"Jira integration unavailable: {exc}")
+    except (httpx.HTTPStatusError, httpx.RequestError, JiraGatewayError) as exc:
+        # Real Jira refused or could not be reached (e.g. a wrong token):
+        # reported as such, never replaced by simulated data.
+        detail = (
+            f"Jira rejected the request (HTTP {exc.response.status_code}) -- check the saved credential"
+            if isinstance(exc, httpx.HTTPStatusError) else f"Jira could not be reached: {exc}"
+        )
+        raise HTTPException(status_code=502, detail=f"Jira integration unavailable: {detail}")

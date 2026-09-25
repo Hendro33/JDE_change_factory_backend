@@ -22,14 +22,18 @@ exact-change approval separate):
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 
 from jde_mcp_server import backlog
 
 from ..config import settings
+from ..services import membership_service
 from ..dependencies import (
     AuthContext,
     require_customer_access,
+    require_current_role,
     require_domain_owner_access,
     require_role,
     require_write_access,
@@ -53,6 +57,7 @@ from ..services.registry import (
     get_delivery_queue_service,
     get_domain_review_service,
 )
+from ..services.domain_review_service import StageConflict
 from ..services.review_driver import ReviewerAgentError, run_reviewer_agent
 
 # Stages past Domain Owner approval from which a human may explicitly
@@ -66,6 +71,19 @@ from ..services.review_driver import ReviewerAgentError, run_reviewer_agent
 _RECONSIDERABLE_STAGES = {"domain_owner_approved", "ready_for_application_manager", "application_manager_approved"}
 
 router = APIRouter(tags=["domain-governance"])
+
+
+@contextmanager
+def _transition(change_id: str, from_stages: set[str], authorise):
+    """Every governance decision below runs inside this: stage
+    compare-and-set plus the caller's CURRENT authority, under the
+    review store's lock (DomainReviewService.transition). A stale stage
+    is 409; lost authority is 403."""
+    try:
+        with get_domain_review_service().transition(change_id, from_stages=from_stages, authorise=authorise) as review:
+            yield review
+    except StageConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 def _require_domain_owner_or_product_manager(ctx: AuthContext) -> None:
@@ -84,7 +102,11 @@ def _require_domain_owner_or_product_manager(ctx: AuthContext) -> None:
 
 @router.get("/business-domains", response_model=list[BusinessDomain])
 def list_business_domains(ctx: AuthContext = Depends(require_customer_access)) -> list[BusinessDomain]:
-    return get_business_domain_service().list_for_customer(ctx.customer_id)
+    owners = membership_service.assigned_domain_owners(ctx.customer_id)
+    return [
+        d.model_copy(update={"assigned_owners": owners.get(d.id, [])})
+        for d in get_business_domain_service().list_for_customer(ctx.customer_id)
+    ]
 
 
 def _change_with_story(change_id: str, customer_id: str):
@@ -110,22 +132,28 @@ def get_domain_review(change_id: str, ctx: AuthContext = Depends(require_custome
 
 @router.post("/changes/{change_id}/domain-review/assign-domain", response_model=DomainReview)
 def assign_domain(
-    change_id: str, payload: AssignDomainInput, ctx: AuthContext = Depends(require_write_access)
+    change_id: str, payload: AssignDomainInput, ctx: AuthContext = Depends(require_role("product_manager", "admin"))
 ) -> DomainReview:
+    """Choosing the domain chooses who may approve the requirement, so it
+    is a triage decision (Product Manager or Admin), and it is closed
+    once a Domain Owner has started: moving a story into another domain
+    mid-review would hand the decision to someone else."""
     change = _change_with_story(change_id, ctx.customer_id)
     get_domain_review_service().ensure(change_id, change.user_story)
-
     if not payload.uncertain and payload.business_domain_id:
         domain = get_business_domain_service().get_for_customer(payload.business_domain_id, ctx.customer_id)
         if domain is None:
             raise HTTPException(status_code=404, detail=f"no such business domain: {payload.business_domain_id}")
 
-    return get_domain_review_service().assign_domain(
-        change_id,
-        business_domain_id=payload.business_domain_id,
-        uncertain=payload.uncertain,
-        note=payload.note,
-    )
+    # Closed once Domain Owner review has started -- checked under the lock,
+    # so a Domain Owner starting at the same moment wins or loses cleanly.
+    with _transition(change_id, {"ready_for_domain_owner"}, lambda r: require_current_role(ctx, "product_manager", "admin")):
+        return get_domain_review_service().assign_domain(
+            change_id,
+            business_domain_id=payload.business_domain_id,
+            uncertain=payload.uncertain,
+            note=payload.note,
+        )
 
 
 @router.post("/changes/{change_id}/domain-review/start", response_model=DomainReview)
@@ -138,9 +166,8 @@ def start_domain_owner_review(
 
     if review.stage == "domain_owner_reviewing":
         return review  # idempotent -- already started
-    if review.stage != "ready_for_domain_owner":
-        raise HTTPException(status_code=409, detail=f"cannot start review from stage {review.stage}")
-    return get_domain_review_service().set_stage(change_id, "domain_owner_reviewing")
+    with _transition(change_id, {"ready_for_domain_owner"}, lambda r: require_domain_owner_access(ctx, r.business_domain_id)):
+        return get_domain_review_service().set_stage(change_id, "domain_owner_reviewing")
 
 
 @router.post("/changes/{change_id}/domain-review/edit", response_model=DomainReview)
@@ -167,12 +194,22 @@ async def submit_domain_owner_edit(
     # appends change what history[-1] points to.
     prior_revision_count = review.history[-1].user_story.revision_count if review.history else 0
 
-    service.append_version(
-        change_id, label="domain_owner_edit", user_story=payload.user_story, actor=ctx.identity.display_name, note=payload.note
-    )
-    service.set_stage(change_id, "domain_owner_requested_revision")
-    service.set_stage(change_id, "reviewer_agent_refining")
+    # Claimed under the lock: the stage leaves domain_owner_reviewing, so an
+    # approve or reject racing this edit is refused instead of approving
+    # the pre-edit story.
+    with _transition(change_id, {"domain_owner_reviewing"}, lambda r: require_domain_owner_access(ctx, r.business_domain_id)):
+        service.append_version(
+            change_id, label="domain_owner_edit", user_story=payload.user_story, actor=ctx.identity.display_name, note=payload.note
+        )
+        service.set_stage(change_id, "domain_owner_requested_revision")
+        service.set_stage(change_id, "reviewer_agent_refining")
 
+    from ..services import agent_settings
+
+    try:
+        agent_settings.require_enabled(ctx.customer_id, "improve-agent")
+    except agent_settings.AgentDisabled as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
     try:
         revised = await run_reviewer_agent(
             story_id=change_id,
@@ -204,16 +241,17 @@ async def submit_domain_owner_edit(
     # out of scope for this increment.
     revised.revision_count = prior_revision_count + 1
 
-    service.append_version(change_id, label="reviewer_agent_revision", user_story=revised, actor="Reviewer Agent")
-    get_decision_feedback_service().record(
-        change_id=change_id,
-        customer_id=ctx.customer_id,
-        kind="domain_owner_edit",
-        decided_by=ctx.identity.display_name,
-        identity_id=ctx.identity.id,
-        note=payload.note,
-    )
-    return service.set_stage(change_id, "domain_owner_reviewing")
+    with _transition(change_id, {"reviewer_agent_refining"}, None):
+        service.append_version(change_id, label="reviewer_agent_revision", user_story=revised, actor="Reviewer Agent")
+        get_decision_feedback_service().record(
+            change_id=change_id,
+            customer_id=ctx.customer_id,
+            kind="domain_owner_edit",
+            decided_by=ctx.identity.display_name,
+            identity_id=ctx.identity.id,
+            note=payload.note,
+        )
+        return service.set_stage(change_id, "domain_owner_reviewing")
 
 
 @router.post("/changes/{change_id}/domain-review/ask", response_model=DomainReview)
@@ -245,6 +283,12 @@ async def ask_about_requirement_endpoint(
         raise HTTPException(status_code=422, detail="a question is required")
 
     current_story = review.history[-1].user_story
+    from ..services import agent_settings
+
+    try:
+        agent_settings.require_enabled(ctx.customer_id, "improve-agent")
+    except agent_settings.AgentDisabled as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
     try:
         result = await ask_about_requirement(
             story_id=change_id,
@@ -294,7 +338,8 @@ def request_requirement_reconsideration(
     if not payload.note:
         raise HTTPException(status_code=422, detail="explain why this requirement needs reconsideration")
 
-    updated = service.request_reconsideration(change_id, requested_by=ctx.identity.display_name, note=payload.note, identity_id=ctx.identity.id)
+    with _transition(change_id, _RECONSIDERABLE_STAGES, lambda r: require_current_role(ctx, "product_manager")):
+        updated = service.request_reconsideration(change_id, requested_by=ctx.identity.display_name, note=payload.note, identity_id=ctx.identity.id)
     get_decision_feedback_service().record(
         change_id=change_id,
         customer_id=ctx.customer_id,
@@ -316,7 +361,8 @@ def domain_owner_approve(
     if review is None or review.stage != "domain_owner_reviewing":
         raise HTTPException(status_code=409, detail=f"cannot approve from stage {review.stage if review else 'none'}")
     require_domain_owner_access(ctx, review.business_domain_id)
-    updated = service.record_domain_owner_approval(change_id, ctx.identity.display_name, payload.note, identity_id=ctx.identity.id)
+    with _transition(change_id, {"domain_owner_reviewing"}, lambda r: require_domain_owner_access(ctx, r.business_domain_id)):
+        updated = service.record_domain_owner_approval(change_id, ctx.identity.display_name, payload.note, identity_id=ctx.identity.id)
     get_decision_feedback_service().record(
         change_id=change_id,
         customer_id=ctx.customer_id,
@@ -346,7 +392,8 @@ def domain_owner_reject(
     require_domain_owner_access(ctx, review.business_domain_id)
     if not payload.note:
         raise HTTPException(status_code=422, detail="a rejection must include a reason")
-    updated = service.record_domain_owner_rejection(change_id, ctx.identity.display_name, payload.note, identity_id=ctx.identity.id)
+    with _transition(change_id, {"domain_owner_reviewing"}, lambda r: require_domain_owner_access(ctx, r.business_domain_id)):
+        updated = service.record_domain_owner_rejection(change_id, ctx.identity.display_name, payload.note, identity_id=ctx.identity.id)
     get_decision_feedback_service().record(
         change_id=change_id,
         customer_id=ctx.customer_id,
@@ -388,11 +435,12 @@ def application_manager_approve(
     if review is None or review.stage != "ready_for_application_manager":
         raise HTTPException(status_code=409, detail=f"cannot approve from stage {review.stage if review else 'none'}")
 
-    updated = service.record_application_manager_approval(
-        change_id, ctx.identity.display_name, payload.note, identity_id=ctx.identity.id
-    )
-    backlog.approve(change_id, ctx.identity.display_name, payload.note)
-    get_delivery_queue_service().add(change_id, ctx.customer_id, ctx.identity.display_name, payload.note)
+    with _transition(change_id, {"ready_for_application_manager"}, lambda r: require_current_role(ctx, "product_manager")):
+        updated = service.record_application_manager_approval(
+            change_id, ctx.identity.display_name, payload.note, identity_id=ctx.identity.id
+        )
+        backlog.approve(change_id, ctx.identity.display_name, payload.note)
+        get_delivery_queue_service().add(change_id, ctx.customer_id, ctx.identity.display_name, payload.note)
     get_decision_feedback_service().record(
         change_id=change_id,
         customer_id=ctx.customer_id,
@@ -402,12 +450,23 @@ def application_manager_approve(
         note=payload.note,
     )
 
+    from ..services import agent_settings
+
+    try:
+        agent_settings.require_enabled(ctx.customer_id, "architect")
+    except agent_settings.AgentDisabled as exc:
+        # Approval stands; the automatic review is recorded as not started, visibly.
+        review_runs = get_architecture_review_service()
+        review_runs.start(change_id)
+        review_runs.fail(change_id, str(exc))
+        return updated
     background_tasks.add_task(
         run_architecture_review,
         story_id=change_id,
         repo_root=settings.repo_root,
         run_service=get_architecture_review_service(),
         customer_id=ctx.customer_id,
+        initiated_by=ctx.identity.id,
     )
     return updated
 
@@ -431,10 +490,11 @@ def application_manager_reject(
     if not payload.note:
         raise HTTPException(status_code=422, detail="a rejection must include a reason")
 
-    updated = service.record_application_manager_rejection(
-        change_id, ctx.identity.display_name, payload.note, identity_id=ctx.identity.id
-    )
-    backlog.reject(change_id, ctx.identity.display_name, payload.note)
+    with _transition(change_id, {"ready_for_application_manager"}, lambda r: require_current_role(ctx, "product_manager")):
+        updated = service.record_application_manager_rejection(
+            change_id, ctx.identity.display_name, payload.note, identity_id=ctx.identity.id
+        )
+        backlog.reject(change_id, ctx.identity.display_name, payload.note)
     get_decision_feedback_service().record(
         change_id=change_id,
         customer_id=ctx.customer_id,

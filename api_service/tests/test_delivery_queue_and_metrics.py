@@ -11,7 +11,7 @@ import json
 
 import claude_agent_sdk as sdk
 
-from .conftest import headers
+from .conftest import headers, place_in_owned_domain
 from .test_domain_governance import _fake_enhance_success
 
 
@@ -33,6 +33,7 @@ def _seed_and_enhance(client, monkeypatch, source_reference: str) -> str:
     )
     request_id = r.json()["id"]
     client.post(f"/changes/{request_id}/enhance", headers=headers(customer="bwm"))
+    place_in_owned_domain(client, request_id)
     return request_id
 
 

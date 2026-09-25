@@ -21,9 +21,12 @@ from ..models.auth import (
     InvitationOut,
     InviteInput,
     MembershipOut,
+    MembershipStatusInput,
+    PasswordResetLinkOut,
     UpdateMembershipInput,
 )
-from ..services import invitation_service, membership_service
+from ..services import auth_service, invitation_service, membership_service
+from ..services.registry import get_business_domain_service
 from ..services.email_service import OutgoingEmail, get_email_service
 
 router = APIRouter(prefix="/admin/users", tags=["company-users"])
@@ -42,6 +45,7 @@ def _membership_out(m: dict) -> MembershipOut:
     return MembershipOut(
         membership_id=m["membership_id"], user_id=m["user_id"], email=m["email"],
         display_name=m["display_name"], status=m["status"], roles=m["roles"], domain_ids=m["domain_ids"],
+        revision=m["revision"],
     )
 
 
@@ -70,8 +74,18 @@ def list_company_users(ctx: AuthContext = Depends(require_role("admin"))) -> Com
     return CompanyUsersOut(members=members, invitations=invitations)
 
 
+def _require_company_domains(domain_ids, company_id: str) -> None:
+    """Domain assignments grant Domain Owner authority, so each one must
+    be a real domain of this same company."""
+    service = get_business_domain_service()
+    unknown = sorted(d for d in set(domain_ids) if service.get_for_customer(d, company_id) is None)
+    if unknown:
+        raise HTTPException(status_code=422, detail=f"not business domains of this company: {', '.join(unknown)}")
+
+
 @router.post("/invite", response_model=InvitationOut)
 def invite_user(payload: InviteInput, ctx: AuthContext = Depends(require_role("admin"))) -> InvitationOut:
+    _require_company_domains(payload.domain_ids, ctx.customer_id)
     inv, raw_token = invitation_service.create_invitation(
         ctx.customer_id, payload.email, list(payload.roles), list(payload.domain_ids), invited_by=ctx.identity.id
     )
@@ -114,6 +128,38 @@ def revoke_invitation(invitation_id: str, ctx: AuthContext = Depends(require_rol
     return _invitation_out(inv, invited_by_display_name=_display_name_for(inv["invited_by"]))
 
 
+@router.post("/{membership_id}/password-reset-link", response_model=PasswordResetLinkOut)
+def issue_password_reset_link(
+    membership_id: str, ctx: AuthContext = Depends(require_role("admin"))
+) -> PasswordResetLinkOut:
+    """The Admin-side replacement for the anonymous preview link. It is
+    refused when the person also belongs to a company where the caller is
+    not an Admin: a reset link takes over the whole account, so an Admin
+    of one company must not be able to take over someone else's access."""
+    member = _membership_in_company_or_404(membership_id, ctx.customer_id)
+    elsewhere = [
+        c["company_id"] for c in membership_service.companies_for_user(member["user_id"])
+        if "admin" not in membership_service.roles_for(ctx.identity.id, c["company_id"])
+    ]
+    if elsewhere:
+        raise HTTPException(
+            status_code=403,
+            detail="this person also belongs to a company you are not an Admin of, so you cannot reset their password",
+        )
+    user = auth_service.get_user_by_id(member["user_id"])
+    if user is None or not user.is_active:
+        raise HTTPException(status_code=404, detail="no such active user")
+    raw_token = auth_service.create_password_reset_token(user.id)
+    link = f"{_frontend_origin()}?resetToken={raw_token}"
+    email_service = get_email_service()
+    email_service.send(OutgoingEmail(
+        to=user.email, subject="Reset your Jade password", body=f"Reset your password: {link}", action_url=link,
+    ))
+    return PasswordResetLinkOut(
+        sent=not email_service.is_dev_preview, preview_url=link if email_service.is_dev_preview else None,
+    )
+
+
 def _membership_in_company_or_404(membership_id: str, company_id: str) -> dict:
     m = membership_service.get_membership_by_id(membership_id)
     if m is None or m["company_id"] != company_id:
@@ -121,41 +167,58 @@ def _membership_in_company_or_404(membership_id: str, company_id: str) -> dict:
     return m
 
 
+def _member_out(membership_id: str, company_id: str) -> MembershipOut:
+    return _membership_out(next(
+        m for m in membership_service.list_company_members(company_id) if m["membership_id"] == membership_id
+    ))
+
+
+# Role, domain and status changes carry the revision the Admin loaded
+# (409 if someone changed the membership since, 428 if absent) and
+# re-check, inside the same write transaction, that the caller is STILL
+# an Admin of this company: two Admins editing at once, or an Admin
+# demoted mid-request, cannot leave a stale decision applied.
 @router.put("/{membership_id}/roles", response_model=MembershipOut)
 def update_roles(
     membership_id: str, payload: UpdateMembershipInput, ctx: AuthContext = Depends(require_role("admin"))
 ) -> MembershipOut:
     _membership_in_company_or_404(membership_id, ctx.customer_id)
+    _require_company_domains(payload.domain_ids, ctx.customer_id)
     try:
         membership_service.update_membership_roles(
-            membership_id, set(payload.roles), set(payload.domain_ids), actor_user_id=ctx.identity.id
+            membership_id, set(payload.roles), set(payload.domain_ids), actor_user_id=ctx.identity.id,
+            expected_revision=payload.expected_revision, as_admin=True,
         )
     except membership_service.LastAdminError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
-    updated = next(
-        m for m in membership_service.list_company_members(ctx.customer_id) if m["membership_id"] == membership_id
-    )
-    return _membership_out(updated)
+    except membership_service.ActorNoLongerAuthorised as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
+    return _member_out(membership_id, ctx.customer_id)
+
+
+def _set_status(membership_id: str, status: str, payload: MembershipStatusInput | None, ctx: AuthContext) -> MembershipOut:
+    _membership_in_company_or_404(membership_id, ctx.customer_id)
+    try:
+        membership_service.set_membership_status(
+            membership_id, status, actor_user_id=ctx.identity.id,
+            expected_revision=payload.expected_revision if payload else None, as_admin=True,
+        )
+    except membership_service.LastAdminError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except membership_service.ActorNoLongerAuthorised as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
+    return _member_out(membership_id, ctx.customer_id)
 
 
 @router.post("/{membership_id}/deactivate", response_model=MembershipOut)
-def deactivate(membership_id: str, ctx: AuthContext = Depends(require_role("admin"))) -> MembershipOut:
-    _membership_in_company_or_404(membership_id, ctx.customer_id)
-    try:
-        membership_service.set_membership_status(membership_id, "inactive", actor_user_id=ctx.identity.id)
-    except membership_service.LastAdminError as exc:
-        raise HTTPException(status_code=409, detail=str(exc))
-    updated = next(
-        m for m in membership_service.list_company_members(ctx.customer_id) if m["membership_id"] == membership_id
-    )
-    return _membership_out(updated)
+def deactivate(
+    membership_id: str, payload: MembershipStatusInput | None = None, ctx: AuthContext = Depends(require_role("admin"))
+) -> MembershipOut:
+    return _set_status(membership_id, "inactive", payload, ctx)
 
 
 @router.post("/{membership_id}/reactivate", response_model=MembershipOut)
-def reactivate(membership_id: str, ctx: AuthContext = Depends(require_role("admin"))) -> MembershipOut:
-    _membership_in_company_or_404(membership_id, ctx.customer_id)
-    membership_service.set_membership_status(membership_id, "active", actor_user_id=ctx.identity.id)
-    updated = next(
-        m for m in membership_service.list_company_members(ctx.customer_id) if m["membership_id"] == membership_id
-    )
-    return _membership_out(updated)
+def reactivate(
+    membership_id: str, payload: MembershipStatusInput | None = None, ctx: AuthContext = Depends(require_role("admin"))
+) -> MembershipOut:
+    return _set_status(membership_id, "active", payload, ctx)
