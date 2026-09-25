@@ -41,7 +41,7 @@ SCOPE_STATEMENT = (
     "A snapshot at the times shown: it does not authorise any write and does not prove nothing has changed since; "
     "execution re-validates live preconditions independently."
 )
-BASES = {"observed", "customer_attestation", "assumption"}
+BASES = {"observed", "customer_attestation", "process_reference", "assumption"}
 GAP_KINDS = {"missing", "stale", "conflict", "incompatible", "unavailable"}
 
 
@@ -120,12 +120,30 @@ def artifact_summary(a: dict, profile: Optional[dict]) -> dict:
 # ---------------------------------------------------------------------
 # Building a manifest
 # ---------------------------------------------------------------------
+def process_citation_ids(context: Optional[dict]) -> set[str]:
+    """The process references a run may cite: exactly those in the
+    company-authorised process context it was given (get_process_context)."""
+    if not context:
+        return set()
+    ids = set()
+    m = context.get("mapping") or {}
+    if m.get("revision"):
+        ids.add(f"MAPPING@r{m['revision']}")
+    for p in m.get("processes") or []:
+        ids |= {p["ref"], f"PROC:{p['ref']}"}
+    for kind, mp in (context.get("maps") or {}).items():
+        ids.add(f"MAP:{kind}@v{mp['version']}")
+        ids |= {f"MAP:{kind}@v{mp['version']}:{st['id']}" for st in mp.get("steps") or []}
+    return ids
+
+
 def _validate_citations(raw: list[dict], ledger: RunLedger, profile_ref: Optional[str]) -> tuple[list[dict], list[dict]]:
     observed_ids = {o["observation_id"] for o in ledger.observations}
     artifact_ids = set(ledger.artifacts_consulted)
     doc_ids = {r for r, s in ledger.artifacts_listed.items() if s["kind"] == "reference_document"} | {
         r for r, s in ledger.artifacts_consulted.items() if s["kind"] == "reference_document"}
     attestable = artifact_ids | ({profile_ref} if profile_ref else set())
+    process_ids = process_citation_ids(ledger.process_context_consulted)
     citations, gaps = [], []
     for c in raw or []:
         claim = str(c.get("claim", "")).strip()[:500]
@@ -134,8 +152,13 @@ def _validate_citations(raw: list[dict], ledger: RunLedger, profile_ref: Optiona
         problem = ""
         if basis == "observed":
             known = observed_ids | artifact_ids | doc_ids
-            if not ids or any(i not in known for i in ids):
+            if any(i in process_ids for i in ids):
+                problem = "a process reference is not an observation of the JDE environment"
+            elif not ids or any(i not in known for i in ids):
                 problem = "cites evidence that was not gathered in this run"
+        elif basis == "process_reference":
+            if not ids or any(i not in process_ids for i in ids):
+                problem = "cites a process, mapping or map revision that was not in the process context given to this run"
         elif basis == "customer_attestation":
             if not ids or any(i not in attestable for i in ids):
                 problem = "cites an attestation Jade does not hold"
@@ -233,7 +256,7 @@ def _profile_block(profile: Optional[dict], grant: Optional[service.DiscoveryGra
     return {
         "revision": grant.profile_revision if grant else profile["revision"],
         "material_hash": profile["material_hash"], "environment": config.environment,
-        "environment_type": config.environment_type, "role": config.role, "path_code": config.path_code,
+        "environment_purpose": config.environment_purpose, "role": config.role, "path_code": config.path_code,
         "application_release": config.expected_application_release, "tools_release": config.expected_tools_release,
         "mode": config.connection_mode, "discovery_enabled": profile_service.is_active(profile),
         "routing_isolation_confirmed": config.routing_isolation_confirmed,

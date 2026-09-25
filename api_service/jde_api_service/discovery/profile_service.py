@@ -29,7 +29,7 @@ from .models import CapabilityView, CheckResult, JdeProfileConfig, JdeProfileVie
 from .transport import SIMULATION_LABEL, allowed_hosts, live_allowed_by_deployment
 
 HEALTH_CHECKS = ("reachability", "authentication", "environment", "approved_read")
-_NON_MATERIAL = {"customer_contact", "cnc_contact"}
+_NON_MATERIAL = {"customer_contact", "cnc_contact", "connection_name"}
 
 
 def _now() -> str:
@@ -221,8 +221,6 @@ def enable_blockers(profile: dict) -> list[str]:
     """Everything that stops discovery being enabled now, in plain words."""
     config: JdeProfileConfig = profile["config"]
     out = []
-    if config.environment_type != "DEV":
-        out.append("only a DEV environment can be used for discovery")
     if not config.routing_isolation_confirmed or not config.isolation_evidence.strip():
         out.append("the customer/CNC has not confirmed the network route and isolation (with evidence)")
     if not config.privilege_confirmed or not config.privilege_statement.strip():
@@ -253,6 +251,91 @@ def enable_blockers(profile: dict) -> list[str]:
     if profile["disabled"]:
         out.append("the connection is disabled; re-test it before enabling")
     return out
+
+
+def _evidence_titles(company_id: str, ids: list[str]) -> list[str]:
+    from . import artifacts
+
+    out = []
+    for ref in ids:
+        a = artifacts.get(company_id, ref.partition("@r")[0])
+        out.append(f"{ref}: {a['meta'].get('title') or a['meta'].get('file_name') or a['kind']}" if a else f"{ref}: NOT FOUND")
+    return out
+
+
+def prerequisites(profile: dict) -> list[dict]:
+    """Every prerequisite for Architect discovery, saying what kind of
+    assurance it is: customer attestation (Jade cannot check it), machine
+    verified (Jade checked it for this revision), configuration, or
+    server-managed (deployment trust controls, not editable in Admin)."""
+    config: JdeProfileConfig = profile["config"]
+    h = health(profile)
+    live = config.connection_mode == "live"
+
+    def item(pid, label, kind, ok, detail, required=True):
+        return {"id": pid, "label": label, "kind": kind, "satisfied": bool(ok), "detail": detail, "required": required}
+
+    evidence = _evidence_titles(profile["company_id"], config.evidence_artifact_ids)
+    out = [
+        item("purpose", "Environment purpose stated", "customer_attestation", True,
+             "development environment" if config.environment_purpose == "development" else
+             f"isolated trial environment -- approval: {config.trial_approval_reference}"),
+        item("routing_isolation", "Network route and data isolation confirmed by the customer/CNC", "customer_attestation",
+             config.routing_isolation_confirmed and config.isolation_evidence.strip(),
+             config.isolation_evidence.strip() or "not confirmed"),
+        item("privilege", "JDE identity is narrowly privileged (read-only role)", "customer_attestation",
+             config.privilege_confirmed and config.privilege_statement.strip(), config.privilege_statement.strip() or "not confirmed"),
+        item("runtime", "Tools release and path code attested by the CNC", "customer_attestation",
+             config.runtime_attestation_confirmed and config.runtime_attestation_evidence.strip(),
+             config.runtime_attestation_evidence.strip() or "not attested (AIS does not report them)"),
+        item("evidence", "Evidence documents linked", "customer_attestation", bool(evidence) and not any("NOT FOUND" in e for e in evidence),
+             "; ".join(evidence) or "none linked (optional, recommended)", required=False),
+        item("approved_reads", "Approved read operations defined", "configuration", bool(config.approved_reads),
+             f"{len(config.approved_reads)} capability(ies)"),
+        item("window", "Authorisation window open now", "configuration", window_open(config),
+             (f"{config.discovery_window.starts_at} to {config.discovery_window.ends_at}" if config.discovery_window
+              else "no window")),
+        item("credential", "Credential saved and readable on the server", "configuration",
+             credential_storage(profile) == "encrypted", credential_storage(profile)),
+    ]
+    for name, label in (("reachability", "Endpoint reachable from the backend"),
+                        ("authentication", "Authentication accepted (session opened and logged out)"),
+                        ("environment", "Session environment, role and release match the profile"),
+                        ("approved_read", "Approved sample read succeeded")):
+        c = h[name]
+        out.append(item(name, label, "machine_verified", c.state == "ok",
+                        f"{c.state} for this revision" + (f" -- {c.detail}" if c.detail else "")))
+    if live:
+        for s_ in server_prerequisites(config):
+            out.append({**s_, "kind": "server_managed", "required": True})
+    out.append(item("not_disabled", "Connection not disabled", "configuration", not profile["disabled"],
+                    "disabled -- run Test Connection to re-check" if profile["disabled"] else "active"))
+    return out
+
+
+def server_prerequisites(config: JdeProfileConfig) -> list[dict]:
+    """Deployment trust controls. Set on the server by whoever runs it, never
+    from the browser: global live enablement, the destination allowlist, TLS
+    trust and the credential-encryption key."""
+    from urllib.parse import urlparse
+
+    from ..services import credential_crypto
+    from .transport import ALLOWED_HOSTS_ENV, CA_BUNDLE_ENV, LIVE_ENABLED_ENV, tls_trust
+
+    host = (urlparse(config.ais_base_url).hostname or "").lower()
+    trust_ok, trust_detail = tls_trust()
+    return [
+        {"id": "live_enabled", "label": "Live discovery enabled for this deployment", "satisfied": live_allowed_by_deployment(),
+         "detail": "enabled" if live_allowed_by_deployment() else f"server setting {LIVE_ENABLED_ENV}=true is not set"},
+        {"id": "allowlist", "label": f"AIS host {host} is a permitted destination", "satisfied": host in allowed_hosts(),
+         "detail": "permitted" if host in allowed_hosts() else f"add {host} to the server setting {ALLOWED_HOSTS_ENV}"},
+        {"id": "tls_trust", "label": "TLS certificate trust configured", "satisfied": trust_ok,
+         "detail": trust_detail + f" (a private CA is added with the server setting {CA_BUNDLE_ENV}; "
+                                  "certificate verification is never switched off)"},
+        {"id": "encryption_key", "label": "Credential-encryption key configured on the server",
+         "satisfied": credential_crypto.is_configured(),
+         "detail": "configured" if credential_crypto.is_configured() else "JDE_CREDENTIAL_KEY is not set on the server"},
+    ]
 
 
 def set_enabled(company_id: str, *, actor: str, expected_revision: Optional[int]) -> dict:
@@ -305,7 +388,7 @@ def view(company_id: str) -> JdeProfileView:
     profile = load(company_id)
     if profile is None:
         return JdeProfileView(company_id=company_id, configured=False, capabilities=capability_views(None),
-                              live_allowed_by_deployment=live_allowed_by_deployment())
+                              live_allowed_by_deployment=live_allowed_by_deployment(), **_static_view_parts(None))
     username = profile.get("credential_username") or ""
     masked = (username[:2] + "•" * max(3, len(username) - 2)) if username else None
     config: JdeProfileConfig = profile["config"]
@@ -320,4 +403,20 @@ def view(company_id: str) -> JdeProfileView:
         mode_label=SIMULATION_LABEL if config.connection_mode == "simulation" else "LIVE customer AIS endpoint",
         live_allowed_by_deployment=live_allowed_by_deployment(),
         updated_at=profile["updated_at"], updated_by=profile["updated_by"],
+        prerequisites=prerequisites(profile), server_prerequisites=server_prerequisites(config),
+        **_static_view_parts(config),
     )
+
+
+def _static_view_parts(config: Optional[JdeProfileConfig]) -> dict:
+    from .capabilities import AUTH_ENDPOINTS, HARD_MAX_RECORDS, READ_ENDPOINTS
+    from .models import AUTH_METHODS, MAX_TIMEOUT_SECONDS, MAX_WINDOW_DAYS
+
+    urls = {}
+    if config is not None:
+        urls = {"token_request": config.ais_base_url + AUTH_ENDPOINTS["token_request"][1],
+                "logout": config.ais_base_url + AUTH_ENDPOINTS["logout"][1],
+                **{k: config.ais_base_url + p for k, (_, p) in READ_ENDPOINTS.items()}}
+    return {"ceilings": {"max_records": HARD_MAX_RECORDS, "max_timeout_seconds": MAX_TIMEOUT_SECONDS,
+                         "max_window_days": MAX_WINDOW_DAYS, "concurrent_requests": 1, "max_filters": 5},
+            "auth_methods": AUTH_METHODS, "request_urls": urls}

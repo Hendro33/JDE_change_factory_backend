@@ -85,7 +85,7 @@ After you have called either resolve_without_change or propose_change (exactly o
 }
 Add one more top-level key, "evidence", in the same json block:
   "evidence": {
-    "citations": [{"claim": "<a design decision or fact it rests on>", "evidence_ids": ["OBS-... or ART-...@rN or DOC-...@rN or PROFILE@rN"], "basis": "observed" | "customer_attestation" | "assumption"}],
+    "citations": [{"claim": "<a design decision or fact it rests on>", "evidence_ids": ["OBS-... or ART-...@rN or DOC-...@rN or PROFILE@rN, or a process citation_id from get_process_context (PROC:..., MAPPING@rN, MAP:to_be@vN[:step])"], "basis": "observed" | "customer_attestation" | "process_reference" | "assumption"}],
     "dependencies": ["<discovered dependency>"],
     "customisations": ["<discovered customer customisation, e.g. a 55-59 object>"],
     "gaps": [{"kind": "missing" | "stale" | "conflict" | "incompatible" | "unavailable", "description": "...", "question": "<targeted question for the customer/CNC>", "blocked_step": "<design step that cannot proceed, or empty>"}],
@@ -93,7 +93,7 @@ Add one more top-level key, "evidence", in the same json block:
     "confidence_limitations": ["<what limits confidence>"],
     "process_findings": {"affected_processes": ["<framework node_key: why>"], "missing_requirements": ["<the exact requirement sentence to add to the story>"], "missing_controls": ["<the exact control sentence to add>"], "missing_acceptance_criteria": ["<a testable acceptance criterion to add>"]}
   }
-Use "observed" only for what a discovery_read or an imported artifact actually showed in THIS run, citing its id; "customer_attestation" for what the customer states (runtime correspondence, the profile's confirmations); everything else is an "assumption". Missing evidence becomes a gap with a targeted question or a blocked step -- never invented functionality. Jade checks every citation against what this run actually read.
+Use "observed" only for what a discovery_read or an imported artifact actually showed in THIS run, citing its id; "customer_attestation" for what the customer states (runtime correspondence, the profile's confirmations); "process_reference" for the reviewer-confirmed processes and process maps get_process_context gave you, citing their citation_id; everything else is an "assumption". Missing evidence becomes a gap with a targeted question or a blocked step -- never invented functionality. Jade checks every citation against what this run actually read.
 Never report an object, version, or processing option you did not actually confirm via discovery_read or an imported artifact -- leave objects_affected honestly incomplete rather than guessing. If you are not confident in the recommended route, say so in existing_functionality_found or dependencies_and_conflicts rather than picking a route to fill the field.
 If the evidence contradicts the story, or a business question must be answered before any design is safe, use "recommended_route": "Clarification Required", call neither terminal tool, and put the contradiction in "evidence.contradictions" and each question in "evidence.gaps" (kind "conflict" or "missing"). That is a valid result: nothing is approved or executed from it. Still reply with the json block.
 """.strip()

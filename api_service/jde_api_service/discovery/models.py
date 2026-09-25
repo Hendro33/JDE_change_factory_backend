@@ -13,6 +13,30 @@ from ..models.base import ApiModel
 from . import capabilities
 
 ConnectionMode = Literal["simulation", "live"]
+# What the environment is FOR -- stated by the customer, never inferred from
+# its name. Discovery is only offered for development environments or an
+# explicitly approved, isolated trial environment (e.g. a prototype/sandbox
+# such as PS920 that the customer approved for this trial).
+EnvironmentPurpose = Literal["development", "isolated_trial"]
+AuthMethod = Literal["ais_token_request"]
+MAX_WINDOW_DAYS = 31
+MAX_TIMEOUT_SECONDS = 30
+# Authentication methods, honestly: only the first is implemented. The others
+# are listed so an Admin can see why a customer's requirement is not met yet.
+AUTH_METHODS = [
+    {"id": "ais_token_request", "supported": True, "label": "AIS token request (JDE user and password)",
+     "credentials": ["username", "password"],
+     "detail": "Jade opens one short AIS session per operation (POST /jderest/v2/tokenrequest with the explicit "
+               "environment and role), then logs it out. The password is encrypted on the server and never returned."},
+    {"id": "basic_auth_per_request", "supported": False, "label": "HTTP Basic authentication on each request",
+     "credentials": [], "detail": "Not implemented in Jade."},
+    {"id": "oauth2", "supported": False, "label": "OAuth 2.0 / OpenID Connect", "credentials": [],
+     "detail": "Not implemented in Jade; a customer requiring it needs a follow-up change before connecting."},
+    {"id": "client_certificate", "supported": False, "label": "Mutual TLS client certificate", "credentials": [],
+     "detail": "Not supported by this deployment."},
+    {"id": "interactive_sso", "supported": False, "label": "Interactive single sign-on (SAML/SSO)", "credentials": [],
+     "detail": "Cannot be used by a server-side connection."},
+]
 DataSharingPolicy = Literal["metadata_only", "configuration_and_artifacts", "full"]
 CheckState = Literal["ok", "failed", "unknown", "stale"]
 
@@ -75,12 +99,14 @@ class DiscoveryWindow(ApiModel):
             raise ValueError("discovery window times need a timezone")
         if end <= start:
             raise ValueError("discovery window must end after it starts")
+        if (end - start).total_seconds() > MAX_WINDOW_DAYS * 86400:
+            raise ValueError(f"the discovery window can be at most {MAX_WINDOW_DAYS} days (server limit)")
         return self
 
 
 class RequestLimits(ApiModel):
     max_records: int = Field(default=10, ge=1, le=capabilities.HARD_MAX_RECORDS)
-    timeout_seconds: int = Field(default=15, ge=1, le=30)
+    timeout_seconds: int = Field(default=15, ge=1, le=MAX_TIMEOUT_SECONDS)
     # Fixed for this increment; stored so the UI shows it.
     concurrent_requests: Literal[1] = 1
 
@@ -88,15 +114,18 @@ class RequestLimits(ApiModel):
 class JdeProfileConfig(ApiModel):
     """Everything about a company's discovery connection except the secret."""
 
+    connection_name: str = Field(default="", max_length=80)
     connection_mode: ConnectionMode = "simulation"
     ais_base_url: str
     environment: str
-    environment_type: Literal["DEV"] = "DEV"
+    environment_purpose: EnvironmentPurpose = "development"
+    # Required for an isolated trial: who approved using this environment and where (ticket, e-mail, minutes).
+    trial_approval_reference: str = Field(default="", max_length=500)
     role: str
     expected_application_release: str
     expected_tools_release: str
     path_code: str
-    auth_method: Literal["ais_token_request"] = "ais_token_request"
+    auth_method: AuthMethod = "ais_token_request"
     customer_contact: str = ""
     cnc_contact: str = ""
     network_route: str = ""
@@ -108,20 +137,43 @@ class JdeProfileConfig(ApiModel):
     # path code a session runs on; the customer's CNC attests them.
     runtime_attestation_confirmed: bool = False
     runtime_attestation_evidence: str = ""
+    # Reference documents (imported under ERP / JDE Landscape) that evidence the attestations above.
+    evidence_artifact_ids: list[str] = Field(default_factory=list, max_length=20)
     approved_reads: list[ApprovedRead] = Field(default_factory=list)
     discovery_window: Optional[DiscoveryWindow] = None
     limits: RequestLimits = Field(default_factory=RequestLimits)
     data_sharing_policy: DataSharingPolicy = "metadata_only"
 
+    @model_validator(mode="before")
+    @classmethod
+    def _legacy_environment_type(cls, data: Any) -> Any:
+        """Profiles saved before environment_purpose carried environment_type
+        'DEV'; anything else is refused rather than guessed."""
+        if isinstance(data, dict):
+            legacy = data.pop("environment_type", None) or data.pop("environmentType", None)
+            if legacy not in (None, "DEV"):
+                raise ValueError("only a development environment or an explicitly approved isolated trial "
+                                 "environment can be used for discovery")
+        return data
+
     @field_validator("ais_base_url")
     @classmethod
     def _https(cls, v: str) -> str:
+        """https://host[:port][/proxy-prefix]. Jade appends /jderest/...; an
+        address given with /jderest at the end is normalised, not doubled."""
         parsed = urlparse(v.strip())
         if parsed.scheme != "https" or not parsed.hostname:
             raise ValueError("the AIS endpoint must be an https:// URL")
-        if parsed.username or parsed.password or parsed.query or parsed.fragment:
+        if parsed.username or parsed.password or parsed.query or parsed.fragment or parsed.params:
             raise ValueError("the AIS endpoint must not carry credentials, a query or a fragment")
-        return v.strip().rstrip("/")
+        try:
+            parsed.port  # noqa: B018 -- raises on an invalid port
+        except ValueError as exc:
+            raise ValueError("the AIS endpoint port must be a number from 1 to 65535") from exc
+        url = v.strip().rstrip("/")
+        if url.lower().endswith("/jderest"):
+            url = url[: -len("/jderest")]
+        return url
 
     @field_validator("environment", "role", "path_code", "expected_application_release", "expected_tools_release")
     @classmethod
@@ -130,6 +182,12 @@ class JdeProfileConfig(ApiModel):
         if not v or v in {"*ALL", "*", "ALL"}:
             raise ValueError("must be named explicitly (no blank, *ALL or wildcard)")
         return v
+
+    @model_validator(mode="after")
+    def _trial_needs_approval(self) -> "JdeProfileConfig":
+        if self.environment_purpose == "isolated_trial" and len(self.trial_approval_reference.strip()) < 5:
+            raise ValueError("an isolated trial environment needs the reference to the customer's approval for this trial")
+        return self
 
     @model_validator(mode="after")
     def _one_read_per_capability(self) -> "JdeProfileConfig":
@@ -195,12 +253,22 @@ class JdeProfileView(ApiModel):
     enable_blockers: list[str] = []
     mode_label: str = ""
     live_allowed_by_deployment: bool = False
+    prerequisites: list[dict[str, Any]] = []
+    server_prerequisites: list[dict[str, Any]] = []
+    ceilings: dict[str, Any] = {}
+    auth_methods: list[dict[str, Any]] = []
+    request_urls: dict[str, str] = {}
     updated_at: Optional[str] = None
     updated_by: Optional[str] = None
 
 
 class SampleReadInput(ApiModel):
     capability_id: str
+    # One explicitly selected approved target (empty only for capabilities without a target).
+    target: str = ""
+    fields: list[str] = Field(default_factory=list)
+    filters: list[dict[str, Any]] = Field(default_factory=list)
+    max_records: int = Field(default=1, ge=1, le=capabilities.HARD_MAX_RECORDS)
 
 
 class ActionResult(ApiModel):

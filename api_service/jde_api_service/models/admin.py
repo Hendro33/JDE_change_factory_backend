@@ -43,7 +43,9 @@ class DiscoveryProfileSummary(ApiModel):
 
     configured: bool
     revision: int = 0
+    connection_name: Optional[str] = None
     environment: Optional[str] = None
+    environment_purpose: Optional[str] = None
     path_code: Optional[str] = None
     application_release: Optional[str] = None
     tools_release: Optional[str] = None

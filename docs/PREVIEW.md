@@ -83,6 +83,54 @@ and stop the preview with Ctrl-C.
 6. Open a private window, sign in as `do@e2e.local` and open the same story. It shows the same saved data. The
    Domain Owner can review and edit maps in their own domain.
 
+## First read-only JDE connection (prepared; not yet authorised)
+
+Open **Admin › Integrations**, then the **JDE connection** panel, and choose **Edit settings**. Everything you enter is stored on
+Jade's backend. **Save** never contacts JDE.
+
+| Field | What to enter |
+|---|---|
+| Connection name | Any label, e.g. "PS920 read-only trial" |
+| Mode | **Live** (read-only; there is no fallback to simulation) |
+| AIS HTTPS address | `https://<ais-host>:<port>` plus any proxy prefix; Jade appends `/jderest/...` itself |
+| JDE environment | The exact name, e.g. `PS920` |
+| Environment purpose | **Isolated trial environment, explicitly approved** (or Development) |
+| Trial approval reference | Who approved using this environment, and where |
+| JDE role | The exact role of the read-only user (no `*ALL`) |
+| Application release / Tools release / Path code | As the CNC states them, e.g. `9.2` / `9.2.x.x` / `PS920` |
+| Authentication | AIS token request (user + password). No other method is supported yet |
+| Customer / CNC contact, Network access notes | Who to call, and the route from **this Mac** to the AIS host |
+| Isolation evidence + tick | The customer/CNC confirmation that the environment is isolated |
+| Privilege statement + tick | The confirmation that the user is read-only and narrowly privileged |
+| Runtime attestation + tick | The CNC's statement of the Tools release and path code |
+| Approved discovery reads | Start with just one: **User defined code values**, target `00/DT`, columns `DRSY, DRRT, DRKY, DRDL01` |
+| Window | Today to a few days ahead (at most 31 days) |
+| Records per query / timeout | `5` / `15` |
+| Customer data in AI prompts | Metadata only, unless the customer has agreed to more |
+
+After saving, enter the JDE user and password under **Credential**. The password is encrypted on the server and never shown
+again.
+
+**Server-managed prerequisites.** These are set on the Mac that runs the backend, not in the browser, and they stay off until you
+authorise the first connection. Create `~/jade/JDE_change_factory_backend/.preview-data/server.env` containing:
+
+```
+JDE_DISCOVERY_LIVE_ENABLED=true
+JDE_DISCOVERY_ALLOWED_HOSTS=<ais-host>
+# only if the AIS certificate comes from a private CA:
+JDE_DISCOVERY_CA_BUNDLE=/path/to/customer-ca.pem
+```
+
+Then restart the preview. The Mac itself must reach `<ais-host>:<port>`, for example over a VPN. Your browser reaching JDE does
+not prove the backend can.
+
+**Supervised order:**
+1. Test Connection (sign-in and server defaults only).
+2. Run Approved Sample Read: `udc_values`, target `00/DT`, max records `5`, no filter.
+3. Only after both succeed, and only if wanted, Enable Architect Discovery.
+
+JDE writes stay simulated throughout.
+
 ## Prerequisites for a shared (hosted) preview
 
 These use the agreed Azure direction. The earlier S1-3 document proposed Render; that was superseded. None of these

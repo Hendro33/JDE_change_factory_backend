@@ -56,6 +56,10 @@ def save_profile(payload: JdeProfileUpdate, ctx: AuthContext = Depends(require_r
     """Stores a new revision. Does not contact JDE. A material change
     switches discovery off until re-verified and re-enabled."""
     config = JdeProfileConfig.model_validate(payload.model_dump(exclude={"expected_revision"}))
+    for ref in config.evidence_artifact_ids:  # this company's own reference documents only
+        a = artifacts.get(ctx.customer_id, ref.partition("@r")[0])
+        if a is None:
+            raise HTTPException(status_code=422, detail=f"evidence document {ref} is not a document of this company")
     before = profile_service.load(ctx.customer_id)
     saved = profile_service.save(ctx.customer_id, config, expected_revision=payload.expected_revision,
                                  actor=ctx.identity.display_name)
@@ -92,7 +96,8 @@ def test_connection(ctx: AuthContext = Depends(require_role("admin"))) -> Action
 @router.post("/admin/jde/sample-read", response_model=ActionResult)
 def run_sample_read(payload: SampleReadInput, ctx: AuthContext = Depends(require_role("admin"))) -> ActionResult:
     try:
-        evidence = service.sample_read(ctx.customer_id, ctx.identity.id, payload.capability_id)
+        evidence = service.sample_read(ctx.customer_id, ctx.identity.id, payload.capability_id, target=payload.target,
+                                       fields=payload.fields, filters=payload.filters, max_records=payload.max_records)
     except service.DiscoveryBlocked as exc:
         return _action(ctx.customer_id, "blocked", str(exc))
     except service.DiscoveryFailed as exc:

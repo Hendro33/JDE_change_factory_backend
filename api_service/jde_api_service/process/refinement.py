@@ -45,6 +45,24 @@ def _fid(company_id: str, story_id: str, source_ref: str, kind: str, text: str) 
 # ---------------------------------------------------------------------
 # Findings
 # ---------------------------------------------------------------------
+_STOP = {"the", "and", "for", "with", "that", "this", "must", "should", "are", "is", "be", "a", "an", "of", "to",
+         "in", "on", "by", "or", "its", "it", "as", "at", "from", "each", "any", "all", "not", "no", "can", "cannot"}
+
+
+def _tokens(text: str) -> set[str]:
+    import re
+
+    return {w for w in re.findall(r"[a-z0-9]+", text.lower()) if len(w) > 2 and w not in _STOP}
+
+
+def substantively_same(a: str, b: str) -> bool:
+    """Conservative: the same meaningful words, give or take a few."""
+    ta, tb = _tokens(a), _tokens(b)
+    if not ta or not tb:
+        return False
+    return len(ta & tb) / len(ta | tb) >= 0.6 or (len(ta) >= 4 and ta <= tb) or (len(tb) >= 4 and tb <= ta)
+
+
 def sync_findings(company_id: str, story_id: str) -> None:
     """Register every finding the agents produced for this story (idempotent)."""
     from ..discovery import baseline
@@ -63,12 +81,22 @@ def sync_findings(company_id: str, story_id: str) -> None:
             items += [("architect", f"design r{b['design_revision']}", kind, t) for t in findings.get(key) or []]
     now = _now()
     with connection(immediate=True) as conn:
+        applied = [dict(r) for r in conn.execute(
+            "SELECT finding_id, text, applied_in_revision FROM story_findings WHERE company_id = ? AND story_id = ? "
+            "AND status = 'applied'", (company_id, story_id)).fetchall()]
         for source, ref, kind, text in items:
             text = str(text).strip()[:600]
-            if text:
-                conn.execute("INSERT OR IGNORE INTO story_findings (finding_id, company_id, story_id, source, source_ref, "
-                             "kind, text, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'proposed', ?)",
-                             (_fid(company_id, story_id, ref, kind, text), company_id, story_id, source, ref, kind, text, now))
+            if not text:
+                continue
+            fid = _fid(company_id, story_id, ref, kind, text)
+            if conn.execute("SELECT 1 FROM story_findings WHERE finding_id = ?", (fid,)).fetchone():
+                continue
+            same = next((a for a in applied if substantively_same(text, a["text"])), None)
+            status, reason = ("duplicate", f"substantively the same as {same['finding_id']}, already applied in story "
+                                           f"revision {same['applied_in_revision']}") if same else ("proposed", "")
+            conn.execute("INSERT INTO story_findings (finding_id, company_id, story_id, source, source_ref, kind, text, "
+                         "status, reason, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                         (fid, company_id, story_id, source, ref, kind, text, status, reason, now))
 
 
 def findings(company_id: str, story_id: str) -> list[dict]:

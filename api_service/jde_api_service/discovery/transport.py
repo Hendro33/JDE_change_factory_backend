@@ -44,6 +44,10 @@ from jde_mcp_server import sim_estate  # noqa: E402
 DEFAULTCONFIG_KEYS = ("aisVersion", "defaultEnvironment", "defaultRole", "defaultJasServer")
 LIVE_ENABLED_ENV = "JDE_DISCOVERY_LIVE_ENABLED"
 ALLOWED_HOSTS_ENV = "JDE_DISCOVERY_ALLOWED_HOSTS"
+# Optional PEM bundle of CA certificates the backend trusts for the AIS
+# endpoint (a customer's private CA). Server-managed; never browser-editable.
+# Verification itself is never switched off.
+CA_BUNDLE_ENV = "JDE_DISCOVERY_CA_BUNDLE"
 SIMULATION_LABEL = "SIMULATION -- simulated AIS endpoint, not the customer's JDE"
 
 BREAKER_THRESHOLD = 3
@@ -94,6 +98,43 @@ class ReadResult:
 
 def live_allowed_by_deployment() -> bool:
     return os.environ.get(LIVE_ENABLED_ENV, "").strip().lower() == "true"
+
+
+def tls_trust() -> tuple[bool, str]:
+    """(usable, description) of the certificate trust the live transport uses."""
+    path = os.environ.get(CA_BUNDLE_ENV, "").strip()
+    if not path:
+        return True, "the server's default public CA trust store"
+    if not os.path.isfile(path):
+        return False, f"{CA_BUNDLE_ENV} points to {path}, which does not exist on the server"
+    return True, f"the CA bundle configured on the server ({os.path.basename(path)}) plus nothing else"
+
+
+def _verify_setting():
+    path = os.environ.get(CA_BUNDLE_ENV, "").strip()
+    return path if path else True
+
+
+def diagnose(exc: Exception, host: str) -> str:
+    """A plain explanation of why the BACKEND could not reach the endpoint.
+    Never includes credentials, tokens or response bodies."""
+    text = str(exc)
+    if "CERTIFICATE_VERIFY_FAILED" in text or "certificate verify failed" in text.lower():
+        return (f"TLS: the backend does not trust the certificate presented by {host}. If the customer uses a "
+                f"private CA, the server administrator adds it with {CA_BUNDLE_ENV}; verification is never "
+                "switched off")
+    if "hostname" in text.lower() and "match" in text.lower():
+        return f"TLS: the certificate presented does not match the host name {host}"
+    if isinstance(exc, httpx.ConnectTimeout) or isinstance(exc, httpx.ReadTimeout):
+        return (f"timed out reaching {host} from the backend machine: a VPN or network route from the machine "
+                "running Jade's backend may be required (your browser reaching JDE does not prove the backend can)")
+    if isinstance(exc, httpx.ConnectError):
+        if "Name or service not known" in text or "nodename nor servname" in text or "getaddrinfo" in text:
+            return (f"the backend machine cannot resolve {host} (DNS). A VPN or internal DNS from the machine "
+                    "running Jade's backend may be required")
+        return (f"the backend machine could not open a connection to {host}: a VPN, firewall rule or network "
+                "route from the machine running Jade's backend may be required")
+    return f"{type(exc).__name__} contacting the AIS endpoint"
 
 
 def allowed_hosts() -> set[str]:
@@ -249,8 +290,12 @@ class LiveAisTransport:
             )
         self.company_id = company_id
         self.base_url = base_url
+        trust_ok, trust_detail = tls_trust()
+        if not trust_ok:
+            raise DestinationNotAllowed(f"TLS trust is misconfigured on the server: {trust_detail}")
+        self.host = host
         self._client = httpx.Client(
-            verify=True, follow_redirects=False, timeout=httpx.Timeout(timeout_seconds), transport=transport,
+            verify=_verify_setting(), follow_redirects=False, timeout=httpx.Timeout(timeout_seconds), transport=transport,
         )
 
     def _send(self, method: str, path: str, *, token: Optional[str] = None,
@@ -262,7 +307,7 @@ class LiveAisTransport:
             resp = self._client.request(method, f"{self.base_url}{path}", json=body, headers=headers)
         except httpx.HTTPError as exc:
             record_transport_outcome(self.company_id, False)
-            raise TransportError(f"{type(exc).__name__} contacting the AIS endpoint") from exc
+            raise TransportError(diagnose(exc, self.host)) from None
         if 300 <= resp.status_code < 400:
             record_transport_outcome(self.company_id, False)
             raise TransportError(f"the endpoint answered with a redirect (HTTP {resp.status_code}); redirects are refused")

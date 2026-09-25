@@ -233,7 +233,7 @@ try:
         ok(operator.put("/admin/jde/credential", headers=H, json={"username": "JADEDISC", "password": DISCOVERY_PW,
                                                                    "expectedRevision": view["revision"]}), "credential")
         ok(operator.post("/admin/jde/test-connection", headers=H), "test")
-        ok(operator.post("/admin/jde/sample-read", headers=H, json={"capabilityId": "object_librarian"}), "sample")
+        ok(operator.post("/admin/jde/sample-read", headers=H, json={"capabilityId": "object_librarian", "target": "P554210"}), "sample")
         rev = ok(operator.get("/admin/jde/profile", headers=H), "view")["revision"]
         ok(operator.post("/admin/jde/enable", headers=H, json={"expectedRevision": rev}), "enable")
         cur = ok(operator.get("/admin/engagement-scope", headers=H), "scope")["revision"]

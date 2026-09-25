@@ -398,3 +398,26 @@ Everything is kept in `.preview-data/` (git-ignored) and reused on every start:
 Throwaway demo passwords are generated once into `.preview-data/credentials.env` (mode 600) and never printed or
 logged. An existing admin account is never reset. `--reset` deletes the data only after typed confirmation.
 Browser demonstration: frontend `e2e/process/`.
+
+## JDE connection: server-managed settings
+
+These are customer settings, stored in the profile and edited in Admin › Integrations › JDE:
+- connection name, mode, AIS address, environment, purpose and trial approval, role, releases, path code;
+- authentication method, contacts, network notes, attestations and linked evidence;
+- approved reads, window, limits and data sharing.
+
+These are **deployment trust controls**, set on the server only and never from a browser:
+
+| Setting | Purpose |
+|---|---|
+| `JDE_DISCOVERY_LIVE_ENABLED=true` | Global switch for live discovery. Off by default |
+| `JDE_DISCOVERY_ALLOWED_HOSTS` | The AIS hosts the backend may contact |
+| `JDE_DISCOVERY_CA_BUNDLE` | Optional PEM file for a private CA. Certificate verification is never switched off |
+| `JDE_CREDENTIAL_KEY` | The credential-encryption key |
+
+Server-managed settings in the preview:
+- The preview launcher reads only the first three, and only from `.preview-data/server.env`.
+- It always sets `JDE_MCP_MOCK_MODE=true`, so JDE writes stay simulated.
+
+The panel shows each server-managed prerequisite and a plain diagnostic when one blocks the configured endpoint (TLS
+trust, DNS, connect timeout and VPN hints). Diagnostics never include credentials, tokens or response bodies.

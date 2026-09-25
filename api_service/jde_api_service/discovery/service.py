@@ -201,8 +201,8 @@ def validate(grant: DiscoveryGrant, capability_id: str, target: str, fields: lis
             raise DiscoveryBlocked("discovery is not enabled for the current profile revision")
         if profile["revision"] != grant.profile_revision:
             raise DiscoveryBlocked("the profile changed after this run started; a new run is needed")
-    if config.environment_type != "DEV":
-        raise DiscoveryBlocked("discovery is DEV-only")
+    if config.environment_purpose not in ("development", "isolated_trial"):
+        raise DiscoveryBlocked("discovery is only for development or an approved isolated trial environment")
     if not profile_service.window_open(config):
         raise DiscoveryBlocked("outside the approved discovery window")
     cap = capabilities.get(capability_id)
@@ -546,10 +546,12 @@ def verify_environment(config: JdeProfileConfig, server_defaults: dict, session:
                   f"customer-attested: {', '.join(attested_items)}"), facets
 
 
-def sample_read(company_id: str, actor_user_id: str, capability_id: str) -> dict:
-    """Run one approved read with its first approved target and one record,
-    to confirm the capability works against this endpoint. Success makes
-    the capability 'supported' for this profile revision."""
+def sample_read(company_id: str, actor_user_id: str, capability_id: str, *, target: Optional[str] = None,
+                fields: Optional[list[str]] = None, filters: Optional[list[dict]] = None, max_records: int = 1) -> dict:
+    """Run ONE approved read on ONE explicitly selected approved target,
+    bounded by the approved fields, filters and record limit, to confirm the
+    capability works against this endpoint. Success makes the capability
+    'supported' for this profile revision."""
     profile = profile_service.load(company_id)
     if profile is None:
         raise DiscoveryBlocked("save a discovery profile first")
@@ -559,10 +561,15 @@ def sample_read(company_id: str, actor_user_id: str, capability_id: str) -> dict
     read = _approved_read(profile["config"], capability_id)
     if read is None:
         raise DiscoveryBlocked(f"{capability_id} is not an approved read")
-    target = read.targets[0] if read.targets else ""
+    cap = capabilities.get(capability_id)
+    if target is None:  # callers that predate explicit selection
+        target = read.targets[0] if read.targets else ""
+    if cap is not None and cap.target_kind != "none" and not target:
+        raise DiscoveryBlocked(f"select one of the approved targets for {capability_id}")
     grant = admin_grant(company_id, actor_user_id, "sample_read")
     try:
-        evidence = execute_read(grant, capability_id, target, list(read.fields), [], 1, require_enabled=False)
+        evidence = execute_read(grant, capability_id, target, list(fields or read.fields), list(filters or []),
+                                max_records, require_enabled=False)
     except (DiscoveryBlocked, DiscoveryFailed) as exc:
         profile_service.record_check(company_id, "approved_read", "failed", f"{capability_id}: {exc}",
                                      capability_id=capability_id)

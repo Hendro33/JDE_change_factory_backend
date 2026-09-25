@@ -274,7 +274,7 @@ with TestClient(app) as client:
     setup = {"test_connection": ok(client.post("/admin/jde/test-connection", headers=H), "test")["outcome"]}
     for read in profile["approvedReads"]:
         setup[f"sample_read:{read['capabilityId']}"] = ok(client.post(
-            "/admin/jde/sample-read", headers=H, json={"capabilityId": read["capabilityId"]}), "sample")["outcome"]
+            "/admin/jde/sample-read", headers=H, json={"capabilityId": read["capabilityId"], "target": (read.get("targets") or [""])[0]}), "sample")["outcome"]
     rev = ok(client.get("/admin/jde/profile", headers=H), "view")["revision"]
     enabled = ok(client.post("/admin/jde/enable", headers=H, json={"expectedRevision": rev}), "enable")
     setup["discovery_enabled"] = enabled["profile"]["discoveryEnabled"]

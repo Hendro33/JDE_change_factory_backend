@@ -193,7 +193,8 @@ def _discovery_summary(company_id: str):
     if not v.configured or v.config is None:
         return DiscoveryProfileSummary(configured=False)
     return DiscoveryProfileSummary(
-        configured=True, revision=v.revision, environment=v.config.environment, path_code=v.config.path_code,
+        configured=True, revision=v.revision, connection_name=v.config.connection_name, environment=v.config.environment,
+        environment_purpose=v.config.environment_purpose, path_code=v.config.path_code,
         application_release=v.config.expected_application_release, tools_release=v.config.expected_tools_release,
         mode=v.config.connection_mode, discovery_enabled=v.discovery_enabled, disabled=v.disabled,
         health={k: c.state for k, c in v.health.items()},

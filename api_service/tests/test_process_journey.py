@@ -421,7 +421,8 @@ def test_functional_route_as_built_records_the_actual_change_and_refuses_incompl
     assert done["content"]["process"]["mapping"]["refs"][0]["node_key"] == "SYN-3.2"
     assert done["content"]["process"]["maps"]["to_be"]["version"] == 1
     assert done["content"]["design"]["baseline"]["process_context"]["mapping_revision"] == 1
-    assert any("fixed mock answer" in x for x in done["content"]["limitations"])
+    assert any("SIMULATION STUB" in x for x in done["content"]["limitations"])
+    assert [c["label"] for c in done["content"]["checkpoints"] if c["id"] == "tested"][0].endswith("not behavioural evidence)")
 
     # Stale: the to-be map changes after generation -> the draft cannot be finalised.
     changed = _to_be(fid)

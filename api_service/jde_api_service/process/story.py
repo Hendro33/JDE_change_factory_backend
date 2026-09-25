@@ -264,19 +264,24 @@ def context_for_story(company_id: str, story_id: str) -> dict:
         "mapping": None if m is None else {
             "revision": m["revision"], "status": m["status"], "no_mapping_reason": m["no_mapping_reason"],
             "confirmed_by": m["reviewer_name"], "confirmed_at": m["created_at"],
-            "processes": [{"ref": f"{r['framework_id']}@v{r['version']}:{r['node_key']}", "name": r["name"],
+            "citation_id": f"MAPPING@r{m['revision']}",
+            "processes": [{"ref": f"{r['framework_id']}@v{r['version']}:{r['node_key']}",
+                           "citation_id": f"PROC:{r['framework_id']}@v{r['version']}:{r['node_key']}", "name": r["name"],
                            "path": " > ".join(p["name"] for p in r["path"]), "status_now": r["status_now"]["state"]}
                           for r in m["refs"]],
             "accepted_findings": m["findings"]},
         "maps": {},
         "fingerprint": fingerprint(company_id, story_id),
+        "citation_note": "Cite these with basis 'process_reference' using their citation_id (a map step as "
+                         "MAP:<kind>@v<version>:<step id>). They describe the customer's business process; they are "
+                         "not observations of the JDE environment.",
     }
     for kind in ("as_is", "to_be"):
         lv = maps.latest_version(company_id, story_id, kind)
         if lv:
             c = lv["content"]
             out["maps"][kind] = {
-                "version": lv["version"], "title": c.get("title", ""),
+                "version": lv["version"], "citation_id": f"MAP:{kind}@v{lv['version']}", "title": c.get("title", ""),
                 "steps": [{"id": s["id"], "label": s["label"], "type": s["type"], "actor": s.get("actor", ""),
                            "system": s.get("system", ""), "controls": s.get("controls", []),
                            "basis": s["basis"], "process": (s.get("node_ref") or {}).get("node_key")}

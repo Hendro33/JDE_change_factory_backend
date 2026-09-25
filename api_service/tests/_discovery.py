@@ -78,7 +78,8 @@ def verify_and_enable(client, company: str = "vdb") -> dict:
     r = client.post("/admin/jde/test-connection", headers=headers(company))
     assert r.json()["outcome"] == "ok", r.text
     for read in client.get("/admin/jde/profile", headers=headers(company)).json()["config"]["approvedReads"]:
-        r = client.post("/admin/jde/sample-read", headers=headers(company), json={"capabilityId": read["capabilityId"]})
+        r = client.post("/admin/jde/sample-read", headers=headers(company), json={"capabilityId": read["capabilityId"],
+                        "target": (read.get("targets") or [""])[0]})
         assert r.json()["outcome"] == "ok", r.text
     rev = client.get("/admin/jde/profile", headers=headers(company)).json()["revision"]
     r = client.post("/admin/jde/enable", headers=headers(company), json={"expectedRevision": rev})

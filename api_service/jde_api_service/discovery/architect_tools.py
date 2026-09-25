@@ -46,7 +46,7 @@ class ArchitectDiscoveryTools:
             config = profile["config"]
             base = {
                 "discovery_available": True,
-                "environment": config.environment, "environment_type": config.environment_type,
+                "environment": config.environment, "environment_purpose": config.environment_purpose,
                 "path_code": config.path_code, "application_release": config.expected_application_release,
                 "tools_release": config.expected_tools_release,
                 "mode": config.connection_mode,

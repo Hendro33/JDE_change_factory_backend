@@ -119,8 +119,17 @@ def _functional(company_id: str, story_id: str, change) -> Optional[dict]:
             "invalidations": record.get("invalidations") or [],
             "attempts": attempts, "readback": readback,
             "test_orchestration": op.get("test_orchestration") or "",
-            "test_note": ("In simulation the test orchestration's PASS is a fixed mock answer, not a simulated run; "
-                          "the read-back of the target is the verification evidence.")}
+            "test_is_stub": _mock_mode(),
+            "test_note": ("SIMULATION STUB: the test orchestration returns a fixed PASS without running anything. It is "
+                          "not evidence that the change behaves correctly; only the read-back of the target is "
+                          "verification evidence." if _mock_mode() else
+                          "The test orchestration ran on the customer's AIS; its outcome is recorded as returned.")}
+
+
+def _mock_mode() -> bool:
+    from jde_mcp_server.config import settings as mcp_settings
+
+    return bool(mcp_settings.mock_mode)
 
 
 def _story_revision(company_id: str, story_id: str) -> Optional[dict]:
@@ -208,7 +217,9 @@ def _checkpoints(src: dict) -> list[dict]:
             ("implementation_approved", "Exact change approved", bool(func and func["approval"]),
              "approved" if func and func["approval"] else "no approved exact change"),
             ("applied", "Change applied", ex.get("write_state") == "applied", ex.get("write_state") or "not started"),
-            ("tested", "Approved test orchestration run", ex.get("test_state") == "completed", ex.get("test_state") or "not run"),
+            ("tested", "Approved test orchestration dispatched" + (" (SIMULATION STUB -- fixed PASS, not behavioural evidence)"
+                                                                    if (func or {}).get("test_is_stub") else ""),
+             ex.get("test_state") == "completed", ex.get("test_state") or "not run"),
             ("verified", "Target read back with the approved value", bool(rb) and rb["matches_approved"],
              (f"{rb['value']!r} ({rb['source']})" if rb else "no read-back")),
         ]
@@ -244,7 +255,8 @@ def _deviations_and_limits(src: dict) -> tuple[list[str], list[str]]:
             lim.append(f"Approval invalidation recorded: {inv.get('kind')} -- {inv.get('detail')}")
         if f["readback"] and "SIMULATION" in f["readback"]["source"]:
             lim.append("The configuration change was applied to and read back from the simulated DEV estate; no JD "
-                       "Edwards system was changed. The test orchestration's PASS is a fixed mock answer.")
+                       "Edwards system was changed. The test orchestration is a SIMULATION STUB (fixed PASS): no behavioural "
+                       "test evidence exists; the read-back verifies only that the value was set.")
     b = d["baseline"]
     if b and b["reassessment"]:
         for r in b["reassessment"]:
@@ -391,8 +403,9 @@ def markdown(record: dict) -> str:
     v = (t or {}).get("verification")
     if f and not t:
         rb = f.get("readback") or {}
-        L.append(f"Test orchestration {f['test_orchestration'] or '(none)'}: {f['exact_change']['execution']['test_state']}. "
-                 f"{f['test_note']}")
+        L.append(f"Test orchestration {f['test_orchestration'] or '(none)'}: {f['exact_change']['execution']['test_state']}"
+                 + (" -- SIMULATION STUB, not behavioural evidence." if f.get("test_is_stub") else ".") + f" {f['test_note']}")
+        L.append("")
         L.append(f"Read-back of the target: {rb.get('value')!r} -- {'matches' if rb.get('matches_approved') else 'DOES NOT match'} "
                  f"the approved value ({rb.get('source')})")
     elif v:

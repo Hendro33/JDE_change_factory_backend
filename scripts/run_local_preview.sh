@@ -66,6 +66,21 @@ export JDE_CREDENTIAL_KEY="$CREDENTIAL_KEY" JDE_API_ALLOWED_ORIGINS="http://loca
 # Used only if the admin account does not exist yet; an existing account is never reset.
 export JDE_BOOTSTRAP_ADMIN_EMAIL=admin@e2e.local JDE_BOOTSTRAP_ADMIN_NAME="E2E Admin" JDE_BOOTSTRAP_ADMIN_PASSWORD="$ADMIN_PW"
 export JADE_E2E_CNC_PASSWORD="$CNC_PW" JADE_E2E_DO_PASSWORD="$DO_PW"
+# JDE writes always stay simulated in the preview.
+export JDE_MCP_MOCK_MODE=true
+# Server-managed trust controls for LIVE read-only discovery. Off unless the
+# person running this machine creates $DATA/server.env (see docs/PREVIEW.md).
+# Only these three keys are read from it; nothing here is editable in the browser.
+unset JDE_DISCOVERY_LIVE_ENABLED JDE_DISCOVERY_ALLOWED_HOSTS JDE_DISCOVERY_CA_BUNDLE
+if [ -f "$DATA/server.env" ]; then
+  while IFS='=' read -r key value; do
+    case "$key" in
+      JDE_DISCOVERY_LIVE_ENABLED|JDE_DISCOVERY_ALLOWED_HOSTS|JDE_DISCOVERY_CA_BUNDLE) export "$key=$value" ;;
+      ''|\#*) ;;
+      *) echo "Ignoring $key in $DATA/server.env (not a permitted server setting)" ;;
+    esac
+  done < "$DATA/server.env"
+fi
 
 (cd "$BACKEND" && exec "$VENV/bin/uvicorn" jde_api_service.main:app --app-dir api_service --port "$API_PORT" > "$DATA/backend.log" 2>&1) &
 BPID=$!
@@ -102,6 +117,10 @@ cat <<INFO
     admin@e2e.local  (ADMIN_PW)  admin + product manager: frameworks, reviews, finalising
     do@e2e.local     (DO_PW)     Domain Owner for Customer Service -- try it in a second browser
     cnc@e2e.local    (CNC_PW)    CNC operator only
+
+  JDE connection: Admin > Integrations (JDE panel). Live read-only access: ${JDE_DISCOVERY_LIVE_ENABLED:-off}
+    ${JDE_DISCOVERY_ALLOWED_HOSTS:+permitted AIS host(s): $JDE_DISCOVERY_ALLOWED_HOSTS}
+  JDE writes: always simulated in this preview.
 
   Start at Delivery > Process & Maps > S-BW-RETURNS, then follow the journey bar.
   Stop with Ctrl-C; start again to continue with the same data.
