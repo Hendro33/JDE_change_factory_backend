@@ -74,7 +74,22 @@ sys.path.insert(0, os.path.join(ROOT, "api_service", "tests"))
 from fastapi.testclient import TestClient  # noqa: E402
 
 import _docs  # noqa: E402  (synthetic PDF builder)
+from jde_api_service.ai import connection as ai_connection, runtime as ai_runtime  # noqa: E402
 from jde_api_service.main import app  # noqa: E402
+
+# Evidence of what the runtime process received: variable NAMES that were
+# non-empty (never values), captured when the real run builds its options.
+RUNTIME_ENV_NAMES: list[list[str]] = []
+_build = ai_runtime.ADAPTER.build_options
+
+
+def _recording_build(spec):
+    opts = _build(spec)
+    RUNTIME_ENV_NAMES.append(sorted(k for k, v in opts.env.items() if v))
+    return opts
+
+
+ai_runtime.ADAPTER.build_options = _recording_build
 
 PDF = _docs.pdf(["SYNTHETIC delivery standard, page 1: sales orders ship within two working days.",
                  "SYNTHETIC delivery standard, page 2: public holidays are not working days."])
@@ -108,6 +123,19 @@ with TestClient(app) as c:
         rev = next(p for p in packs if p["packId"] == f"tpl-{role}")["revisions"][0]["revision"]
         c.put(f"/admin/ai/assignments/{role}", json={"packId": f"tpl-{role}", "revision": rev}).raise_for_status()
 
+    if not args.rehearse:
+        # Negative control (not billable): an invalid key through the same network path must be rejected,
+        # so a later success cannot come from credentials substituted along the way.
+        try:
+            ai_connection._send_test_message("sk-ant-api03-INVALID-negative-control-" + "0" * 40, MODEL)
+            neg = "ACCEPTED"
+        except ai_connection.ConnectionTestFailed as exc:
+            neg = str(exc)
+        report["negative_control"] = neg
+        check("a deliberately invalid key is rejected on the same network path (no credential substitution)",
+              "rejected" in neg)
+        if "rejected" not in neg:
+            sys.exit("negative control failed: stopping before any billable request")
     t = c.post("/admin/ai/connection/test", json={"confirmBillable": True}).json()
     report["connection_test"] = {"outcome": t["outcome"], "detail": t["detail"]}
     check("connection test answered from the configured model", t["outcome"] == "ok" and MODEL in t["detail"])
@@ -136,6 +164,12 @@ with TestClient(app) as c:
                                          "knowledge", "usage", "cost_usd", "cost_basis", "error")}
     report["story"] = change.get("userStory")
     report["processing"] = {"stage": change.get("processingStage"), "error": change.get("processingError")}
+    report["runtime_env_nonempty_names"] = RUNTIME_ENV_NAMES
+    inherited = {"CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_SESSION_INGRESS_TOKEN_FILE",
+                 "CLAUDE_CODE_MESSAGING_TOKEN", "GH_TOKEN", "GITHUB_TOKEN", "AWS_SECRET_ACCESS_KEY",
+                 "CLOUDSDK_AUTH_ACCESS_TOKEN", "JDE_CREDENTIAL_KEY", "JADE_PROOF_ANTHROPIC_API_KEY"}
+    check("the runtime process carried no inherited credential variables (names checked, values never read)",
+          bool(RUNTIME_ENV_NAMES) and all(not (set(n) & inherited) for n in RUNTIME_ENV_NAMES))
     check("the refinement run completed", run["status"] == "completed")
     check("the runtime used this customer's API key (reported ANTHROPIC_API_KEY)",
           run["credential_source"] == "ANTHROPIC_API_KEY" and run["provider"] == EXPECTED_PROVIDER)
