@@ -16,6 +16,7 @@ from fastapi import APIRouter, Cookie, Depends, Header, HTTPException, Request, 
 from ..config import settings
 from ..dependencies import Identity, resolve_identity, verify_csrf_if_unsafe
 from ..models.auth import (
+    SetupHandoverInput,
     AcceptInvitationInput,
     ForgotPasswordInput,
     ForgotPasswordResult,
@@ -116,6 +117,34 @@ def logout(
         auth_service.revoke_session(jde_session)
     _clear_auth_cookies(response)
     return {"ok": True}
+
+
+@router.get("/setup-handover")
+def setup_handover_status(identity: Identity = Depends(resolve_identity)) -> dict:
+    """Whether the signed-in account is the temporary setup account, which
+    should create the owner's own administrator account and then retire."""
+    from ..services import setup_handover
+
+    user = auth_service.get_user_by_id(identity.id)
+    return {"isSetupAccount": bool(user and setup_handover.is_setup_account(user.email)),
+            "minPasswordLength": setup_handover.MIN_PASSWORD_LENGTH}
+
+
+@router.post("/setup-handover")
+def finish_setup(payload: SetupHandoverInput, response: Response,
+                 identity: Identity = Depends(resolve_identity)) -> dict:
+    """Create the owner's administrator account (Admin in every customer the
+    setup account administers), then disable the setup account and sign it
+    out. The password is never logged or returned."""
+    from ..services import setup_handover
+
+    try:
+        result = setup_handover.hand_over(identity.id, email=payload.email, display_name=payload.display_name,
+                                          password=payload.password)
+    except setup_handover.HandoverRefused as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    _clear_auth_cookies(response)
+    return {"ok": True, **result}
 
 
 @router.get("/me", response_model=MeOut)
