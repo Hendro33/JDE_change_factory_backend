@@ -8,10 +8,17 @@ exactly as an Admin would. No JDE is contacted.
     JADE_PROOF_ANTHROPIC_API_KEY=... [JADE_PROOF_MODEL=claude-haiku-4-5] \\
         python3 scripts/prove_ai_real_provider.py [--out DIR]
 
-Spend is capped by the connection's own limits: USD 0.50 per run and USD 1.00
-for the month (the runtime stops at the per-run budget). Expected cost with
-Claude Haiku 4.5: roughly USD 0.05-0.30 (one 1-token connection test plus one
-Receive/Improve/Check refinement). The key is read from the environment,
+Intended total spend: at most USD 0.50. These are APPLICATION stopping
+thresholds, not a provider billing ceiling:
+  * per run: USD 0.40, passed to the runtime as --max-budget-usd; the runtime
+    stops once ITS OWN estimate (reported tokens x list prices) exceeds it,
+    checked between model requests, so the request in flight can overshoot;
+  * month: USD 0.50 in Jade; checked before a run starts, never mid-run;
+  * the connection test is one request with max_tokens=1 (outside both).
+Only an Anthropic Console workspace spend limit or prepaid balance is a hard
+ceiling. One attempt only: the script never repeats a run (the runtime's own
+HTTP retries on transient errors are requests that failed, not repeats).
+Expected cost with Claude Haiku 4.5: roughly USD 0.05-0.30. The key is read from the environment,
 removed from it at once, stored encrypted in a throw-away database and never
 printed.
 
@@ -92,7 +99,7 @@ with TestClient(app) as c:
     c.headers["X-Customer-Id"] = cid
 
     c.put("/admin/ai/connection", json={"model": MODEL, "enabled": True, "documentPolicy": "permitted_content",
-                                        "limits": {"max_usd_per_run": 0.5, "monthly_usd": 1.0, "max_turns": 30}}
+                                        "limits": {"max_usd_per_run": 0.4, "monthly_usd": 0.5, "max_turns": 30}}
           ).raise_for_status()
     c.put("/admin/ai/connection/credential", json={"apiKey": KEY}).raise_for_status()
     del KEY
@@ -138,7 +145,8 @@ with TestClient(app) as c:
     cites = (change.get("userStory") or {}).get("documentCitations") or []
     check("the story cites the document, and Jade verified the cited sections",
           bool(cites) and all(c["verified"] for c in cites))
-    check("spend stayed within the per-run cap", (run["cost_usd"] or 0) <= 0.5)
+    check("estimated spend stayed within the intended USD 0.50", (run["cost_usd"] or 0) <= 0.5)
+    report["code"] = {"backend_commit": os.environ.get("JADE_PROOF_COMMIT", "unknown")}
 
 report["all_passed"] = all(report["checks"].values())
 os.makedirs(args.out, exist_ok=True)
