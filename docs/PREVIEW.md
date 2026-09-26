@@ -42,18 +42,17 @@ demonstration data once. Later starts reuse the same data, accounts and password
 and stop the preview with Ctrl-C.
 
 - **Address:** http://localhost:5173, in Safari or Chrome on the same Mac.
-- **Sign-in:** the demo users are local, throwaway accounts. Their passwords are generated once on your Mac and are
-  never printed or committed. To see them:
-
-  ```bash
-  cat ~/jade/JDE_change_factory_backend/.preview-data/credentials.env
-  ```
-
-  | User | Password variable | Role |
-  |---|---|---|
-  | `admin@e2e.local` | `ADMIN_PW` | Admin and product manager |
-  | `do@e2e.local` | `DO_PW` | Domain Owner for Customer Service |
-  | `cnc@e2e.local` | `CNC_PW` | CNC operator |
+- **First sign-in and your own account:**
+  1. Sign in as `admin@e2e.local`, the temporary setup account. While it is active, the launcher puts its password on
+     your clipboard (it is never shown), so just paste it. It is also the `ADMIN_PW` line in
+     `.preview-data/credentials.env`, a file readable only by you.
+  2. At the top of the page, **Finish setup** asks for your email, name and a password of at least 12 characters, which
+     you type there yourself. Your account becomes Admin of every customer, the setup account is switched off (it can
+     no longer sign in, and restarts never re-enable it), and you are signed out.
+  3. Sign in with your own email and password. No email service is needed. Invitations for other people work the
+     same way: Admin › Users › Invite shows a link that you hand over yourself.
+  - `do@e2e.local` and `cnc@e2e.local` are demo accounts for the demo customer only. As Admin you can deactivate
+    them under Admin › Users in BicycleWorks.
 
 - **Optional:** the "Run refinement process analysis (real agent)" and Architect buttons need the Claude Code CLI
   installed and signed in on the Mac (`npm install -g @anthropic-ai/claude-code`, then `claude`). These buttons use

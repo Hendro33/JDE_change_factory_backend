@@ -120,6 +120,27 @@ for seed in technical process functional; do
   fi
 done
 
+# -- First sign-in: while the temporary setup account is active, copy its password to the clipboard
+#    (never shown) and explain "Finish setup"; afterwards, just point to the owner's own account.
+SETUP_ACTIVE=$(JDE_API_DATA_DIR="$DATA/api" "$VENV/bin/python" -c '
+import glob, os, sqlite3
+active = False
+for db in glob.glob(os.path.join(os.environ["JDE_API_DATA_DIR"], "*.sqlite3")) + glob.glob(os.path.join(os.environ["JDE_API_DATA_DIR"], "*.db")):
+    try:
+        row = sqlite3.connect(db).execute("SELECT is_active FROM users WHERE email = ?", ("admin@e2e.local",)).fetchone()
+        active = active or bool(row and row[0])
+    except sqlite3.Error:
+        pass
+print("yes" if active else "no")' 2>/dev/null)
+if [ "$SETUP_ACTIVE" = "yes" ]; then
+  if command -v pbcopy >/dev/null; then printf %s "$ADMIN_PW" | pbcopy; COPIED="on your clipboard now, just paste it"; else COPIED="the ADMIN_PW line in $CRED"; fi
+  SIGNIN="  First sign-in: admin@e2e.local, the temporary setup account (password: $COPIED).
+  Then fill in 'Finish setup' at the top of the page to create your own administrator account;
+  the setup account is switched off as soon as yours exists."
+else
+  SIGNIN="  Sign in with your own administrator account. (The temporary setup account is switched off.)"
+fi
+
 cat <<INFO
 
   Jade -- running on this computer
@@ -127,10 +148,8 @@ cat <<INFO
   Open:      http://localhost:$UI_PORT   (in a browser on this computer)
   Demo customer: BicycleWorks Manufacturing BV (test data). Create your real customer in Admin > Customer Setup.
 
-  Demo users (throwaway, local only). Passwords are in: $CRED
-    admin@e2e.local  (ADMIN_PW)  admin + product manager: frameworks, reviews, finalising
-    do@e2e.local     (DO_PW)     Domain Owner for Customer Service -- try it in a second browser
-    cnc@e2e.local    (CNC_PW)    CNC operator only
+$SIGNIN
+  Demo accounts for the demo customer only (passwords in $CRED): do@e2e.local, cnc@e2e.local
 
   JDE connection: Admin > Integrations (JDE panel) -- address, certificate and credential are all set there.
     ${JDE_DISCOVERY_LIVE_ENABLED:+operator override: JDE_DISCOVERY_LIVE_ENABLED=$JDE_DISCOVERY_LIVE_ENABLED}

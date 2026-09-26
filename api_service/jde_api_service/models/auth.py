@@ -153,3 +153,11 @@ class MembershipStatusInput(ApiModel):
 class CompanyUsersOut(ApiModel):
     members: list[MembershipOut]
     invitations: list[InvitationOut]
+
+
+class SetupHandoverInput(ApiModel):
+    """The owner's own administrator account, created by the temporary
+    setup account (services/setup_handover.py)."""
+    email: str
+    display_name: str = ""
+    password: str
