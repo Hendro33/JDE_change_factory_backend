@@ -2,11 +2,16 @@
   "mcpServers": {
     "jde-change-factory": {
       "command": "python3",
-      "args": ["-m", "jde_mcp_server.server"],
+      "args": [
+        "-m",
+        "jde_mcp_server.server"
+      ],
       "cwd": "mcp_server",
       "env": {
         "JDE_MCP_MOCK_MODE": "true",
-        "JDE_EVIDENCE_DIR": "./evidence"
+        "JDE_EVIDENCE_DIR": "./evidence",
+        "ANTHROPIC_API_KEY": "",
+        "CLAUDE_CODE_OAUTH_TOKEN": ""
       }
     }
   }

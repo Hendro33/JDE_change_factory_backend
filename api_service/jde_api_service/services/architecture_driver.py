@@ -26,7 +26,6 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-from . import agent_runtime
 from ..discovery import architect_tools, baseline, service as discovery_service
 from ..models.change import ArchitectDecision, ImplementationSpecification
 from .architecture_review_service import ArchitectureReviewService
@@ -230,39 +229,41 @@ async def run_architecture_review(
     run_enhancement (orchestration_driver.py)."""
     run_service.start(story_id)
 
-    from .agent_registry_service import compute_agent_version
+    from ..ai import runtime
     from .registry import get_agent_run_service
 
     agent_run_service = get_agent_run_service()
-    agent_run = agent_run_service.start(
-        agent_name="architect",
-        driver="architecture_driver",
-        story_id=story_id,
-        customer_id=customer_id,
-        agent_version=compute_agent_version("architect", repo_root),
-    )
+    agent_run = None
 
     final_text: Optional[str] = None
     try:
-        import claude_agent_sdk as sdk
+        async with runtime.agent_run(company_id=customer_id, driver="architecture_driver", roles=["architect"],
+                                     story_id=story_id, initiated_by=initiated_by) as ai_run:
+            agent_run = agent_run_service.start(
+                agent_name="architect",
+                driver="architecture_driver",
+                story_id=story_id,
+                customer_id=customer_id,
+                agent_version=ai_run.agent_version("architect"),
+            )
+            tools = build_discovery_tools(story_id, customer_id, agent_run_id=agent_run.run_id, initiated_by=initiated_by)
+            options = ai_run.options(
+                cwd=repo_root,
+                permission_mode=PERMISSION_MODE,
+                allowed_tools=_ALLOWED_TOOLS,
+                disallowed_tools=_DISALLOWED_TOOLS,
+                max_turns=MAX_TURNS,
+                tool_servers={architect_tools.SERVER_NAME: tools.sdk_server()},
+                subagents=["architect"],
+            )
+            prompt = _build_prompt(story_id)
+            run_started = time.time()
 
-        tools = build_discovery_tools(story_id, customer_id, agent_run_id=agent_run.run_id, initiated_by=initiated_by)
-        options = agent_runtime.options(
-            cwd=repo_root,
-            permission_mode=PERMISSION_MODE,
-            allowed_tools=_ALLOWED_TOOLS,
-            disallowed_tools=_DISALLOWED_TOOLS,
-            max_turns=MAX_TURNS,
-            mcp_servers={architect_tools.SERVER_NAME: tools.sdk_server()},
-        )
-        prompt = _build_prompt(story_id)
-        run_started = time.time()
-
-        async for message in sdk.query(prompt=prompt, options=options):
-            if isinstance(message, sdk.ResultMessage):
-                if message.is_error:
-                    raise RuntimeError(f"architecture review ended in error: {getattr(message, 'result', None)}")
-                final_text = getattr(message, "result", None)
+            async for event in ai_run.stream(prompt, options):
+                if event.kind == "result":
+                    if event.data["is_error"]:
+                        raise RuntimeError(f"architecture review ended in error: {event.data.get('text')}")
+                    final_text = event.data.get("text")
 
         if final_text is None:
             raise RuntimeError("architecture review produced no final result")
@@ -285,4 +286,5 @@ async def run_architecture_review(
         agent_run_service.complete(agent_run.run_id)
     except Exception as exc:  # noqa: BLE001 -- always recorded, never raised into the background task runner
         run_service.fail(story_id, str(exc))
-        agent_run_service.fail(agent_run.run_id, str(exc))
+        if agent_run is not None:
+            agent_run_service.fail(agent_run.run_id, str(exc))

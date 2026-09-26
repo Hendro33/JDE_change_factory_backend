@@ -53,6 +53,15 @@ class TestStep(ApiModel):
     expected: str
 
 
+class DocumentCitation(ApiModel):
+    """A statement in the story that rests on a customer document.
+    verified: the cited section was actually returned to the run by the
+    jade-knowledge read tool (checked by the backend, not the model)."""
+    claim: str
+    source: str
+    verified: bool = False
+
+
 class UserStory(ApiModel):
     statement: str
     business_context: str = ""
@@ -70,6 +79,7 @@ class UserStory(ApiModel):
     open_questions: list[str] = []
     quality_status: Literal["draft", "needs_revision", "passed", "needs_human_input"] = "passed"
     revision_count: int = 0
+    document_citations: list[DocumentCitation] = []
 
 
 class ArchitectDecision(ApiModel):

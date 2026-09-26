@@ -252,6 +252,12 @@ def start_analysis(story_id: str, background: BackgroundTasks,
     """Start the refinement process analysis (the real agent runtime)."""
     change = _change(story_id, ctx.customer_id)
     _require_reviewer(ctx, story_id)
+    from ..services import agent_settings
+
+    try:
+        agent_settings.require_enabled(ctx.customer_id, "process-analyst")
+    except agent_settings.AgentDisabled as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
     try:
         run = story_process.start_analysis(ctx.customer_id, story_id, initiated_by=ctx.identity.id)
     except _REFUSALS as exc:

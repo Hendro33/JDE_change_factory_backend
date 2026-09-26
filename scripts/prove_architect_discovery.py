@@ -50,6 +50,10 @@ import time
 from datetime import datetime, timedelta, timezone
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import _proof_ai  # noqa: E402
+
+_PROOF_KEY = _proof_ai.require_key()
 parser = argparse.ArgumentParser()
 parser.add_argument("--out", default=os.path.join(ROOT, "docs", "proof", "architect_discovery_run"))
 args = parser.parse_args()
@@ -235,6 +239,7 @@ def _logged_init(self, company_id, environment, *, calls=None):
 transport.SimulatedAisEndpoint.__init__ = _logged_init  # observe every simulated network request
 
 with TestClient(app) as client:
+    _proof_ai.configure(COMPANY, _PROOF_KEY, ROOT)  # the customer's own AI connection
     from jde_api_service.services import auth_service, membership_service
     from jde_api_service.models.auth import ALL_ROLES
 

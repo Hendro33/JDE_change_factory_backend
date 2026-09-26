@@ -10,8 +10,10 @@ manuals).
     same object again adds revision N+1; nothing is overwritten.
   * Company-scoped always; optionally domain-scoped. A story only sees its
     company's company-wide artifacts and those of its own domain.
-  * Only formats Jade can safely turn into text are extracted. Everything
-    else is kept, listed, and explicitly "unavailable for analysis".
+  * Only formats Jade can safely turn into text are extracted (plain-text
+    formats directly; PDF and DOCX through knowledge/extract.py's isolated,
+    limited reader). Everything else is kept, listed, and explicitly
+    "unavailable for analysis".
   * Content is evidence, never instructions: it is returned wrapped and
     labelled as data.
   * Whether an export matches the active DEV runtime is what the
@@ -89,6 +91,30 @@ def artifact_id_for(kind: str, object_name: str, object_type: str) -> str:
     return f"{prefix}-{_slug(object_type)}-{_slug(object_name)}"
 
 
+DOCUMENT_FORMATS = {"pdf", "docx"}  # parsed by knowledge/extract.py in an isolated, limited process
+MAX_DOCUMENT_BYTES = 10 * 1024 * 1024
+
+
+def _extract_document(fmt: str, file_name: str, data: bytes) -> tuple[str, str, Optional[str], dict, Optional[list]]:
+    from ..knowledge import extract
+
+    none = {"analysed_chars": 0, "total_chars": None, "truncated": False, "analysed": False}
+    try:
+        if extract.detect(file_name, data) != fmt:
+            raise extract.Rejected(f"the file is not a {fmt.upper()}")
+    except extract.Rejected as exc:  # kept (it is evidence), but never parsed
+        return "unsupported", f"stored but not analysed: {exc}", None, none, None
+    result = extract.run_isolated(fmt, data)
+    status, detail, _n = extract.summary(result)
+    if status != "ready":
+        return "unsupported", f"stored but not analysed: {detail}", None, none, None
+    sections = result["sections"]
+    text = "\n\n".join(f"[{s['label']}]\n{s['text']}" for s in sections)
+    return ("supported", "TRUNCATED: " + detail if result.get("truncated") else "", text,
+            {"analysed_chars": result.get("chars", 0), "total_chars": None, "truncated": bool(result.get("truncated")),
+             "analysed": True}, sections)
+
+
 def _extract(fmt: str, data: bytes) -> tuple[str, str, Optional[str], dict]:
     """(status, note, text, coverage). Unsupported formats are never parsed.
     coverage states exactly how much of the file can be analysed."""
@@ -118,8 +144,9 @@ def upload(company_id: str, payload: ArtifactUpload, *, actor: str, store: Optio
         raise ArtifactRejected("content_base64 is not valid base64") from exc
     if not data:
         raise ArtifactRejected("the file is empty")
-    if len(data) > MAX_BYTES:
-        raise ArtifactRejected(f"at most {MAX_BYTES // 1024} KB per file in this increment")
+    limit = MAX_DOCUMENT_BYTES if payload.export_format in DOCUMENT_FORMATS else MAX_BYTES
+    if len(data) > limit:
+        raise ArtifactRejected(f"at most {limit // 1024} KB per {payload.export_format} file")
     if payload.domain_id:
         from ..services.registry import get_business_domain_service
 
@@ -134,7 +161,11 @@ def upload(company_id: str, payload: ArtifactUpload, *, actor: str, store: Optio
     store = store or default_store()
     sha = hashlib.sha256(data).hexdigest()
     storage_key = store.put(company_id, data)
-    status, note, text, coverage = _extract(payload.export_format, data)
+    sections = None
+    if payload.export_format in DOCUMENT_FORMATS:
+        status, note, text, coverage, sections = _extract_document(payload.export_format, payload.file_name, data)
+    else:
+        status, note, text, coverage = _extract(payload.export_format, data)
     if text is not None:
         text_key = store.put(company_id, text.encode("utf-8"))
     else:
@@ -142,6 +173,8 @@ def upload(company_id: str, payload: ArtifactUpload, *, actor: str, store: Optio
     artifact_id = artifact_id_for(payload.kind, payload.object_name, payload.object_type)
     meta = payload.model_dump(exclude={"content_base64", "domain_id", "kind"})
     meta["text_storage_key"] = text_key
+    meta["sections_storage_key"] = (store.put(company_id, json.dumps(sections).encode("utf-8"))
+                                    if sections is not None else None)
     meta["analysis_coverage"] = coverage
     now = datetime.now(timezone.utc).isoformat()
     with connection(immediate=True) as conn:
@@ -214,6 +247,22 @@ def read_text(company_id: str, artifact: dict, *, store: Optional[ArtifactStore]
     if not key:
         return None
     return (store or default_store()).get(key).decode("utf-8")
+
+
+def read_sections(company_id: str, artifact: dict, *, store: Optional[ArtifactStore] = None) -> Optional[list[dict]]:
+    """Citable sections: pages/headings for PDF/DOCX, 60-line blocks otherwise."""
+    if artifact["company_id"] != company_id or artifact["extraction_status"] != "supported":
+        return None
+    store = store or default_store()
+    key = artifact["meta"].get("sections_storage_key")
+    if key:
+        return json.loads(store.get(key).decode("utf-8"))
+    text = read_text(company_id, artifact, store=store)
+    if text is None:
+        return None
+    lines = text.split("\n")
+    return [{"label": f"lines {i + 1}-{min(i + 60, len(lines))}", "text": "\n".join(lines[i:i + 60])}
+            for i in range(0, len(lines), 60) if "\n".join(lines[i:i + 60]).strip()]
 
 
 def compatibility(document: dict, application_release: Optional[str], tools_release: Optional[str]) -> str:

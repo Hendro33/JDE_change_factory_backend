@@ -23,6 +23,7 @@ from .config import settings
 logger = logging.getLogger("jde_api_service")
 from .routers import (
     admin,
+    ai,
     architecture_review,
     auth,
     change_requests,
@@ -105,6 +106,17 @@ async def _lifespan(app: FastAPI):
     if reencrypted:
         logger.info("Encrypted or re-keyed %d stored Jira credential(s)", reencrypted)
     ensure_seed_companies()
+    from .ai import packs as _ai_packs, runtime as _ai_runtime
+
+    _ai_packs.ensure_templates(settings.repo_root)
+    _ai_packs.ensure_demo_assignments()
+    if _ai_runtime.reconcile_interrupted():
+        logger.warning("Marked AI agent runs interrupted by the restart as failed")
+    from .knowledge import attachments as _attachments
+
+    _attachments.reset_stuck_extractions()
+    if _attachments.cleanup_abandoned():
+        logger.info("Deleted abandoned (never submitted) request uploads")
     ensure_bootstrap_admin()
     ensure_bicycleworks_pilot_dataset(get_change_request_service())
     ensure_bicycleworks_business_domains(get_business_domain_service())
@@ -167,6 +179,7 @@ app.include_router(company_users.router)
 app.include_router(discovery.router)
 app.include_router(technical.router)
 app.include_router(process.router)
+app.include_router(ai.router)
 
 
 @app.exception_handler(RevisionConflict)

@@ -51,6 +51,10 @@ import time
 from datetime import datetime, timedelta, timezone
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import _proof_ai  # noqa: E402
+
+_PROOF_KEY = _proof_ai.require_key()
 parser = argparse.ArgumentParser()
 parser.add_argument("--out", default=os.path.join(ROOT, "docs", "proof", "technical_agent_run"))
 parser.add_argument("--skip-probe", action="store_true")
@@ -200,6 +204,7 @@ class _Stop(Exception):
 
 try:
     with TestClient(app) as client:
+        _proof_ai.configure(COMPANY, _PROOF_KEY, ROOT)  # the customer's own AI connection
         from jde_api_service.services import auth_service, membership_service
 
         # Synthetic identities only -- none is attributed to a real person.

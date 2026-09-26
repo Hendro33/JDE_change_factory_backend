@@ -30,6 +30,13 @@ dependencies = [
     # process/framework.py: reading customer process-framework workbooks
     # (.xlsx) and writing the import template.
     "openpyxl>=3.1.0",
+    # ai/connection.py: the explicit, billable AI connection test (Anthropic
+    # Messages API, official SDK). Agent runs use claude-agent-sdk above.
+    "anthropic>=0.40.0",
+    # knowledge/extract.py: bounded text extraction from PDF and DOCX
+    # attachments (run in a separate, resource-limited process).
+    "pypdf>=4.0.0",
+    "defusedxml>=0.7.0",
 ]
 
 [project.optional-dependencies]

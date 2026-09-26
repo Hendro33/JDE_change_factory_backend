@@ -188,7 +188,7 @@ def test_no_subagent_definition_can_widen_its_drivers_runtime():
                    (architecture_driver._ALLOWED_TOOLS, technical_driver.ALLOWED, conversation_driver._SOLUTION_ALLOWED_TOOLS))
 
 
-def test_the_technical_driver_builds_its_options_through_the_restricted_runtime(monkeypatch):
+def test_the_technical_driver_builds_its_options_through_the_restricted_runtime(isolated_dirs, monkeypatch):
     """The options the technical driver actually passes to the runtime."""
     import asyncio
 
@@ -225,7 +225,10 @@ def test_the_technical_driver_builds_its_options_through_the_restricted_runtime(
     assert opts.tools == ["Task"]
     assert list(opts.mcp_servers) == ["jade-technical"]
     assert opts.allowed_tools == technical_driver.ALLOWED
-    assert set(opts.disallowed_tools) == set(technical_driver.DISALLOWED)
+    # The project server's other tools and the document tools (outside the
+    # Technical Agent's ceiling) are hidden from the model, not merely denied.
+    assert set(opts.disallowed_tools) == {*technical_driver.DISALLOWED, "mcp__jade-knowledge__list_documents",
+                                          "mcp__jade-knowledge__read_document"}
     for secret in ("JDE_CREDENTIAL_KEY", "JDE_AIS_USERNAME", "JDE_AIS_PASSWORD", "JDE_BOOTSTRAP_ADMIN_PASSWORD"):
         assert opts.env[secret] == ""
     assert "technical-agent subagent" in captured["prompt"]

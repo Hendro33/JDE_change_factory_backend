@@ -28,7 +28,7 @@ import re
 from typing import Any, Optional
 
 from . import agent_runtime
-from ..models.change import AcceptanceCriterion, BusinessImpact, TestStep, UserStory
+from ..models.change import AcceptanceCriterion, BusinessImpact, DocumentCitation, TestStep, UserStory
 from ..persistence.pilot_data_bicycleworks import CUSTOMER_ID as BICYCLEWORKS_CUSTOMER_ID
 from .customer_link_service import CustomerLinkService
 from .enhancement_run_service import EnhancementRunService
@@ -67,7 +67,8 @@ After the pipeline reaches a final outcome, respond with ONLY a single fenced js
     "assumptions": ["<things you are treating as true because the source implies them, flagged for confirmation -- distinct from open_questions>"],
     "open_questions": ["<anything the agents could not resolve with confidence>"],
     "quality_status": "passed" | "needs_revision" | "needs_human_input",
-    "revision_count": <integer, how many Improve/Check cycles actually happened>
+    "revision_count": <integer, how many Improve/Check cycles actually happened>,
+    "document_citations": [{"claim": "<statement in the story that rests on a document>", "source": "<the cite label exactly as read_document returned it, e.g. [Spec.pdf, page 2]>"}]
   },
   "business_impact": {
     "financial_impact": "", "operational_reach": "", "risk_compliance": "", "strategic_alignment": "", "urgency": ""
@@ -76,6 +77,7 @@ After the pipeline reaches a final outcome, respond with ONLY a single fenced js
   "check_outcome": "proposed_to_backlog" | "needs_revision" | "needs_human_input",
   "failed_criteria": ["<only when check_outcome is not proposed_to_backlog>"]
 }
+Documents: if the agents have the jade-knowledge tools, they call list_documents and read what is readable. document_citations lists only sections actually returned by read_document; it is empty when no document was read. Never describe the content of a document that was listed as not readable or excluded -- say it could not be read.
 Leave any business_impact field as an empty string if the source did not state it -- never invent a value, per each agent's own instructions. Same rule for business_rules and assumptions: an empty list means none were stated/needed, never a guess dressed up as one.
 """.strip()
 
@@ -135,6 +137,8 @@ def _user_story_from_summary(raw: dict) -> UserStory:
             "needs_human_input",
         ),
         revision_count=int(us.get("revision_count") or 0),
+        document_citations=[DocumentCitation(**c) for c in (us.get("document_citations") or [])
+                            if isinstance(c, dict) and {"claim", "source", "verified"} <= set(c)],
     )
 
 
@@ -171,7 +175,6 @@ async def run_enhancement(
     # module importable without the agent-run/registry services, and
     # avoids a module-load-time cycle with agent_registry_service's own
     # lazy import of this module.
-    from .agent_registry_service import compute_agent_version
     from .registry import get_agent_run_service
 
     agent_run_service = get_agent_run_service()
@@ -179,48 +182,54 @@ async def run_enhancement(
 
     final_text: Optional[str] = None
     try:
-        import claude_agent_sdk as sdk
+        from ..ai import runtime
 
-        options = agent_runtime.options(
-            cwd=repo_root,
-            permission_mode=PERMISSION_MODE,
-            allowed_tools=_ALLOWED_TOOLS,
-            max_turns=MAX_TURNS,
-        )
-        prompt = _build_prompt(story_id, source, raw_content)
+        roles = list(_SUBAGENT_TO_STAGE)
+        async with runtime.agent_run(company_id=customer_id, driver="orchestration_driver", roles=roles,
+                                     story_id=story_id) as ai_run:
+            options = ai_run.options(cwd=repo_root, permission_mode=PERMISSION_MODE, allowed_tools=_ALLOWED_TOOLS,
+                                     max_turns=MAX_TURNS, subagents=roles)
+            prompt = _build_prompt(story_id, source, raw_content)
 
-        async for message in sdk.query(prompt=prompt, options=options):
-            if isinstance(message, sdk.SystemMessage) and message.subtype == "task_started":
-                subagent_type = (getattr(message, "data", None) or {}).get("subagent_type")
-                stage = _SUBAGENT_TO_STAGE.get(subagent_type)
-                if stage:
-                    run_service.set_stage(request_id, stage)
-                if subagent_type in _SUBAGENT_TO_STAGE:
-                    # The message stream gives a clean per-subagent
-                    # START event but no clean per-subagent COMPLETION
-                    # event -- only one ResultMessage for the whole
-                    # orchestration at the end. Every subagent that
-                    # started during this run is therefore marked with
-                    # the run's overall outcome below, which is coarser
-                    # than true per-step success/failure but never
-                    # fabricates a distinction the SDK doesn't give us.
-                    run = agent_run_service.start(
-                        agent_name=subagent_type,
-                        driver="orchestration_driver",
-                        story_id=story_id,
-                        customer_id=customer_id,
-                        agent_version=compute_agent_version(subagent_type, repo_root),
-                    )
-                    started_run_ids.append(run.run_id)
-            elif isinstance(message, sdk.ResultMessage):
-                if message.is_error:
-                    raise RuntimeError(f"orchestration ended in error: {getattr(message, 'result', None)}")
-                final_text = getattr(message, "result", None)
+            async for event in ai_run.stream(prompt, options):
+                if event.kind == "subagent_started":
+                    subagent_type = event.data.get("name")
+                    stage = _SUBAGENT_TO_STAGE.get(subagent_type)
+                    if stage:
+                        run_service.set_stage(request_id, stage)
+                    if subagent_type in _SUBAGENT_TO_STAGE:
+                        # The message stream gives a clean per-subagent
+                        # START event but no clean per-subagent COMPLETION
+                        # event -- only one result for the whole
+                        # orchestration at the end. Every subagent that
+                        # started during this run is therefore marked with
+                        # the run's overall outcome below, which is coarser
+                        # than true per-step success/failure but never
+                        # fabricates a distinction the runtime doesn't give us.
+                        run = agent_run_service.start(
+                            agent_name=subagent_type,
+                            driver="orchestration_driver",
+                            story_id=story_id,
+                            customer_id=customer_id,
+                            agent_version=ai_run.agent_version(subagent_type),
+                        )
+                        started_run_ids.append(run.run_id)
+                elif event.kind == "result":
+                    if event.data["is_error"]:
+                        raise RuntimeError(f"orchestration ended in error: {event.data.get('text')}")
+                    final_text = event.data.get("text")
 
         if final_text is None:
             raise RuntimeError("orchestration produced no final result")
 
         summary = _extract_json(final_text)
+        # Citations are kept only as the backend can check them against what
+        # the knowledge tools actually returned in THIS run.
+        from ..knowledge.tools import verify_citations
+
+        us_raw = summary.get("user_story") or {}
+        us_raw["document_citations"] = verify_citations(us_raw.get("document_citations"), ai_run.knowledge_log)
+        summary["user_story"] = us_raw
         check_outcome = _coerce_enum(
             summary.get("check_outcome"),
             {"proposed_to_backlog", "needs_revision", "needs_human_input"},
@@ -237,7 +246,7 @@ async def run_enhancement(
             # visible to the customer it belongs to, exactly the
             # sidecar-linking step flagged as future work when the
             # sidecar was first built.
-            link_service.link(backlog_story_id, BICYCLEWORKS_CUSTOMER_ID)
+            link_service.link(backlog_story_id, customer_id or BICYCLEWORKS_CUSTOMER_ID)
 
         run_service.complete(
             request_id,

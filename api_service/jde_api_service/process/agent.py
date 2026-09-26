@@ -16,7 +16,6 @@ from __future__ import annotations
 import json
 from typing import Any, Optional
 
-from ..services import agent_runtime
 from ..services.architecture_driver import PROJECT_SERVER_TOOLS
 from . import framework, story as story_process
 
@@ -135,22 +134,27 @@ async def run_process_analysis(*, company_id: str, story_id: str, run_id: str, c
     model: Optional[str] = None
     tools: Optional[ProcessAnalysisTools] = None
     try:
-        import claude_agent_sdk as sdk
+        from ..ai import runtime
 
-        tools = ProcessAnalysisTools(company_id=company_id, story_id=story_id, run=run, story_text=story_text(change))
-        options = agent_runtime.options(cwd=repo_root, permission_mode="dontAsk", allowed_tools=ALLOWED,
-                                        disallowed_tools=DISALLOWED, max_turns=MAX_TURNS,
-                                        mcp_servers={SERVER_NAME: tools.sdk_server()})
-        query = observer or sdk.query
-        async for message in query(prompt=PROMPT.format(story_id=story_id), options=options):
-            kind = type(message).__name__
-            if kind == "SystemMessage" and getattr(message, "subtype", "") == "init":
-                model = (getattr(message, "data", None) or {}).get("model")
-            elif kind == "ResultMessage":
-                usage = {"total_cost_usd": getattr(message, "total_cost_usd", None),
-                         "num_turns": getattr(message, "num_turns", None)}
-                if message.is_error:
-                    raise RuntimeError(f"the agent runtime ended in error: {getattr(message, 'result', None)}")
+        async with runtime.agent_run(company_id=company_id, driver="process_analysis", roles=["process-analyst"],
+                                     story_id=story_id) as ai_run:
+            tools = ProcessAnalysisTools(company_id=company_id, story_id=story_id, run=run, story_text=story_text(change))
+            options = ai_run.options(cwd=repo_root, permission_mode="dontAsk", allowed_tools=ALLOWED,
+                                     disallowed_tools=DISALLOWED, max_turns=MAX_TURNS,
+                                     tool_servers={SERVER_NAME: tools.sdk_server()}, top_level="process-analyst",
+                                     top_level_in_system_prompt=False)
+            # The pack's instructions are the task; the story id is filled in by
+            # plain replacement (pack text is never used as a format string).
+            prompt = ai_run.pack_prompt("process-analyst").replace("{story_id}", story_id)
+            async for event in ai_run.stream(prompt, options, query=observer):
+                if event.kind == "init":
+                    model = event.data.get("model")
+                elif event.kind == "result":
+                    usage = {"total_cost_usd": event.data.get("cost_usd"), "num_turns": event.data.get("num_turns"),
+                             "cost_basis": "estimate reported by the agent runtime", "ai_run": ai_run.run_id,
+                             "pack": ai_run.agent_version("process-analyst")}
+                    if event.data["is_error"]:
+                        raise RuntimeError(f"the agent runtime ended in error: {event.data.get('text')}")
         if tools.findings is None:
             raise RuntimeError("the agent finished without submitting findings")
         result = {**tools.findings, "tool_calls": tools.calls}

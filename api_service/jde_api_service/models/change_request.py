@@ -67,3 +67,6 @@ class ChangeRequestCreate(ApiModel):
     business_source: ChangeSource
     source_reference: str = ""
     raw_content: str
+    # Pending uploads (POST /change-requests/attachments) to link to the new
+    # request; each must belong to this customer and this user.
+    attachment_ids: list[str] = []
