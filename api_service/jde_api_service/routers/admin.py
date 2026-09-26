@@ -314,6 +314,14 @@ def list_agents(ctx: AuthContext = Depends(require_customer_access)) -> list[Age
     return get_agent_registry_service().list_agents()
 
 
+@router.get("/agent-inventory")
+def agent_inventory(ctx: AuthContext = Depends(require_customer_access)) -> list[dict]:
+    """The one canonical list of Jade's agents (services/agent_inventory.py)."""
+    from ..services.agent_inventory import inventory
+
+    return [e.model_dump(by_alias=True) for e in inventory(ctx.customer_id, api_settings.repo_root)]
+
+
 @router.get("/agent-settings")
 def get_agent_settings(ctx: AuthContext = Depends(require_customer_access)) -> dict:
     """Which agents are switched on for this customer."""
