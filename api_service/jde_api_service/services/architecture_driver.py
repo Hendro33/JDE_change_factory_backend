@@ -256,7 +256,7 @@ async def run_architecture_review(
                 tool_servers={architect_tools.SERVER_NAME: tools.sdk_server()},
                 subagents=["architect"],
             )
-            prompt = _build_prompt(story_id)
+            prompt = _build_prompt(story_id) + ai_run.context_prompt()
             run_started = time.time()
 
             async for event in ai_run.stream(prompt, options):

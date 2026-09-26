@@ -55,9 +55,10 @@ _BLANKED = (
     "CLAUDE_CODE_USE_FOUNDRY", "ANTHROPIC_BEDROCK_BASE_URL", "ANTHROPIC_VERTEX_PROJECT_ID", "ANTHROPIC_CUSTOM_HEADERS",
     "AWS_BEARER_TOKEN_BEDROCK", "ANTHROPIC_FOUNDRY_API_KEY",
 )
-# Every model alias the runtime could fall back to resolves to the configured model.
+# Every model alias the runtime could fall back to resolves to the run's main
+# configured model; each subagent gets its own configured model explicitly.
 _MODEL_VARS = ("ANTHROPIC_MODEL", "ANTHROPIC_SMALL_FAST_MODEL", "ANTHROPIC_DEFAULT_OPUS_MODEL",
-               "ANTHROPIC_DEFAULT_SONNET_MODEL", "ANTHROPIC_DEFAULT_HAIKU_MODEL", "CLAUDE_CODE_SUBAGENT_MODEL")
+               "ANTHROPIC_DEFAULT_SONNET_MODEL", "ANTHROPIC_DEFAULT_HAIKU_MODEL")
 
 
 # Everything else inherited from the backend's own environment is neutralised
@@ -94,6 +95,7 @@ class AgentSpec:
     prompt: str
     tools: list[str]
     max_turns: Optional[int] = None
+    model: Optional[str] = None
 
 
 @dataclass
@@ -129,12 +131,16 @@ class ClaudeAgentRuntime:
     @staticmethod
     def environment(spec: RunSpec) -> dict[str, str]:
         env = {**_neutralised_host_env(), **agent_runtime.SCRUBBED_ENV, **{k: "" for k in _BLANKED},
-               **{k: spec.model for k in _MODEL_VARS}}
+               **{k: spec.model for k in _MODEL_VARS},
+               "CLAUDE_CODE_SUBAGENT_MODEL": ""}
         env.update({
             "ANTHROPIC_API_KEY": spec.api_key,
             "ANTHROPIC_BASE_URL": spec.base_url,
             "CLAUDE_CONFIG_DIR": spec.config_dir,
             "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+            # Subagents must finish inside the run: the CLI otherwise starts them
+            # in the background by default and the run can end before they do.
+            "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": "1",
             "DISABLE_AUTOUPDATER": "1",
         })
         return env
@@ -142,8 +148,11 @@ class ClaudeAgentRuntime:
     def build_options(self, spec: RunSpec):
         import claude_agent_sdk as sdk
 
+        # background=False: the driver needs each subagent's result before the
+        # run ends (the CLI can otherwise launch it asynchronously and let the
+        # main agent finish first -- observed with the real CLI).
         agents = {a.name: sdk.AgentDefinition(description=a.description, prompt=a.prompt, tools=list(a.tools),
-                                              model=spec.model, maxTurns=a.max_turns)
+                                              model=a.model or spec.model, maxTurns=a.max_turns, background=False)
                   for a in spec.agents}
         kwargs: dict[str, Any] = {}
         if spec.system_prompt_append:
@@ -164,8 +173,8 @@ class ClaudeAgentRuntime:
             data = getattr(message, "data", None) or {}
             sub = getattr(message, "subtype", "")
             if sub == "init":
-                return RuntimeEvent("init", {"model": data.get("model"), "credential_source": data.get("apiKeySource")},
-                                    message)
+                return RuntimeEvent("init", {"model": data.get("model"), "credential_source": data.get("apiKeySource"),
+                                             "runtime_version": data.get("claude_code_version")}, message)
             if sub == "task_started":
                 return RuntimeEvent("subagent_started", {"name": data.get("subagent_type")}, message)
         elif kind == "ResultMessage":
@@ -216,8 +225,14 @@ def _now() -> str:
 class AgentRun:
     def __init__(self, *, run_id: str, company_id: str, driver: str, story_id: Optional[str],
                  conn: ResolvedConnection, snapshots: dict[str, ai_packs.PackSnapshot], config_dir: str,
-                 adapter: ClaudeAgentRuntime) -> None:
+                 adapter: ClaudeAgentRuntime, activities: Optional[dict[str, str]] = None,
+                 context: Optional[dict] = None) -> None:
         self.run_id, self.company_id, self.driver, self.story_id = run_id, company_id, driver, story_id
+        # The model of each role is fixed here, at run start, from the configuration revision resolved once.
+        self.models = {role: conn.model_for(role, (activities or {}).get(role)) for role in snapshots}
+        self.main_model = self.models[next(iter(snapshots))]
+        self.context = context  # the versioned context package this run was given (or None: no story)
+        self.runtime_version: Optional[str] = None
         self.connection, self.packs, self.config_dir, self.adapter = conn, snapshots, config_dir, adapter
         self.documents_allowed = conn.document_policy == "permitted_content"
         self.knowledge_log: list[dict] = []  # provenance: what the knowledge tools listed/returned
@@ -234,6 +249,12 @@ class AgentRun:
 
     def pack_prompt(self, role: str) -> str:
         return self.packs[role].prompt()
+
+    def context_prompt(self) -> str:
+        """The run's context package as a prompt block ('' when the run has no story)."""
+        from . import context as ai_context
+
+        return ai_context.prompt_block(self.context) if self.context else ""
 
     def _knowledge_server(self):
         if self._knowledge is None:
@@ -269,12 +290,13 @@ class AgentRun:
         agents = [AgentSpec(name=r, description=self.packs[r].content["description"], prompt=self.packs[r].prompt(),
                             tools=[t for t in self.packs[r].effective_tools(documents_allowed=self.documents_allowed)
                                    if t in driver_allowed],
-                            max_turns=self.packs[r].content.get("limits", {}).get("max_turns"))
+                            max_turns=self.packs[r].content.get("limits", {}).get("max_turns"),
+                            model=self.models[r])
                   for r in (subagents or [])]
         limits = self.connection.limits
         pack_turns = self.packs[top_level].content.get("limits", {}).get("max_turns") if top_level else None
         spec = RunSpec(
-            model=self.connection.model, api_key=self.connection.api_key, base_url=ai_connection.endpoint()[0],
+            model=self.main_model, api_key=self.connection.api_key, base_url=ai_connection.endpoint()[0],
             config_dir=self.config_dir, cwd=cwd, permission_mode=permission_mode, allowed_tools=allowed,
             disallowed_tools=list(dict.fromkeys([*(disallowed_tools or []), *hidden])),
             max_turns=min(x for x in (max_turns, int(limits.get("max_turns") or max_turns), pack_turns) if x),
@@ -289,13 +311,14 @@ class AgentRun:
             event = self.adapter.translate(message)
             if event.kind == "init":
                 self.reported_model = event.data.get("model")
+                self.runtime_version = event.data.get("runtime_version")
                 self.credential_source = event.data.get("credential_source")
                 if self.credential_source != EXPECTED_KEY_SOURCE:
                     raise RuntimeMismatch(f"the agent runtime reported credential source {self.credential_source!r}, "
                                           "not this customer's API key; the run was stopped before any model request")
-                if not (self.reported_model or "").startswith(self.connection.model):
+                if not (self.reported_model or "").startswith(self.main_model):
                     raise RuntimeMismatch(f"the agent runtime selected model {self.reported_model!r}, not the "
-                                          f"configured {self.connection.model}; the run was stopped")
+                                          f"configured {self.main_model}; the run was stopped")
             elif event.kind == "result":
                 self.result = event.data
             yield event
@@ -305,12 +328,36 @@ class AgentRun:
         with db(immediate=True) as conn:
             conn.execute(
                 "INSERT INTO ai_runs (run_id, company_id, driver, story_id, roles, status, provider, configured_model, "
-                "connection_revision, credential_revision, packs, knowledge, initiated_by, started_at) "
-                "VALUES (?, ?, ?, ?, ?, 'running', ?, ?, ?, ?, ?, '[]', ?, ?)",
+                "connection_revision, credential_revision, packs, knowledge, initiated_by, started_at, runtime, models, "
+                "context, notes) VALUES (?, ?, ?, ?, ?, 'running', ?, ?, ?, ?, ?, '[]', ?, ?, ?, ?, ?, ?)",
                 (self.run_id, self.company_id, self.driver, self.story_id, json.dumps(sorted(self.packs)),
-                 self.connection.provider, self.connection.model, self.connection.revision,
-                 self.connection.credential_revision, json.dumps([p.record() for p in self.packs.values()]),
-                 initiated_by, _now()))
+                 self.connection.provider, self.main_model, self.connection.revision,
+                 self.connection.credential_revision,
+                 json.dumps([{**p.record(), "model": self.models[r]} for r, p in self.packs.items()]),
+                 initiated_by, _now(), self.adapter.name, json.dumps(self.models),
+                 json.dumps([{k: self.context[k] for k in ("package_id", "version", "sha256")}] if self.context else []),
+                 json.dumps(self._continuity_notes())))
+
+    def _continuity_notes(self) -> list[str]:
+        """A change of model or configuration between runs of the same story is
+        stated on the run record, never silent."""
+        if not self.story_id:
+            return []
+        with db() as conn:
+            prev = conn.execute("SELECT run_id, models, connection_revision FROM ai_runs WHERE company_id = ? AND "
+                                "story_id = ? AND status IN ('completed', 'failed') AND models != '{}' "
+                                "ORDER BY started_at DESC LIMIT 1", (self.company_id, self.story_id)).fetchone()
+        if prev is None:
+            return []
+        notes = []
+        before = json.loads(prev["models"] or "{}")
+        for role, model in self.models.items():
+            if role in before and before[role] != model:
+                notes.append(f"{role}: model changed since run {prev['run_id']} ({before[role]} -> {model})")
+        if prev["connection_revision"] not in (None, self.connection.revision):
+            notes.append(f"AI configuration revision changed since run {prev['run_id']} "
+                         f"(r{prev['connection_revision']} -> r{self.connection.revision})")
+        return notes
 
     def finish(self, status: str, error: Optional[str] = None) -> None:
         if self.finished:
@@ -318,7 +365,7 @@ class AgentRun:
         self.finished = True
         r = self.result or {}
         reported_cost = r.get("cost_usd")
-        estimate = rate_card_estimate(r.get("model_usage"), r.get("usage"), self.connection.model)
+        estimate = rate_card_estimate(r.get("model_usage"), r.get("usage"), self.main_model)
         if reported_cost is not None:
             cost, basis = float(reported_cost), "estimate: cost reported by the agent runtime from token usage at list prices"
         elif estimate is not None:
@@ -336,10 +383,18 @@ class AgentRun:
         with db(immediate=True) as conn:
             conn.execute(
                 "UPDATE ai_runs SET status = ?, reported_model = ?, credential_source = ?, knowledge = ?, usage = ?, "
-                "cost_usd = ?, cost_basis = ?, error = ?, finished_at = ? WHERE run_id = ?",
+                "cost_usd = ?, cost_basis = ?, error = ?, finished_at = ?, runtime = ? WHERE run_id = ?",
                 (status, reported_model, self.credential_source or "not reported by the runtime",
                  json.dumps(self.knowledge_log[:200]), json.dumps(usage), cost, basis,
-                 (error or "")[:1000] or None, _now(), self.run_id))
+                 (error or "")[:1000] or None, _now(), self._runtime_label(), self.run_id))
+
+    def _runtime_label(self) -> str:
+        try:
+            from claude_agent_sdk import __version__ as sdk_version
+        except ImportError:  # pragma: no cover
+            sdk_version = "?"
+        return (f"{self.adapter.name} {sdk_version}"
+                + (f" / Claude Code {self.runtime_version}" if self.runtime_version else ""))
 
 
 def prepare(company_id: Optional[str], roles: list[str]) -> tuple[ResolvedConnection, dict[str, ai_packs.PackSnapshot]]:
@@ -350,16 +405,25 @@ def prepare(company_id: Optional[str], roles: list[str]) -> tuple[ResolvedConnec
 
 @asynccontextmanager
 async def agent_run(*, company_id: Optional[str], driver: str, roles: list[str], story_id: Optional[str] = None,
-                    initiated_by: Optional[str] = None, adapter: ClaudeAgentRuntime = ADAPTER):
+                    initiated_by: Optional[str] = None, adapter: ClaudeAgentRuntime = ADAPTER,
+                    activities: Optional[dict[str, str]] = None):
+    """roles: the first is the main agent (its activity's model is the run's
+    main model); the others are subagents with their own configured model.
+    activities: override the activity a role runs as (e.g. the Technical
+    Agent's verification runs)."""
     try:
         conn, snapshots = prepare(company_id, roles)
     except AiNotConfigured as exc:
         mark_blocked(company_id=company_id, driver=driver, roles=roles, story_id=story_id, reason=str(exc),
                      initiated_by=initiated_by)
         raise
+    from . import context as ai_context
+
+    pkg = ai_context.snapshot(conn.company_id, story_id) if story_id else None
     config_dir = tempfile.mkdtemp(prefix="jade-agent-")
     run = AgentRun(run_id=f"ai-{uuid.uuid4().hex[:12]}", company_id=conn.company_id, driver=driver, story_id=story_id,
-                   conn=conn, snapshots=snapshots, config_dir=config_dir, adapter=adapter)
+                   conn=conn, snapshots=snapshots, config_dir=config_dir, adapter=adapter, activities=activities,
+                   context=pkg)
     run._insert(initiated_by)
     try:
         yield run
@@ -393,7 +457,7 @@ def list_runs(company_id: str, limit: int = 50) -> list[dict]:
     out = []
     for r in rows:
         d = dict(r)
-        for k in ("roles", "packs", "knowledge", "usage"):
+        for k in ("roles", "packs", "knowledge", "usage", "models", "context", "notes"):
             d[k] = json.loads(d[k]) if d.get(k) else None
         out.append(d)
     return out
@@ -440,7 +504,10 @@ def health(company_id: str) -> list[dict]:
             "role": role, "label": info["label"], "state": state, "disabled": role in disabled_roles,
             "blockedReason": conn_problem or pack_problem,
             "configured": not conn_problem and not pack_problem, "connectionTested": bool(view.get("tested")),
-            "connectionRevision": view.get("revision"), "configuredModel": view.get("model"),
+            "connectionRevision": view.get("revision"),
+            "activity": ai_connection.ROLE_ACTIVITY.get(role),
+            "configuredModel": (view.get("activityModels") or {}).get(ai_connection.ROLE_ACTIVITY.get(role, ""),
+                                                                      view.get("model")),
             "pack": snap.record() if snap else None, "assignment": assigned.get(role),
             "lastRun": last, "lastSuccessfulRealRun": real_ok,
         })

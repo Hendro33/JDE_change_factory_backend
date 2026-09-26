@@ -69,11 +69,14 @@ class FakeAnthropic(BaseHTTPRequestHandler):
         model = body.get("model")
         blob = json.dumps(body.get("messages", ""))
         tool_names = [t.get("name") for t in body.get("tools", []) if isinstance(t, dict)]
+        agent_schema = json.dumps([t.get("input_schema") for t in body.get("tools", [])
+                                   if isinstance(t, dict) and t.get("name") in ("Agent", "Task")])
         subagent_request = "fixed Jade policy" in json.dumps(body.get("system", "")) + blob
         task_tool = next((n for n in ("Task", "Agent") if n in tool_names), None)
         with LOCK:
             REQUESTS[-1]["tools"] = tool_names
             REQUESTS[-1]["subagent_request"] = subagent_request
+            REQUESTS[-1]["background_agents_offered"] = "run_in_background" in agent_schema
         if task_tool and not subagent_request and "tool_result" not in blob and "PROOF" in blob:
             # Main agent, first turn: delegate to the improve-agent (its pack).
             return self._stream(model, [{"type": "tool_use", "id": "toolu_fake1", "name": task_tool, "input": {
@@ -210,6 +213,8 @@ async def main() -> dict:
         "backend process environment unchanged": env_unchanged,
         "the improve-agent ran with its published pack's instructions (pack footer seen by the provider)": any(
             r.get("subagent_request") for r in REQUESTS),
+        "subagents cannot be sent to the background (they finish inside the run)": not any(
+            r.get("background_agents_offered") for r in REQUESTS),
         "metadata-only document policy: no document-reading tool was offered to the model": all(
             "mcp__jade-knowledge__read_document" not in (r.get("tools") or []) for r in REQUESTS),
         "the subagent requests also used only the run's own customer key": all(

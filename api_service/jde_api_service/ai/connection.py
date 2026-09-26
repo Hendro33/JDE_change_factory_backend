@@ -59,6 +59,35 @@ MODELS: dict[str, dict[str, Any]] = {
     "claude-haiku-4-5": {"label": "Claude Haiku 4.5", "input": 1.00, "output": 5.00},
     "claude-fable-5-1": {"label": "Claude Fable 5.1", "input": 10.00, "output": 50.00},
 }
+# The runtimes Jade can actually run agents on, per provider, and the models
+# each supports. Only these combinations can be selected; there is no
+# fallback to anything else. Adding a provider means adding a runtime adapter
+# (ai/runtime.py) and an entry here -- nothing else in Jade changes.
+RUNTIMES: dict[str, dict[str, Any]] = {
+    "claude-agent-sdk": {"label": "Claude Agent SDK (Claude Code runtime)", "provider": PROVIDER,
+                         "models": tuple(MODELS)},
+}
+DEFAULT_RUNTIME = "claude-agent-sdk"
+# How far each combination has been verified. Honest by construction: a
+# combination is "real-provider evaluated" only after an approved run of
+# scripts/prove_ai_real_provider.py; until then it is verified with mocked and
+# loopback-provider tests of the real runtime only.
+EVALUATION = {m: "runtime verified with a test provider; not yet evaluated against Anthropic" for m in MODELS}
+
+# Agent activities (what the customer assigns models to) -> Jade's agent roles.
+ACTIVITIES: dict[str, dict[str, Any]] = {
+    "functional_analysis": {"label": "Functional Analysis",
+                            "roles": ("receive-agent", "improve-agent", "process-analyst")},
+    "verification": {"label": "Verification", "roles": ("check-agent",),
+                     "note": "also the Technical Agent's verification runs"},
+    "architecture": {"label": "Architecture", "roles": ("architect",)},
+    "technical_build": {"label": "Technical Build", "roles": ("technical-agent",)},
+}
+ROLE_ACTIVITY = {role: act for act, info in ACTIVITIES.items() for role in info["roles"]}
+# Models compatible with each activity (all supported models today; narrowed
+# here, in reviewed code, if an activity needs it).
+ACTIVITY_MODELS: dict[str, tuple[str, ...]] = {a: tuple(MODELS) for a in ACTIVITIES}
+
 DOCUMENT_POLICIES = ("metadata_only", "permitted_content")
 DEFAULT_LIMITS = {"max_usd_per_run": 2.0, "monthly_usd": 50.0, "max_turns": 40}
 LIMIT_BOUNDS = {"max_usd_per_run": (0.01, 100.0), "monthly_usd": (0.0, 10000.0), "max_turns": (1, 100)}
@@ -101,11 +130,25 @@ def _clean_limits(raw: Optional[dict]) -> dict:
     return out
 
 
+def _clean_activity_models(raw: Optional[dict]) -> dict:
+    out = {}
+    for activity, model in (raw or {}).items():
+        if activity not in ACTIVITIES:
+            raise InvalidConfig(f"unknown agent activity: {activity}")
+        if model in (None, "", "default"):
+            continue
+        if model not in ACTIVITY_MODELS[activity]:
+            raise InvalidConfig(f"{model} is not a supported model for {ACTIVITIES[activity]['label']}")
+        out[activity] = model
+    return out
+
+
 def save(company_id: str, *, model: str, enabled: bool, document_policy: str, limits: Optional[dict],
-         expected_revision: Optional[int], actor: str) -> dict:
+         expected_revision: Optional[int], actor: str, activity_models: Optional[dict] = None) -> dict:
     """Store the configuration (new revision). Never contacts the provider."""
-    if model not in MODELS:
+    if model not in RUNTIMES[DEFAULT_RUNTIME]["models"]:
         raise InvalidConfig(f"unsupported model: {model}")
+    overrides = _clean_activity_models(activity_models)
     if document_policy not in DOCUMENT_POLICIES:
         raise InvalidConfig(f"unsupported document policy: {document_policy}")
     clean = _clean_limits(limits)
@@ -116,15 +159,18 @@ def save(company_id: str, *, model: str, enabled: bool, document_policy: str, li
         if row is None:
             conn.execute(
                 "INSERT INTO ai_connections (company_id, provider, model, revision, enabled, document_policy, limits, "
-                "updated_at, updated_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (company_id, PROVIDER, model, revision, int(enabled), document_policy, json.dumps(clean), now, actor))
+                "activity_models, updated_at, updated_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (company_id, PROVIDER, model, revision, int(enabled), document_policy, json.dumps(clean),
+                 json.dumps(overrides), now, actor))
         else:
             conn.execute(
                 "UPDATE ai_connections SET model = ?, revision = ?, enabled = ?, document_policy = ?, limits = ?, "
-                "updated_at = ?, updated_by = ? WHERE company_id = ?",
-                (model, revision, int(enabled), document_policy, json.dumps(clean), now, actor, company_id))
+                "activity_models = ?, updated_at = ?, updated_by = ? WHERE company_id = ?",
+                (model, revision, int(enabled), document_policy, json.dumps(clean), json.dumps(overrides), now, actor,
+                 company_id))
         _audit(conn, company_id, "configuration_saved", actor,
-               f"revision {revision}: model {model}, enabled {enabled}, documents {document_policy}, limits {clean}")
+               f"revision {revision}: default model {model}, overrides {overrides or 'none'}, enabled {enabled}, "
+               f"documents {document_policy}, limits {clean}")
     return view(company_id)
 
 
@@ -185,6 +231,10 @@ def view(company_id: str) -> dict:
     except AiNotConfigured:
         test_provider = True
     base = {"provider": PROVIDER, "providerLabel": PROVIDER_LABEL, "testProvider": test_provider,
+            "runtime": DEFAULT_RUNTIME, "runtimeLabel": RUNTIMES[DEFAULT_RUNTIME]["label"],
+            "activities": [{"id": a, "label": i["label"], "roles": list(i["roles"]), "note": i.get("note", ""),
+                            "models": list(ACTIVITY_MODELS[a])} for a, i in ACTIVITIES.items()],
+            "evaluation": EVALUATION,
             "models": [{"id": k, **v} for k, v in MODELS.items()], "rateCardVersion": RATE_CARD_VERSION,
             "documentPolicies": list(DOCUMENT_POLICIES), "defaultLimits": DEFAULT_LIMITS,
             "audit": [dict(a) for a in audit]}
@@ -194,6 +244,7 @@ def view(company_id: str) -> dict:
               and row["last_test_credential_revision"] == row["credential_revision"])
     return {**base, "configured": True, "model": row["model"], "revision": row["revision"],
             "enabled": bool(row["enabled"]), "documentPolicy": row["document_policy"],
+            "activityModels": json.loads(row["activity_models"] or "{}"),
             "limits": json.loads(row["limits"]), "credentialState": _credential_state(row),
             "credentialHint": row["credential_hint"] if row["credential_secret"] else None,
             "credentialRevision": row["credential_revision"], "credentialUpdatedAt": row["credential_updated_at"],
@@ -223,6 +274,13 @@ class ResolvedConnection:
     document_policy: str
     limits: dict
     api_key: str = field(repr=False)  # never printed
+    activity_models: dict = field(default_factory=dict)
+    runtime: str = DEFAULT_RUNTIME
+
+    def model_for(self, role: str, activity: Optional[str] = None) -> str:
+        """The configured model for an agent role (or an explicit activity):
+        the activity's override, else the customer's default model."""
+        return self.activity_models.get(activity or ROLE_ACTIVITY.get(role, ""), self.model)
 
 
 def resolve_for_run(company_id: Optional[str]) -> ResolvedConnection:
@@ -247,13 +305,16 @@ def resolve_for_run(company_id: Optional[str]) -> ResolvedConnection:
     if limits.get("monthly_usd") is not None and month_spend(company_id) >= float(limits["monthly_usd"]):
         raise AiNotConfigured(f"this customer's monthly AI budget (USD {limits['monthly_usd']}) is used up; "
                               "an Admin can raise it under Admin > AI Connections")
-    if row["model"] not in MODELS:
-        raise AiNotConfigured(f"the configured model {row['model']} is not supported")
+    overrides = json.loads(row["activity_models"] or "{}")
+    for m in [row["model"], *overrides.values()]:
+        if m not in RUNTIMES[DEFAULT_RUNTIME]["models"]:
+            raise AiNotConfigured(f"the configured model {m} is not supported by the {DEFAULT_RUNTIME} runtime")
     _url, is_test = endpoint()
     return ResolvedConnection(company_id=company_id, provider=TEST_PROVIDER if is_test else row["provider"],
                               model=row["model"],
                               revision=row["revision"], credential_revision=row["credential_revision"],
-                              document_policy=row["document_policy"], limits=limits, api_key=key)
+                              document_policy=row["document_policy"], limits=limits, api_key=key,
+                              activity_models=overrides)
 
 
 # -- Explicit connection test ---------------------------------------------------

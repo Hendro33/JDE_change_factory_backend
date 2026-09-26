@@ -189,7 +189,7 @@ async def run_enhancement(
                                      story_id=story_id) as ai_run:
             options = ai_run.options(cwd=repo_root, permission_mode=PERMISSION_MODE, allowed_tools=_ALLOWED_TOOLS,
                                      max_turns=MAX_TURNS, subagents=roles)
-            prompt = _build_prompt(story_id, source, raw_content)
+            prompt = _build_prompt(story_id, source, raw_content) + ai_run.context_prompt()
 
             async for event in ai_run.stream(prompt, options):
                 if event.kind == "subagent_started":

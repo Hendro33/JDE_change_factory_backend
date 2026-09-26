@@ -145,7 +145,7 @@ async def run_process_analysis(*, company_id: str, story_id: str, run_id: str, c
                                      top_level_in_system_prompt=False)
             # The pack's instructions are the task; the story id is filled in by
             # plain replacement (pack text is never used as a format string).
-            prompt = ai_run.pack_prompt("process-analyst").replace("{story_id}", story_id)
+            prompt = ai_run.pack_prompt("process-analyst").replace("{story_id}", story_id) + ai_run.context_prompt()
             async for event in ai_run.stream(prompt, options, query=observer):
                 if event.kind == "init":
                     model = event.data.get("model")

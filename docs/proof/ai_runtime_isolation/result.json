@@ -1,0 +1,259 @@
+{
+  "checks": {
+    "two concurrent runs completed": true,
+    "runtime reported key source ANTHROPIC_API_KEY for both": true,
+    "runtime reported each customer's own model": true,
+    "provider saw only the two customer keys": true,
+    "customer A's key was only ever sent with A's model": true,
+    "customer B's key was only ever sent with B's model": true,
+    "host machine key never sent": true,
+    "no OAuth bearer token sent": true,
+    "separate per-run config directories": true,
+    "per-run config directories removed afterwards": true,
+    "backend process environment unchanged": true,
+    "the improve-agent ran with its published pack's instructions (pack footer seen by the provider)": true,
+    "subagents cannot be sent to the background (they finish inside the run)": true,
+    "metadata-only document policy: no document-reading tool was offered to the model": true,
+    "the subagent requests also used only the run's own customer key": true,
+    "unconfigured customer blocked before any request": true,
+    "revoked key blocked before any request": true,
+    "no request made by blocked runs": true
+  },
+  "all_passed": true,
+  "runs": [
+    {
+      "company": "cust-a",
+      "config_dir": "/tmp/jade-agent-vexwdae9",
+      "init": {
+        "apiKeySource": "ANTHROPIC_API_KEY",
+        "model": "claude-sonnet-5",
+        "agents": [
+          "architect",
+          "check-agent",
+          "claude",
+          "Explore",
+          "functional-agent",
+          "general-purpose",
+          "improve-agent",
+          "Plan",
+          "receive-agent",
+          "statusline-setup",
+          "technical-agent"
+        ],
+        "mcp_servers": [
+          {
+            "name": "jde-change-factory",
+            "status": "connected",
+            "source": "project"
+          },
+          {
+            "name": "jade-knowledge",
+            "status": "connected",
+            "source": "sdk"
+          }
+        ],
+        "tools": [
+          "Task",
+          "mcp__jade-knowledge__list_documents"
+        ]
+      },
+      "result": {
+        "is_error": false,
+        "text": "OK",
+        "num_turns": 2
+      },
+      "run_id": "ai-13688f3f0027",
+      "config_dir_removed": true
+    },
+    {
+      "company": "cust-b",
+      "config_dir": "/tmp/jade-agent-a83ssupl",
+      "init": {
+        "apiKeySource": "ANTHROPIC_API_KEY",
+        "model": "claude-haiku-4-5",
+        "agents": [
+          "architect",
+          "check-agent",
+          "claude",
+          "Explore",
+          "functional-agent",
+          "general-purpose",
+          "improve-agent",
+          "Plan",
+          "receive-agent",
+          "statusline-setup",
+          "technical-agent"
+        ],
+        "mcp_servers": [
+          {
+            "name": "jde-change-factory",
+            "status": "connected",
+            "source": "project"
+          },
+          {
+            "name": "jade-knowledge",
+            "status": "connected",
+            "source": "sdk"
+          }
+        ],
+        "tools": [
+          "Task",
+          "mcp__jade-knowledge__list_documents"
+        ]
+      },
+      "result": {
+        "is_error": false,
+        "text": "OK",
+        "num_turns": 2
+      },
+      "run_id": "ai-4f65c1522832",
+      "config_dir_removed": true
+    }
+  ],
+  "blocked": {
+    "unconfigured": "this customer has no AI connection. An Admin sets it up under Admin > AI Connections",
+    "revoked": "this customer's Anthropic API key is revoked; an Admin enters it under Admin > AI Connections"
+  },
+  "provider_requests": [
+    {
+      "path": "/v1/messages",
+      "x_api_key": "sk-ant-api03-CUSTOMER-\u2026",
+      "authorization": null,
+      "model": "claude-haiku-4-5",
+      "stream": true,
+      "system_has_pack_policy": false,
+      "tools": [
+        "Agent",
+        "mcp__jade-knowledge__list_documents"
+      ],
+      "subagent_request": false,
+      "background_agents_offered": false
+    },
+    {
+      "path": "/v1/messages",
+      "x_api_key": "sk-ant-api03-CUSTOMER-\u2026",
+      "authorization": null,
+      "model": "claude-sonnet-5",
+      "stream": true,
+      "system_has_pack_policy": false,
+      "tools": [
+        "Agent",
+        "mcp__jade-knowledge__list_documents"
+      ],
+      "subagent_request": false,
+      "background_agents_offered": false
+    },
+    {
+      "path": "/v1/messages",
+      "x_api_key": "sk-ant-api03-CUSTOMER-\u2026",
+      "authorization": null,
+      "model": "claude-haiku-4-5",
+      "stream": true,
+      "system_has_pack_policy": true,
+      "tools": [
+        "mcp__jade-knowledge__list_documents"
+      ],
+      "subagent_request": true,
+      "background_agents_offered": false
+    },
+    {
+      "path": "/v1/messages",
+      "x_api_key": "sk-ant-api03-CUSTOMER-\u2026",
+      "authorization": null,
+      "model": "claude-sonnet-5",
+      "stream": true,
+      "system_has_pack_policy": true,
+      "tools": [
+        "mcp__jade-knowledge__list_documents"
+      ],
+      "subagent_request": true,
+      "background_agents_offered": false
+    },
+    {
+      "path": "/v1/messages",
+      "x_api_key": "sk-ant-api03-CUSTOMER-\u2026",
+      "authorization": null,
+      "model": "claude-sonnet-5",
+      "stream": true,
+      "system_has_pack_policy": false,
+      "tools": [
+        "Agent",
+        "mcp__jade-knowledge__list_documents"
+      ],
+      "subagent_request": false,
+      "background_agents_offered": false
+    },
+    {
+      "path": "/v1/messages",
+      "x_api_key": "sk-ant-api03-CUSTOMER-\u2026",
+      "authorization": null,
+      "model": "claude-haiku-4-5",
+      "stream": true,
+      "system_has_pack_policy": false,
+      "tools": [
+        "Agent",
+        "mcp__jade-knowledge__list_documents"
+      ],
+      "subagent_request": false,
+      "background_agents_offered": false
+    }
+  ],
+  "ai_runs": [
+    {
+      "run_id": "ai-13688f3f0027",
+      "company_id": "cust-a",
+      "status": "completed",
+      "configured_model": "claude-sonnet-5",
+      "reported_model": "claude-sonnet-5",
+      "credential_source": "ANTHROPIC_API_KEY",
+      "connection_revision": 1,
+      "credential_revision": 1,
+      "packs": "[{\"role\": \"improve-agent\", \"packId\": \"tpl-improve-agent\", \"packName\": \"Jade standard -- Improve Agent\", \"revision\": 1, \"sha256\": \"d14f373bc465a3b5e22b33fdd783912fe69f104703a15fc8bb4119ba870dcb48\", \"model\": \"claude-sonnet-5\"}]",
+      "cost_usd": 0.000102,
+      "cost_basis": "estimate: cost reported by the agent runtime from token usage at list prices",
+      "error": null
+    },
+    {
+      "run_id": "ai-4f65c1522832",
+      "company_id": "cust-b",
+      "status": "completed",
+      "configured_model": "claude-haiku-4-5",
+      "reported_model": "claude-haiku-4-5",
+      "credential_source": "ANTHROPIC_API_KEY",
+      "connection_revision": 1,
+      "credential_revision": 1,
+      "packs": "[{\"role\": \"improve-agent\", \"packId\": \"tpl-improve-agent\", \"packName\": \"Jade standard -- Improve Agent\", \"revision\": 1, \"sha256\": \"d14f373bc465a3b5e22b33fdd783912fe69f104703a15fc8bb4119ba870dcb48\", \"model\": \"claude-haiku-4-5\"}]",
+      "cost_usd": 5.1e-05,
+      "cost_basis": "estimate: cost reported by the agent runtime from token usage at list prices",
+      "error": null
+    },
+    {
+      "run_id": "ai-5b858617b957",
+      "company_id": "cust-unconfigured",
+      "status": "blocked",
+      "configured_model": null,
+      "reported_model": null,
+      "credential_source": null,
+      "connection_revision": null,
+      "credential_revision": null,
+      "packs": "[]",
+      "cost_usd": null,
+      "cost_basis": null,
+      "error": "this customer has no AI connection. An Admin sets it up under Admin > AI Connections"
+    },
+    {
+      "run_id": "ai-eb9249aa5b26",
+      "company_id": "cust-a",
+      "status": "blocked",
+      "configured_model": null,
+      "reported_model": null,
+      "credential_source": null,
+      "connection_revision": null,
+      "credential_revision": null,
+      "packs": "[]",
+      "cost_usd": null,
+      "cost_basis": null,
+      "error": "this customer's Anthropic API key is revoked; an Admin enters it under Admin > AI Connections"
+    }
+  ]
+}

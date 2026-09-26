@@ -66,8 +66,11 @@ async def run_technical_agent(*, company_id: str, story_id: str, run_id: str, re
     try:
         from ..ai import runtime
 
+        # A verification run is the Verification activity (its own configurable model).
         async with runtime.agent_run(company_id=company_id, driver="technical_driver", roles=["technical-agent"],
-                                     story_id=story_id) as ai_run:
+                                     story_id=story_id,
+                                     activities={"technical-agent": "verification"} if purpose == "verify" else None
+                                     ) as ai_run:
             agent_run = agent_runs.start(agent_name="technical-agent", driver="technical_driver", story_id=story_id,
                                          customer_id=company_id, agent_version=ai_run.agent_version("technical-agent"))
             store.add_event(run_id, "agent_run", f"{agent_run.run_id} ({ai_run.run_id}, pack "
@@ -76,7 +79,8 @@ async def run_technical_agent(*, company_id: str, story_id: str, run_id: str, re
             options = ai_run.options(cwd=repo_root, permission_mode=PERMISSION_MODE, allowed_tools=ALLOWED,
                                      disallowed_tools=DISALLOWED, max_turns=MAX_TURNS,
                                      tool_servers={SERVER_NAME: tools.sdk_server()}, subagents=["technical-agent"])
-            async for event in ai_run.stream(build_prompt(story_id, purpose, note), options, query=observer):
+            async for event in ai_run.stream(build_prompt(story_id, purpose, note) + ai_run.context_prompt(), options,
+                                             query=observer):
                 if event.kind == "init":
                     model = event.data.get("model")
                     store.add_event(run_id, "runtime_initialised", f"model {model}, key source "

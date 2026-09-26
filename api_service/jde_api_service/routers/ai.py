@@ -35,6 +35,7 @@ class ConnectionInput(ApiModel):
     enabled: bool = True
     document_policy: str = "metadata_only"
     limits: dict[str, Any] = {}
+    activity_models: dict[str, Optional[str]] = {}
     expected_revision: Optional[int] = None
 
 
@@ -57,7 +58,8 @@ def put_connection(payload: ConnectionInput, ctx: AuthContext = Depends(require_
     try:
         ai_connection.save(ctx.customer_id, model=payload.model, enabled=payload.enabled,
                            document_policy=payload.document_policy, limits=payload.limits,
-                           expected_revision=payload.expected_revision, actor=ctx.identity.display_name)
+                           expected_revision=payload.expected_revision, actor=ctx.identity.display_name,
+                           activity_models=payload.activity_models)
     except ai_connection.InvalidConfig as exc:
         raise _bad(exc)
     return get_connection(ctx)
@@ -89,7 +91,8 @@ def test_connection(payload: TestInput, ctx: AuthContext = Depends(require_role(
     if not payload.confirm_billable:
         raise HTTPException(status_code=428, detail=f"confirm the billable test first: {ai_connection.TEST_EXPLANATION}")
     try:
-        return ai_connection.test_connection(ctx.customer_id, actor=ctx.identity.display_name)
+        result = ai_connection.test_connection(ctx.customer_id, actor=ctx.identity.display_name)
+        return {**result, "connection": get_connection(ctx)}
     except ai_connection.InvalidConfig as exc:
         raise _bad(exc)
     except credential_crypto.CredentialUnreadable:
@@ -205,3 +208,14 @@ def runs(ctx: AuthContext = Depends(require_customer_access)) -> list[dict]:
 def health(ctx: AuthContext = Depends(require_customer_access)) -> dict:
     return {"roles": ai_runtime.health(ctx.customer_id), "runtime": ai_runtime.ADAPTER.name,
             "provider": ai_connection.PROVIDER_LABEL}
+
+
+@router.get("/admin/ai/context/{package_id}")
+def context_package(package_id: str, ctx: AuthContext = Depends(require_customer_access)) -> dict:
+    """A context package exactly as an agent run received it."""
+    from ..ai import context as ai_context
+
+    pkg = ai_context.get(ctx.customer_id, package_id)
+    if pkg is None:
+        raise HTTPException(status_code=404, detail="no such context package")
+    return pkg

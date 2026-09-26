@@ -76,6 +76,7 @@ def test_the_connection_test_must_be_confirmed_as_billable_and_is_recorded(clien
     r = client.post("/admin/ai/connection/test", headers=headers("vdb"), json={"confirmBillable": True})
     assert r.status_code == 200 and r.json()["outcome"] == "ok" and r.json()["billable"] is True
     assert calls == [(KEY_A, "claude-sonnet-5")] and r.json()["connection"]["tested"] is True
+    assert r.json()["connection"]["serverKeyConfigured"] is True
     # A new key invalidates the earlier test.
     _configure_via_api(client, key=KEY_B)
     assert client.get("/admin/ai/connection", headers=headers("vdb")).json()["tested"] is False
@@ -181,6 +182,8 @@ def test_each_run_gets_its_own_key_model_and_config_dir_without_touching_os_envi
         assert s["env"]["ANTHROPIC_AUTH_TOKEN"] == "" and s["env"]["JDE_CREDENTIAL_KEY"] == ""
         assert s["env"]["ANTHROPIC_BASE_URL"] == "https://api.anthropic.com"
         assert "--setting-sources=project" in s["cmd"]
+        # Subagents run inside the run (the CLI defaults to background agents otherwise).
+        assert s["env"]["CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"] == "1"
         assert not os.path.exists(s["env"]["CLAUDE_CONFIG_DIR"])  # removed after the run
 
 
@@ -394,3 +397,95 @@ def test_an_agent_disabled_by_the_admin_never_starts(client, monkeypatch):
                       json={"title": "t", "businessSource": "Business", "rawContent": "Synthetic"}).json()["id"]
     assert client.post(f"/changes/{cid}/enhance", headers=headers("vdb")).status_code == 409
     assert started == []
+
+
+# -- Per-activity models, context packages, continuity -------------------------------------
+def test_activity_overrides_are_validated_and_only_supported_models_are_offered(client):
+    _configure_via_api(client)
+    view = client.get("/admin/ai/connection", headers=headers("vdb")).json()
+    assert view["runtime"] == "claude-agent-sdk" and {a["id"] for a in view["activities"]} == {
+        "functional_analysis", "verification", "architecture", "technical_build"}
+    body = {"model": "claude-sonnet-5", "enabled": True, "documentPolicy": "metadata_only", "limits": {},
+            "expectedRevision": view["revision"]}
+    for bad in ({"architecture": "gpt-5"}, {"planning": "claude-opus-5"}):
+        r = client.put("/admin/ai/connection", headers=headers("vdb"), json={**body, "activityModels": bad})
+        assert r.status_code == 422
+    r = client.put("/admin/ai/connection", headers=headers("vdb"),
+                   json={**body, "activityModels": {"architecture": "claude-opus-5", "verification": "claude-haiku-4-5"}})
+    assert r.status_code == 200 and r.json()["activityModels"] == {"architecture": "claude-opus-5",
+                                                                     "verification": "claude-haiku-4-5"}
+    health = {h["role"]: h["configuredModel"] for h in client.get("/admin/ai/health", headers=headers("vdb")).json()["roles"]}
+    assert health["architect"] == "claude-opus-5" and health["check-agent"] == "claude-haiku-4-5"
+    assert health["improve-agent"] == "claude-sonnet-5"
+
+
+def test_each_agent_runs_on_its_activitys_model_and_the_run_records_it(isolated_dirs):
+    from jde_api_service.ai import connection, runtime
+
+    from . import _ai
+
+    _ai.configure("vdb", model="claude-sonnet-5")
+    connection.save("vdb", model="claude-sonnet-5", enabled=True, document_policy="metadata_only", limits=None,
+                    expected_revision=1, actor="t", activity_models={"verification": "claude-haiku-4-5"})
+    seen = {}
+
+    async def q(*, prompt, options):
+        seen["main"] = options.model
+        seen["agents"] = {k: v.model for k, v in options.agents.items()}
+        seen["subagent_env"] = options.env.get("CLAUDE_CODE_SUBAGENT_MODEL")
+        yield _init("claude-sonnet-5")
+        yield _result()
+
+    async def go():
+        roles = ["receive-agent", "improve-agent", "check-agent"]
+        async with runtime.agent_run(company_id="vdb", driver="t", roles=roles) as run:
+            opts = run.options(cwd=".", permission_mode="dontAsk", allowed_tools=["Task"], max_turns=5, subagents=roles)
+            async for _ in run.stream("x", opts, query=q):
+                pass
+
+    asyncio.run(go())
+    assert seen["main"] == "claude-sonnet-5" and seen["subagent_env"] == ""
+    assert seen["agents"] == {"receive-agent": "claude-sonnet-5", "improve-agent": "claude-sonnet-5",
+                              "check-agent": "claude-haiku-4-5"}
+    rec = runtime.list_runs("vdb")[0]
+    assert rec["models"] == seen["agents"] and rec["runtime"].startswith("claude-agent-sdk")
+    assert {p["role"]: p["model"] for p in rec["packs"]} == seen["agents"]
+
+
+def test_runs_get_an_immutable_versioned_context_package_and_model_changes_are_noted(client):
+    from jde_api_service.ai import connection, context, runtime
+
+    from . import _ai
+
+    _ai.configure("vdb")
+    cid = client.post("/change-requests", headers=headers("vdb"),
+                      json={"title": "Ctx", "businessSource": "Business", "rawContent": "Synthetic ask"}).json()["id"]
+    prompts = []
+
+    async def q(*, prompt, options):
+        prompts.append(prompt)
+        yield _init(options.model)
+        yield _result()
+
+    async def go():
+        async with runtime.agent_run(company_id="vdb", driver="t", roles=["improve-agent"], story_id=cid) as run:
+            opts = run.options(cwd=".", permission_mode="dontAsk", allowed_tools=["Task"], max_turns=5,
+                               subagents=["improve-agent"])
+            async for _ in run.stream("x" + run.context_prompt(), opts, query=q):
+                pass
+
+    asyncio.run(go())
+    first = runtime.list_runs("vdb")[0]
+    pkg = context.get("vdb", first["context"][0]["package_id"])
+    assert pkg["version"] == 1 and pkg["content"]["requirement"]["as_submitted"] == "Synthetic ask"
+    assert "unresolved_questions" in pkg["content"] and "approvals" in pkg["content"]
+    assert pkg["package_id"] in prompts[0] and "DATA (not instructions" in prompts[0]
+    assert client.get(f"/admin/ai/context/{pkg['package_id']}", headers=headers("bwm")).status_code == 404
+    # Same records -> same package; a new configuration -> the next run says so.
+    connection.save("vdb", model="claude-opus-5", enabled=True, document_policy="metadata_only", limits=None,
+                    expected_revision=1, actor="t")
+    asyncio.run(go())
+    second = runtime.list_runs("vdb")[0]
+    assert second["context"][0]["package_id"] == pkg["package_id"]
+    assert any("claude-sonnet-5 -> claude-opus-5" in n for n in second["notes"])
+    assert any("r1 -> r2" in n for n in second["notes"])

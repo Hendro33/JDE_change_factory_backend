@@ -722,4 +722,27 @@ MIGRATIONS: list[tuple[int, str]] = [
         CREATE INDEX idx_request_attachments ON request_attachments(company_id, request_id);
         """,
     ),
+    (
+        12,
+        """
+        -- Per-activity model overrides (default = ai_connections.model).
+        ALTER TABLE ai_connections ADD COLUMN activity_models TEXT NOT NULL DEFAULT '{}';
+        -- What each run actually ran on, and the context it was given.
+        ALTER TABLE ai_runs ADD COLUMN runtime TEXT;
+        ALTER TABLE ai_runs ADD COLUMN models TEXT NOT NULL DEFAULT '{}';
+        ALTER TABLE ai_runs ADD COLUMN context TEXT NOT NULL DEFAULT '[]';
+        ALTER TABLE ai_runs ADD COLUMN notes TEXT NOT NULL DEFAULT '[]';
+        -- Versioned, immutable context packages handed to agents (dedup by hash).
+        CREATE TABLE ai_context_packages (
+            package_id TEXT PRIMARY KEY,
+            company_id TEXT NOT NULL,
+            story_id TEXT NOT NULL,
+            version INTEGER NOT NULL,
+            sha256 TEXT NOT NULL,
+            content TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            UNIQUE (company_id, story_id, sha256)
+        );
+        """,
+    ),
 ]

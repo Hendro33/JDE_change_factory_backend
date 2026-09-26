@@ -101,7 +101,7 @@ async def run_reviewer_agent(
             options = ai_run.options(cwd=repo_root, permission_mode=PERMISSION_MODE, allowed_tools=_ALLOWED_TOOLS,
                                      max_turns=MAX_TURNS, subagents=["improve-agent"])
             final_text: Optional[str] = None
-            async for event in ai_run.stream(prompt, options):
+            async for event in ai_run.stream(prompt + ai_run.context_prompt(), options):
                 if event.kind == "result":
                     if event.data["is_error"]:
                         raise ReviewerAgentError(f"reviewer agent ended in error: {event.data.get('text')}")
