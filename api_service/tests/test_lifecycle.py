@@ -145,3 +145,19 @@ def test_my_work_ownership():
     assert not lifecycle.is_mine(lc, {"product_manager"})
     working = lifecycle.derive(_change(architecture_review_stage="analyzing"))
     assert not lifecycle.is_mine(working, {"admin", "product_manager", "domain_owner"})
+
+
+def test_delivered_story_stays_done_when_design_is_flagged_later(monkeypatch):
+    monkeypatch.setattr(lifecycle, "_asbuilt_final", lambda c, s: {"status": "final"})
+    monkeypatch.setattr(lifecycle, "_design_facts", lambda c, s: {"baseline": {"status": "needs_reassessment"}, "design_approved": True})
+    lc = lifecycle.derive(_functional(write="applied", test="completed"))
+    assert (lc.phase, lc.outcome) == ("done", "delivered")
+    assert lc.open_items and "reassessment" in lc.open_items[0]
+
+
+def test_proposed_exact_change_without_analysis_stage_is_a_solution_decision():
+    change = _functional(approved=False)
+    change.architecture_review_stage = None
+    change.architect_decision = None
+    lc = lifecycle.derive(change)
+    assert (lc.phase, lc.next_action.action) == ("solution_review", "approve_exact_change")

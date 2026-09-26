@@ -372,7 +372,9 @@ def _solution_onwards(change, company_id: str, story_id: str) -> Lifecycle:
     if arch == "analyzing":
         return _mk("solutioning", "in_progress", _jade("JADE is researching the JDE environment and preparing a solution.",
                                                        "solution"))
-    if arch is None:
+    # A proposed exact change (e.g. from an earlier Functional Agent run or a
+    # direct proposal) is a solution, even without a recorded analysis stage.
+    if arch is None and change.exact_change is None:
         return _mk("solutioning", "waiting", NextAction(
             kind="task", summary="Start solutioning: JADE researches the JDE environment and proposes a solution.",
             owner="product_manager", action="rerun_solutioning", tab="solution",
@@ -388,6 +390,17 @@ def _solution_onwards(change, company_id: str, story_id: str) -> Lifecycle:
     design = _design_facts(company_id, story_id)
     b = design.get("baseline")
     open_items: list[str] = []
+    # A finalised as-built record means the story was delivered. Later changes
+    # (e.g. a new process framework version) flag the design, but do not
+    # un-deliver the story: they are shown as open items instead.
+    final = _asbuilt_final(company_id, story_id)
+    if final is not None:
+        items = []
+        if b is not None and b.get("status") not in (None, "current"):
+            items.append("Since delivery, the design was flagged for reassessment (for example after a process or story change).")
+        tech = _technical_facts(company_id, story_id) if route in TECHNICAL_ROUTES else {}
+        return _mk("done", "done", NextAction(kind="none", summary="Delivered and recorded."), outcome="delivered",
+                   route=route, open_items=items, delivery_steps=_delivery_steps(route, tech, change, final))
     if _process_decided(company_id, story_id) is False:
         open_items.append("Affected business processes have not been confirmed yet.")
     if route == "Clarification Required":
@@ -418,7 +431,7 @@ def _friendly_error(raw: Optional[str]) -> str:
         return ""
     low = raw.lower()
     if "ai connection" in low or "api key" in low:
-        return "The AI connection for this customer is not set up or not working (Administration > Agents & AI)."
+        return "The AI connection for this customer is not set up or not working (Administration › Agents & AI)."
     if "budget" in low:
         return "This customer's monthly AI budget is used up."
     if "disabled" in low or "switched off" in low:
