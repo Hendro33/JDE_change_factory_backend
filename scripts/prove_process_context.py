@@ -36,6 +36,10 @@ import time
 from datetime import datetime, timezone
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import _proof_ai  # noqa: E402
+
+_PROOF_KEY = _proof_ai.require_key()
 parser = argparse.ArgumentParser()
 parser.add_argument("--out", default=os.path.join(ROOT, "docs", "proof", "process_context_run"))
 args = parser.parse_args()
@@ -109,6 +113,7 @@ record: dict = {"started_at": datetime.now(timezone.utc).isoformat(), "story": S
                 "sdk_version": getattr(sdk, "__version__", "?")}
 try:
     with TestClient(app) as client:
+        _proof_ai.configure(COMPANY, _PROOF_KEY, ROOT)  # the customer's own AI connection
         # 1. seeds: synthetic framework, scope, profile, stories (scripted stand-ins only for OTHER stories)
         env = {**os.environ}
         for seed in ("technical", "process"):

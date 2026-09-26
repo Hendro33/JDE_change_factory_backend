@@ -20,6 +20,7 @@ AGENT_LABELS = {
     "architect": "Architect Agent",
     "functional-agent": "Functional Agent",
     "technical-agent": "Technical Agent",
+    "process-analyst": "Process Analyst",
 }
 
 _service = CompanySettingsService()
@@ -41,11 +42,23 @@ def disabled_agents(company_id: Optional[str]) -> set[str]:
 
 
 def require_enabled(company_id: Optional[str], *agent_names: str) -> None:
+    """Switched on for this customer AND runnable: the customer's own AI
+    connection and an assigned, published Start-up Pack for each role
+    (ai/runtime.require_ready). Either missing refuses the work up front."""
     off = [a for a in agent_names if a in disabled_agents(company_id)]
     if off:
         names = ", ".join(AGENT_LABELS.get(a, a) for a in off)
         raise AgentDisabled(f"{names} {'is' if len(off) == 1 else 'are'} switched off for this customer "
                             "(Admin > Agents); nothing was started")
+    from ..ai import packs, runtime
+    from ..ai.connection import AiNotConfigured
+
+    roles = [a for a in agent_names if a in packs.ROLES]
+    if roles:
+        try:
+            runtime.require_ready(company_id, roles, driver="api precheck")
+        except AiNotConfigured as exc:
+            raise AgentDisabled(f"{exc}; nothing was started") from None
 
 
 def save(company_id: str, disabled: list[str], expected_revision: Optional[int], actor: str) -> StoredSetting:

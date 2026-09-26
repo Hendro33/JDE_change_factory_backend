@@ -193,6 +193,13 @@ async def submit_domain_owner_edit(
     # through" reference point, captured before any of this call's own
     # appends change what history[-1] points to.
     prior_revision_count = review.history[-1].user_story.revision_count if review.history else 0
+    # "verified" is the backend's finding about an agent run, never the
+    # client's: an edit may keep or drop citations, not mark them verified.
+    known = {(c.claim, c.source): c.verified
+             for c in (review.history[-1].user_story.document_citations if review.history else [])}
+    payload.user_story.document_citations = [
+        c.model_copy(update={"verified": known.get((c.claim, c.source), False)})
+        for c in payload.user_story.document_citations]
 
     # Claimed under the lock: the stage leaves domain_owner_reviewing, so an
     # approve or reject racing this edit is refused instead of approving

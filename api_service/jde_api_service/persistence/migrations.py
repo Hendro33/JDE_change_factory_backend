@@ -589,4 +589,160 @@ MIGRATIONS: list[tuple[int, str]] = [
         ALTER TABLE jde_profiles ADD COLUMN credential_destination TEXT;
         """,
     ),
+    (
+        11,
+        """
+        -- A customer's company-owned AI connection (Anthropic API). The key is
+        -- encrypted with JDE_CREDENTIAL_KEY and never returned.
+        CREATE TABLE ai_connections (
+            company_id TEXT PRIMARY KEY,
+            provider TEXT NOT NULL,
+            model TEXT NOT NULL,
+            revision INTEGER NOT NULL,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            document_policy TEXT NOT NULL DEFAULT 'metadata_only',
+            limits TEXT NOT NULL DEFAULT '{}',
+            credential_secret TEXT,
+            credential_hint TEXT,
+            credential_revision INTEGER NOT NULL DEFAULT 0,
+            credential_updated_at TEXT,
+            credential_updated_by TEXT,
+            credential_revoked_at TEXT,
+            credential_revoked_by TEXT,
+            last_test_at TEXT,
+            last_test_outcome TEXT,
+            last_test_detail TEXT,
+            last_test_connection_revision INTEGER,
+            last_test_credential_revision INTEGER,
+            updated_at TEXT NOT NULL,
+            updated_by TEXT NOT NULL
+        );
+        CREATE TABLE ai_connection_audit (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            company_id TEXT NOT NULL,
+            action TEXT NOT NULL,
+            detail TEXT NOT NULL DEFAULT '',
+            actor TEXT NOT NULL,
+            at TEXT NOT NULL
+        );
+        -- Agent Start-up Packs: templates (company_id NULL, imported from the
+        -- repository) and customer packs; revisions are immutable once published.
+        CREATE TABLE agent_packs (
+            pack_id TEXT PRIMARY KEY,
+            company_id TEXT,
+            role TEXT NOT NULL,
+            name TEXT NOT NULL,
+            source TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            created_by TEXT NOT NULL,
+            disabled_at TEXT,
+            disabled_by TEXT
+        );
+        CREATE TABLE agent_pack_revisions (
+            pack_id TEXT NOT NULL,
+            revision INTEGER NOT NULL,
+            status TEXT NOT NULL,
+            content TEXT NOT NULL,
+            sha256 TEXT NOT NULL,
+            note TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            created_by TEXT NOT NULL,
+            published_at TEXT,
+            published_by TEXT,
+            PRIMARY KEY (pack_id, revision)
+        );
+        CREATE TABLE agent_pack_assignments (
+            company_id TEXT NOT NULL,
+            role TEXT NOT NULL,
+            pack_id TEXT NOT NULL,
+            pack_revision INTEGER NOT NULL,
+            version INTEGER NOT NULL DEFAULT 1,
+            assigned_at TEXT NOT NULL,
+            assigned_by TEXT NOT NULL,
+            PRIMARY KEY (company_id, role)
+        );
+        CREATE TABLE agent_pack_audit (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            company_id TEXT,
+            pack_id TEXT,
+            pack_revision INTEGER,
+            role TEXT,
+            action TEXT NOT NULL,
+            detail TEXT NOT NULL DEFAULT '',
+            actor TEXT NOT NULL,
+            at TEXT NOT NULL
+        );
+        -- One row per real agent run: exactly what it ran with.
+        CREATE TABLE ai_runs (
+            run_id TEXT PRIMARY KEY,
+            company_id TEXT NOT NULL,
+            driver TEXT NOT NULL,
+            story_id TEXT,
+            roles TEXT NOT NULL,
+            status TEXT NOT NULL,
+            provider TEXT,
+            configured_model TEXT,
+            reported_model TEXT,
+            credential_source TEXT,
+            connection_revision INTEGER,
+            credential_revision INTEGER,
+            packs TEXT NOT NULL DEFAULT '[]',
+            knowledge TEXT NOT NULL DEFAULT '[]',
+            usage TEXT,
+            cost_usd REAL,
+            cost_basis TEXT,
+            error TEXT,
+            initiated_by TEXT,
+            started_at TEXT NOT NULL,
+            finished_at TEXT
+        );
+        CREATE INDEX idx_ai_runs_company ON ai_runs(company_id, started_at);
+        -- Documents attached to a new request (demand).
+        CREATE TABLE request_attachments (
+            attachment_id TEXT PRIMARY KEY,
+            company_id TEXT NOT NULL,
+            request_id TEXT,
+            status TEXT NOT NULL,
+            filename TEXT NOT NULL,
+            file_type TEXT NOT NULL,
+            size_bytes INTEGER NOT NULL,
+            sha256 TEXT NOT NULL,
+            revision INTEGER NOT NULL DEFAULT 1,
+            storage_path TEXT NOT NULL,
+            uploaded_by TEXT NOT NULL,
+            uploaded_by_name TEXT NOT NULL DEFAULT '',
+            uploaded_at TEXT NOT NULL,
+            extraction_status TEXT NOT NULL,
+            extraction_detail TEXT NOT NULL DEFAULT '',
+            extraction_version INTEGER NOT NULL DEFAULT 0,
+            sections INTEGER,
+            deleted_at TEXT,
+            deleted_by TEXT
+        );
+        CREATE INDEX idx_request_attachments ON request_attachments(company_id, request_id);
+        """,
+    ),
+    (
+        12,
+        """
+        -- Per-activity model overrides (default = ai_connections.model).
+        ALTER TABLE ai_connections ADD COLUMN activity_models TEXT NOT NULL DEFAULT '{}';
+        -- What each run actually ran on, and the context it was given.
+        ALTER TABLE ai_runs ADD COLUMN runtime TEXT;
+        ALTER TABLE ai_runs ADD COLUMN models TEXT NOT NULL DEFAULT '{}';
+        ALTER TABLE ai_runs ADD COLUMN context TEXT NOT NULL DEFAULT '[]';
+        ALTER TABLE ai_runs ADD COLUMN notes TEXT NOT NULL DEFAULT '[]';
+        -- Versioned, immutable context packages handed to agents (dedup by hash).
+        CREATE TABLE ai_context_packages (
+            package_id TEXT PRIMARY KEY,
+            company_id TEXT NOT NULL,
+            story_id TEXT NOT NULL,
+            version INTEGER NOT NULL,
+            sha256 TEXT NOT NULL,
+            content TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            UNIQUE (company_id, story_id, sha256)
+        );
+        """,
+    ),
 ]

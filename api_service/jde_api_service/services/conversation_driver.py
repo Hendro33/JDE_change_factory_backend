@@ -28,7 +28,6 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from . import agent_runtime
 from ..models.architecture_review import ArchitectAnalysisVersion
 from ..models.change import UserStory
 from ..models.domain_review import ConversationTurn
@@ -104,41 +103,41 @@ async def ask_about_requirement(
     guessed answer. The caller (the router) is responsible for
     appending the resulting ConversationTurn; this function only ever
     produces the answer, it never writes to DomainReview itself."""
-    from .agent_registry_service import compute_agent_version
+    prompt = _build_prompt(story_id, current_story, question, asked_by, prior_turns)
+    from ..ai import runtime
+    from ..ai.connection import AiNotConfigured
     from .registry import get_agent_run_service
 
     agent_run_service = get_agent_run_service()
-    run = agent_run_service.start(
-        agent_name="improve-agent", driver="conversation_driver", story_id=story_id,
-        customer_id=customer_id, agent_version=compute_agent_version("improve-agent", repo_root),
-    )
-
-    import claude_agent_sdk as sdk
-
-    options = agent_runtime.options(
-        cwd=repo_root, permission_mode=PERMISSION_MODE, allowed_tools=_ALLOWED_TOOLS, max_turns=MAX_TURNS,
-    )
-    prompt = _build_prompt(story_id, current_story, question, asked_by, prior_turns)
-
+    run = None
     try:
-        final_text: Optional[str] = None
-        async for message in sdk.query(prompt=prompt, options=options):
-            if isinstance(message, sdk.ResultMessage):
-                if message.is_error:
-                    raise ConversationError(f"conversation turn ended in error: {getattr(message, 'result', None)}")
-                final_text = getattr(message, "result", None)
+        async with runtime.agent_run(company_id=customer_id, driver="conversation_driver", roles=["improve-agent"],
+                                     story_id=story_id) as ai_run:
+            run = agent_run_service.start(agent_name="improve-agent", driver="conversation_driver", story_id=story_id,
+                                          customer_id=customer_id, agent_version=ai_run.agent_version("improve-agent"))
+            options = ai_run.options(cwd=repo_root, permission_mode=PERMISSION_MODE, allowed_tools=_ALLOWED_TOOLS,
+                                     max_turns=MAX_TURNS, subagents=["improve-agent"])
+            final_text: Optional[str] = None
+            async for event in ai_run.stream(prompt + ai_run.context_prompt(), options):
+                if event.kind == "result":
+                    if event.data["is_error"]:
+                        raise ConversationError(f"conversation turn ended in error: {event.data.get('text')}")
+                    final_text = event.data.get("text")
 
-        if final_text is None:
-            raise ConversationError("conversation turn produced no final result")
+            if final_text is None:
+                raise ConversationError("conversation turn produced no final result")
 
-        summary = _extract_json(final_text)
-        answer = summary.get("answer") or ""
-        kind = _coerce_enum(summary.get("kind"), {"explanation", "proposed_amendment"}, "explanation")
-        proposed_user_story: Optional[UserStory] = None
-        if kind == "proposed_amendment" and summary.get("proposed_user_story"):
-            proposed_user_story = _user_story_from_summary({"user_story": summary.get("proposed_user_story")})
+            summary = _extract_json(final_text)
+            answer = summary.get("answer") or ""
+            kind = _coerce_enum(summary.get("kind"), {"explanation", "proposed_amendment"}, "explanation")
+            proposed_user_story: Optional[UserStory] = None
+            if kind == "proposed_amendment" and summary.get("proposed_user_story"):
+                proposed_user_story = _user_story_from_summary({"user_story": summary.get("proposed_user_story")})
+    except AiNotConfigured as exc:
+        raise ConversationError(str(exc)) from exc
     except Exception as exc:
-        agent_run_service.fail(run.run_id, str(exc))
+        if run is not None:
+            agent_run_service.fail(run.run_id, str(exc))
         raise
     agent_run_service.complete(run.run_id)
     return {"answer": answer, "kind": kind, "proposed_user_story": proposed_user_story}
@@ -225,38 +224,38 @@ async def ask_about_solution(
     module docstring). Raises ConversationError on failure. The caller
     (the router) is responsible for appending the resulting
     ConversationTurn; this function only ever produces the answer."""
-    from .agent_registry_service import compute_agent_version
+    prompt = _build_solution_prompt(story_id, latest_version, question, asked_by, prior_turns)
+    from ..ai import runtime
+    from ..ai.connection import AiNotConfigured
     from .registry import get_agent_run_service
 
     agent_run_service = get_agent_run_service()
-    run = agent_run_service.start(
-        agent_name="architect", driver="conversation_driver", story_id=story_id,
-        customer_id=customer_id, agent_version=compute_agent_version("architect", repo_root),
-    )
-
-    import claude_agent_sdk as sdk
-
-    options = agent_runtime.options(
-        cwd=repo_root, permission_mode=PERMISSION_MODE, allowed_tools=_SOLUTION_ALLOWED_TOOLS, max_turns=MAX_TURNS,
-    )
-    prompt = _build_solution_prompt(story_id, latest_version, question, asked_by, prior_turns)
-
+    run = None
     try:
-        final_text: Optional[str] = None
-        async for message in sdk.query(prompt=prompt, options=options):
-            if isinstance(message, sdk.ResultMessage):
-                if message.is_error:
-                    raise ConversationError(f"conversation turn ended in error: {getattr(message, 'result', None)}")
-                final_text = getattr(message, "result", None)
+        async with runtime.agent_run(company_id=customer_id, driver="conversation_driver", roles=["architect"],
+                                     story_id=story_id) as ai_run:
+            run = agent_run_service.start(agent_name="architect", driver="conversation_driver", story_id=story_id,
+                                          customer_id=customer_id, agent_version=ai_run.agent_version("architect"))
+            options = ai_run.options(cwd=repo_root, permission_mode=PERMISSION_MODE, allowed_tools=_SOLUTION_ALLOWED_TOOLS,
+                                     max_turns=MAX_TURNS, subagents=["architect"])
+            final_text: Optional[str] = None
+            async for event in ai_run.stream(prompt + ai_run.context_prompt(), options):
+                if event.kind == "result":
+                    if event.data["is_error"]:
+                        raise ConversationError(f"conversation turn ended in error: {event.data.get('text')}")
+                    final_text = event.data.get("text")
 
-        if final_text is None:
-            raise ConversationError("conversation turn produced no final result")
+            if final_text is None:
+                raise ConversationError("conversation turn produced no final result")
 
-        summary = _extract_json(final_text)
-        answer = summary.get("answer") or ""
-        kind = _coerce_enum(summary.get("kind"), {"explanation", "recommend_reanalysis"}, "explanation")
+            summary = _extract_json(final_text)
+            answer = summary.get("answer") or ""
+            kind = _coerce_enum(summary.get("kind"), {"explanation", "recommend_reanalysis"}, "explanation")
+    except AiNotConfigured as exc:
+        raise ConversationError(str(exc)) from exc
     except Exception as exc:
-        agent_run_service.fail(run.run_id, str(exc))
+        if run is not None:
+            agent_run_service.fail(run.run_id, str(exc))
         raise
     agent_run_service.complete(run.run_id)
     return {"answer": answer, "kind": kind}

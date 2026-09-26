@@ -21,7 +21,6 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from ..services import agent_runtime
 from ..services.architecture_driver import PROJECT_SERVER_TOOLS
 from . import store
 from .tools import ALLOWED_TOOLS, SERVER_NAME, TechnicalAgentTools
@@ -56,47 +55,54 @@ def build_prompt(story_id: str, purpose: str, note: str = "") -> str:
 async def run_technical_agent(*, company_id: str, story_id: str, run_id: str, repo_root: str, purpose: str,
                               note: str = "", observer=None) -> dict[str, Any]:
     """Never raises: every outcome is recorded on the run."""
-    from ..services.agent_registry_service import compute_agent_version
     from ..services.registry import get_agent_run_service
 
     agent_runs = get_agent_run_service()
-    agent_run = agent_runs.start(agent_name="technical-agent", driver="technical_driver", story_id=story_id,
-                                 customer_id=company_id, agent_version=compute_agent_version("technical-agent", repo_root))
-    store.add_event(run_id, "agent_run", agent_run.run_id)
+    agent_run = None
     usage: dict[str, Any] = {}
     model: Optional[str] = None
     final_text: Optional[str] = None
     tools: Optional[TechnicalAgentTools] = None
     try:
-        import claude_agent_sdk as sdk
+        from ..ai import runtime
 
-        tools = TechnicalAgentTools(company_id=company_id, story_id=story_id, run_id=run_id)
-        options = agent_runtime.options(cwd=repo_root, permission_mode=PERMISSION_MODE, allowed_tools=ALLOWED,
-                                        disallowed_tools=DISALLOWED, max_turns=MAX_TURNS,
-                                        mcp_servers={SERVER_NAME: tools.sdk_server()})
-        query = observer or sdk.query
-        async for message in query(prompt=build_prompt(story_id, purpose, note), options=options):
-            kind = type(message).__name__
-            if kind == "SystemMessage" and getattr(message, "subtype", "") == "init":
-                model = (getattr(message, "data", None) or {}).get("model")
-                store.add_event(run_id, "runtime_initialised", f"model {model}")
-            elif kind == "ResultMessage":
-                usage = {"total_cost_usd": getattr(message, "total_cost_usd", None),
-                         "num_turns": getattr(message, "num_turns", None),
-                         "duration_ms": getattr(message, "duration_ms", None),
-                         "usage": getattr(message, "usage", None),
-                         "models": list((getattr(message, "model_usage", None) or {}).keys())}
-                if message.is_error:
-                    raise RuntimeError(f"the agent runtime ended in error: {getattr(message, 'result', None)}")
-                final_text = getattr(message, "result", None)
+        # A verification run is the Verification activity (its own configurable model).
+        async with runtime.agent_run(company_id=company_id, driver="technical_driver", roles=["technical-agent"],
+                                     story_id=story_id,
+                                     activities={"technical-agent": "verification"} if purpose == "verify" else None
+                                     ) as ai_run:
+            agent_run = agent_runs.start(agent_name="technical-agent", driver="technical_driver", story_id=story_id,
+                                         customer_id=company_id, agent_version=ai_run.agent_version("technical-agent"))
+            store.add_event(run_id, "agent_run", f"{agent_run.run_id} ({ai_run.run_id}, pack "
+                                                 f"{ai_run.agent_version('technical-agent')})")
+            tools = TechnicalAgentTools(company_id=company_id, story_id=story_id, run_id=run_id)
+            options = ai_run.options(cwd=repo_root, permission_mode=PERMISSION_MODE, allowed_tools=ALLOWED,
+                                     disallowed_tools=DISALLOWED, max_turns=MAX_TURNS,
+                                     tool_servers={SERVER_NAME: tools.sdk_server()}, subagents=["technical-agent"])
+            async for event in ai_run.stream(build_prompt(story_id, purpose, note) + ai_run.context_prompt(), options,
+                                             query=observer):
+                if event.kind == "init":
+                    model = event.data.get("model")
+                    store.add_event(run_id, "runtime_initialised", f"model {model}, key source "
+                                                                   f"{event.data.get('credential_source')}")
+                elif event.kind == "result":
+                    usage = {"total_cost_usd": event.data.get("cost_usd"), "num_turns": event.data.get("num_turns"),
+                             "duration_ms": event.data.get("duration_ms"), "usage": event.data.get("usage"),
+                             "models": list((event.data.get("model_usage") or {}).keys()),
+                             "cost_basis": "estimate reported by the agent runtime", "ai_run": ai_run.run_id}
+                    if event.data["is_error"]:
+                        raise RuntimeError(f"the agent runtime ended in error: {event.data.get('text')}")
+                    final_text = event.data.get("text")
         outcome = {**(tools.outcome or {"kind": "no_outcome"}), "summary": (final_text or "")[:3000],
                    "tool_calls": tools.calls}
         store.finish_run(run_id, status="completed", outcome=outcome, model=model, usage=usage)
-        agent_runs.complete(agent_run.run_id)
+        if agent_run is not None:
+            agent_runs.complete(agent_run.run_id)
         return outcome
     except Exception as exc:  # noqa: BLE001 -- recorded, never raised into the background runner
         outcome = {**((tools.outcome if tools else None) or {}), "tool_calls": tools.calls if tools else []}
         store.finish_run(run_id, status="failed", error=f"{type(exc).__name__}: {exc}"[:500], outcome=outcome,
                          model=model, usage=usage)
-        agent_runs.fail(agent_run.run_id, str(exc))
+        if agent_run is not None:
+            agent_runs.fail(agent_run.run_id, str(exc))
         return {"kind": "runtime_failure", "error": str(exc)}

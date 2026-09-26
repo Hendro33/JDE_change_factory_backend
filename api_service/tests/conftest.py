@@ -15,6 +15,33 @@ if str(_MCP_SERVER_SRC) not in sys.path:
 TEST_PASSWORD = "test-password-not-real-0000"  # noqa: S105 -- test fixture, not a real secret
 
 
+def pytest_configure(config):
+    config.addinivalue_line("markers", "no_auto_ai: do not configure an AI connection automatically")
+
+
+@pytest.fixture(autouse=True)
+def _ai_configured_on_demand(request, monkeypatch):
+    """Tests that start an agent run get the customer's AI connection and
+    the Jade standard packs configured on first use (tests/_ai.py), so the
+    REAL resolution and snapshot code still runs; the runtime itself is
+    mocked by each test. Tests about missing configuration opt out with
+    @pytest.mark.no_auto_ai."""
+    if request.node.get_closest_marker("no_auto_ai"):
+        return
+    from jde_api_service.ai import runtime
+
+    real = runtime.prepare
+
+    def prepare(company_id, roles):
+        if company_id:
+            from . import _ai
+
+            _ai.configure(company_id)
+        return real(company_id, roles)
+
+    monkeypatch.setattr(runtime, "prepare", prepare)
+
+
 @pytest.fixture()
 def isolated_dirs(tmp_path, monkeypatch):
     """Every test gets its own throwaway directories for both this

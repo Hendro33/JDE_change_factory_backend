@@ -22,7 +22,6 @@ from __future__ import annotations
 
 from typing import Optional
 
-from . import agent_runtime
 from ..models.change import UserStory
 from .orchestration_driver import _ALLOWED_TOOLS, _extract_json, _user_story_from_summary
 
@@ -87,43 +86,37 @@ async def run_reviewer_agent(
     that means for the DomainReview's stage; this function never
     silently returns the Domain Owner's own edit as if it were a
     reviewed version."""
-    from .agent_registry_service import compute_agent_version
+    from ..ai import runtime
+    from ..ai.connection import AiNotConfigured
     from .registry import get_agent_run_service
 
     agent_run_service = get_agent_run_service()
-    run = agent_run_service.start(
-        agent_name="improve-agent",
-        driver="review_driver",
-        story_id=story_id,
-        customer_id=customer_id,
-        agent_version=compute_agent_version("improve-agent", repo_root),
-    )
-
-    import claude_agent_sdk as sdk
-
-    options = agent_runtime.options(
-        cwd=repo_root,
-        permission_mode=PERMISSION_MODE,
-        allowed_tools=_ALLOWED_TOOLS,
-        max_turns=MAX_TURNS,
-    )
+    run = None
     prompt = _build_review_prompt(story_id, edited_story, domain_owner_note)
-
     try:
-        final_text: Optional[str] = None
-        async for message in sdk.query(prompt=prompt, options=options):
-            if isinstance(message, sdk.ResultMessage):
-                if message.is_error:
-                    raise ReviewerAgentError(f"reviewer agent ended in error: {getattr(message, 'result', None)}")
-                final_text = getattr(message, "result", None)
+        async with runtime.agent_run(company_id=customer_id, driver="review_driver", roles=["improve-agent"],
+                                     story_id=story_id) as ai_run:
+            run = agent_run_service.start(agent_name="improve-agent", driver="review_driver", story_id=story_id,
+                                          customer_id=customer_id, agent_version=ai_run.agent_version("improve-agent"))
+            options = ai_run.options(cwd=repo_root, permission_mode=PERMISSION_MODE, allowed_tools=_ALLOWED_TOOLS,
+                                     max_turns=MAX_TURNS, subagents=["improve-agent"])
+            final_text: Optional[str] = None
+            async for event in ai_run.stream(prompt + ai_run.context_prompt(), options):
+                if event.kind == "result":
+                    if event.data["is_error"]:
+                        raise ReviewerAgentError(f"reviewer agent ended in error: {event.data.get('text')}")
+                    final_text = event.data.get("text")
 
-        if final_text is None:
-            raise ReviewerAgentError("reviewer agent produced no final result")
+            if final_text is None:
+                raise ReviewerAgentError("reviewer agent produced no final result")
 
-        summary = _extract_json(final_text)
-        revised = _user_story_from_summary(summary)
+            summary = _extract_json(final_text)
+            revised = _user_story_from_summary(summary)
+    except AiNotConfigured as exc:
+        raise ReviewerAgentError(str(exc)) from exc
     except Exception as exc:
-        agent_run_service.fail(run.run_id, str(exc))
+        if run is not None:
+            agent_run_service.fail(run.run_id, str(exc))
         raise
     agent_run_service.complete(run.run_id)
     return revised
