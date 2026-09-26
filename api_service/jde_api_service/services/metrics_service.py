@@ -145,7 +145,17 @@ class MetricsService:
         with_story = sum(1 for c in all_changes if c.user_story)
         first_time_pass = sum(1 for c in all_changes if c.user_story and c.user_story.revision_count == 0)
 
+        from .lifecycle import HEALTH_LABELS, PHASE_LABELS, PHASES
+
+        lifecycles = [c.lifecycle for c in all_changes if c.lifecycle is not None]
+        phase_counts = [PipelineStage(stage=PHASE_LABELS[p], count=sum(1 for lc in lifecycles if lc.phase == p))
+                        for p in PHASES]
+        health_counts = [PipelineStage(stage=label, count=sum(1 for lc in lifecycles if lc.health == h))
+                         for h, label in HEALTH_LABELS.items()]
+
         return FactoryMetrics(
+            phases=phase_counts,
+            health=health_counts,
             totals=[
                 Total(key="incoming_requests", label="Incoming Requests", value=incoming_requests),
                 Total(key="awaiting_domain_owner", label="User Stories awaiting Domain Owner approval", value=awaiting_domain_owner),

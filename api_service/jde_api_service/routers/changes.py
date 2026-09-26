@@ -6,6 +6,7 @@ from ..config import settings
 from ..dependencies import AuthContext, require_customer_access, require_write_access
 from ..models.change import Change
 from ..models.metrics import ActivityEntry, FactoryMetrics
+from ..models.work import MyWork
 from ..services.orchestration_driver import run_enhancement
 from ..services.registry import (
     get_change_request_service,
@@ -92,3 +93,31 @@ def get_metrics(ctx: AuthContext = Depends(require_customer_access)) -> FactoryM
 @router.get("/activity", response_model=list[ActivityEntry])
 def get_activity(ctx: AuthContext = Depends(require_customer_access)) -> list[ActivityEntry]:
     return get_metrics_service().activity_for_customer(ctx.customer_id)
+
+
+@router.get("/work", response_model=MyWork)
+def my_work(ctx: AuthContext = Depends(require_customer_access)) -> MyWork:
+    """What needs the signed-in person's attention, derived only from the
+    canonical lifecycle (services/lifecycle.py) and their roles here."""
+    from datetime import datetime, timedelta, timezone
+
+    from ..services.lifecycle import is_mine
+
+    roles = set(ctx.roles)
+    all_changes = [c for c in get_change_service().list_for_customer(ctx.customer_id) if c.lifecycle]
+    open_ = [c for c in all_changes if c.lifecycle.phase != "done"]
+    mine = [c for c in open_ if is_mine(c.lifecycle, roles)]
+    mine_ids = {c.id for c in mine}
+    # Decisions first, then tasks; oldest-waiting first within each.
+    mine.sort(key=lambda c: (c.lifecycle.next_action.kind != "decision", c.updated_at))
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=31)).isoformat()
+    return MyWork(
+        needs_you=mine,
+        waiting_on_others=[c for c in open_ if c.id not in mine_ids
+                           and c.lifecycle.next_action.owner not in ("jade", "none")],
+        jade_working=[c for c in open_ if c.lifecycle.next_action.owner == "jade"],
+        in_progress_count=len(open_),
+        completed_this_month=[c for c in all_changes if c.lifecycle.phase == "done"
+                              and c.lifecycle.outcome != "rejected" and c.updated_at >= cutoff],
+        roles=sorted(roles),
+    )

@@ -452,6 +452,18 @@ def _change_from_request(cr: ChangeRequest, run: Optional[EnhancementRun]) -> Ch
     )
 
 
+def _with_lifecycle(change: Change) -> Change:
+    """Attach the canonical lifecycle (services/lifecycle.py). A failure to
+    derive it never hides the story itself."""
+    from . import lifecycle
+
+    try:
+        change.lifecycle = lifecycle.derive(change)
+    except Exception:  # noqa: BLE001 -- presentational; the records stay authoritative
+        change.lifecycle = None
+    return change
+
+
 class ChangeService:
     def __init__(
         self,
@@ -493,7 +505,7 @@ class ChangeService:
             for cr in self._change_requests.list_for_customer(customer_id)
             if cr.id not in promoted_ids
         ]
-        return sorted(stories + requests, key=lambda c: c.updated_at, reverse=True)
+        return [_with_lifecycle(c) for c in sorted(stories + requests, key=lambda c: c.updated_at, reverse=True)]
 
     def get_for_customer(self, change_id: str, customer_id: str) -> Optional[Change]:
         # A promoted backlog record takes precedence over a same-id
@@ -503,16 +515,16 @@ class ChangeService:
                 if self._links.customer_for(change_id) != customer_id:
                     return None
                 origin = self._change_requests.get(change_id)
-                return _change_from_story(
+                return _with_lifecycle(_change_from_story(
                     record, customer_id, self._run_for(change_id), origin,
                     self._domain_reviews, self._architecture_reviews,
-                )
+                ))
 
         if change_id.startswith("CR-"):
             cr = self._change_requests.get(change_id)
             if cr is None or cr.customer_id != customer_id:
                 return None
-            return _change_from_request(cr, self._run_for(change_id))
+            return _with_lifecycle(_change_from_request(cr, self._run_for(change_id)))
         return None
 
     def backlog_for_customer(self, customer_id: str) -> list[Change]:

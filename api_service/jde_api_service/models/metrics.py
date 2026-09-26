@@ -57,6 +57,11 @@ class FactoryMetrics(ApiModel):
     business_impact_breakdown: list[BusinessImpactCount]
     business_domain_breakdown: list[BusinessDomainCount] = []
     performance: Performance
+    # From the ONE canonical lifecycle (services/lifecycle.py): how many
+    # stories are in each phase, and in each health state. Reports read
+    # these; they can never disagree with a story's own page.
+    phases: list[PipelineStage] = []
+    health: list[PipelineStage] = []
 
 
 class ActivityEntry(ApiModel):

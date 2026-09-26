@@ -11,6 +11,7 @@ from __future__ import annotations
 from typing import Literal, Optional
 
 from .base import ApiModel
+from .lifecycle import Lifecycle
 
 ChangeSource = Literal["Business", "Support / Topdesk", "Optimisation", "DevOps", "Jira"]
 
@@ -307,3 +308,6 @@ class Change(ApiModel):
     human_validation: Optional[dict] = None
     evidence: list[EvidenceRecord] = []
     closure: Optional[ClosureRecord] = None
+    # The one canonical business lifecycle (services/lifecycle.py): phase,
+    # health and next action. Every screen shows this, never its own reading.
+    lifecycle: Optional["Lifecycle"] = None
