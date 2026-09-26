@@ -290,12 +290,12 @@ def resolve_for_run(company_id: Optional[str]) -> ResolvedConnection:
     with connection() as conn:
         row = _row(conn, company_id)
     if row is None:
-        raise AiNotConfigured("this customer has no AI connection. An Admin sets it up under Admin > AI Connections")
+        raise AiNotConfigured("this customer has no AI connection. An Admin sets it up under Administration › Agents & AI › AI connection")
     if not row["enabled"]:
-        raise AiNotConfigured("this customer's AI connection is switched off (Admin > AI Connections)")
+        raise AiNotConfigured("this customer's AI connection is switched off (Administration › Agents & AI › AI connection)")
     if not row["credential_secret"]:
         state = "revoked" if row["credential_revoked_at"] else "not set"
-        raise AiNotConfigured(f"this customer's Anthropic API key is {state}; an Admin enters it under Admin > AI Connections")
+        raise AiNotConfigured(f"this customer's Anthropic API key is {state}; an Admin enters it under Administration › Agents & AI › AI connection")
     try:
         key = credential_crypto.decrypt(row["credential_secret"])
     except credential_crypto.CredentialUnreadable:
@@ -304,7 +304,7 @@ def resolve_for_run(company_id: Optional[str]) -> ResolvedConnection:
     limits = json.loads(row["limits"])
     if limits.get("monthly_usd") is not None and month_spend(company_id) >= float(limits["monthly_usd"]):
         raise AiNotConfigured(f"this customer's monthly AI budget (USD {limits['monthly_usd']}) is used up; "
-                              "an Admin can raise it under Admin > AI Connections")
+                              "an Admin can raise it under Administration › Agents & AI › AI connection")
     overrides = json.loads(row["activity_models"] or "{}")
     for m in [row["model"], *overrides.values()]:
         if m not in RUNTIMES[DEFAULT_RUNTIME]["models"]:

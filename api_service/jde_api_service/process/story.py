@@ -87,7 +87,7 @@ def _run_row(r) -> dict:
 def start_analysis(company_id: str, story_id: str, *, initiated_by: str, scripted: bool = False) -> dict:
     sel = framework.selected_active(company_id)
     if sel is None:
-        raise MappingRefused("no process framework is selected and active for this company (Admin > Process Framework)")
+        raise MappingRefused("no process framework is selected and active for this company (Administration › Business Model › Process framework)")
     run_id = f"PA-{uuid.uuid4().hex[:10]}"
     with connection(immediate=True) as conn:
         if conn.execute("SELECT 1 FROM process_analysis_runs WHERE company_id = ? AND story_id = ? AND status = 'running'",

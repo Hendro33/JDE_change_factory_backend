@@ -498,7 +498,7 @@ def test_disconnect_removes_the_credential(client):
     assert r.json() == {
         "mockMode": False, "credentialsConfigured": False, "configConfigured": False,
         "state": "unavailable",
-        "unavailableReason": "No Jira credential is saved for this company. An Admin must enter it under Admin > Integrations > Jira.",
+        "unavailableReason": "No Jira credential is saved for this company. An administrator enters it under Administration › Systems & Connections › Jira.",
         "credentialStorage": "none", "credentialEncryptionAvailable": True,
     }
 

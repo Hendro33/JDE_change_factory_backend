@@ -127,7 +127,7 @@ def jira_mode(customer_id: str) -> tuple[str, str]:
     credentials = get_jira_credentials_service()
     storage = credentials.storage_status(customer_id)
     if storage == "none":
-        return "unavailable", "No Jira credential is saved for this company. An Admin must enter it under Admin > Integrations > Jira."
+        return "unavailable", "No Jira credential is saved for this company. An administrator enters it under Administration › Systems & Connections › Jira."
     if storage == "unreadable":
         return "unavailable", (
             "The saved Jira token cannot be decrypted with this server's key. Restore the matching key, "

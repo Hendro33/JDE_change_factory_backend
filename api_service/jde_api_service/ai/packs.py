@@ -459,12 +459,12 @@ def snapshot(company_id: str, role: str) -> PackSnapshot:
                          (company_id, role)).fetchone()
         if a is None:
             raise AiNotConfigured(f"no Start-up Pack is assigned to the {ROLES.get(role, {}).get('label', role)} for this "
-                                  "customer (Admin > Agent Configuration)")
+                                  "customer (Administration › Agents & AI › Instructions & knowledge)")
         if a["company_id"] not in (None, company_id):
             raise AiNotConfigured("the assigned pack belongs to another customer")
         if a["disabled_at"]:
             raise AiNotConfigured(f"the Start-up Pack assigned to the {ROLES.get(role, {}).get('label', role)} is disabled "
-                                  "(Admin > Agent Configuration)")
+                                  "(Administration › Agents & AI › Instructions & knowledge)")
         r = conn.execute("SELECT status, content, sha256 FROM agent_pack_revisions WHERE pack_id = ? AND revision = ?",
                          (a["pack_id"], a["pack_revision"])).fetchone()
     if r is None or r["status"] != "published":

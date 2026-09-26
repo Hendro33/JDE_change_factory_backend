@@ -137,7 +137,7 @@ def load_company_scope(company_id: str) -> dict:
     if scope is None:
         raise ScopeViolation(
             f"company {company_id} has no saved engagement scope. An Admin must "
-            "save one under Admin > ERP / JDE Landscape before any write can run."
+            "save one under Administration › Governance before any write can run."
         )
     if scope.get("customer_id") not in (None, company_id):
         raise ScopeViolation(f"the scope record for {company_id} names a different company -- refusing.")
@@ -301,7 +301,7 @@ def require_approval_policy(scope: dict) -> dict:
         raise ScopeViolation(
             f"company {company} has no approval policy, so nobody is authorised to "
             "approve an exact change and nothing can execute. An Admin must set one "
-            "under Admin > ERP / JDE Landscape."
+            "under Administration › Governance."
         )
     unknown = set(policy) - _POLICY_FIELDS
     if unknown:

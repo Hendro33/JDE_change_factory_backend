@@ -49,7 +49,7 @@ def require_enabled(company_id: Optional[str], *agent_names: str) -> None:
     if off:
         names = ", ".join(AGENT_LABELS.get(a, a) for a in off)
         raise AgentDisabled(f"{names} {'is' if len(off) == 1 else 'are'} switched off for this customer "
-                            "(Admin > Agents); nothing was started")
+                            "(Administration › Agents & AI); nothing was started")
     from ..ai import packs, runtime
     from ..ai.connection import AiNotConfigured
 

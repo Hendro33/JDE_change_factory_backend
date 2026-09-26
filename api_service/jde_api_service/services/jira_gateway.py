@@ -145,7 +145,7 @@ class JiraHttpGateway:
         if not self._email or not self._api_token:
             raise JiraGatewayError(
                 "This customer has no Jira credentials configured -- enter them under "
-                "Admin > Integrations > Jira first."
+                "Administration › Systems & Connections › Jira first."
             )
         return (self._email, self._api_token)
 

@@ -63,7 +63,7 @@ class JiraSyncService:
         if config is None or not config.is_configured():
             raise JiraNotConfigured(
                 f"Jira is not fully configured for customer {customer_id}. "
-                "Set it up under Admin > Integrations > Jira first."
+                "Set it up under Administration › Systems & Connections › Jira first."
             )
 
         issues = self._gateway.search_issues_in_status(

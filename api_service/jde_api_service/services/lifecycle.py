@@ -183,7 +183,7 @@ def _delivery_steps(route: Optional[str], tech: dict, change, final: Optional[di
         ver = rec.get("verification") or {}
         verified = bool(ver.get("passed")) and bool(ver.get("runtime_is_approved_artifact"))
         results = ver.get("results") or []
-        add("build", "Build", built and cnc, approved and not (built and cnc),
+        add("build", "Build", built and cnc, bool(tech.get("package")) and not (built and cnc),
             "Built and activated in DEV" if built and cnc else "Built; awaiting activation in DEV" if built else
             "Implementation approved" if approved else "",
             failed=st.get("build") == "failed" or st.get("apply") in ("unknown", "diverged"))
