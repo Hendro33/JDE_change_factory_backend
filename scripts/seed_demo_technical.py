@@ -54,6 +54,11 @@ STORY = "S-DEMO-TECH-1"
 if backlog._load(STORY) is not None:  # noqa: SLF001 -- idempotent: never seeds over existing records
     print(json.dumps({"story": STORY, "seeded": "already"}))
     sys.exit(0)
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _demo_ai import ensure_demo_ai_connection  # noqa: E402
+
+ensure_demo_ai_connection(company)
 SOURCE = """// SYNTHETIC SIMULATION SOURCE (jade_sim_er) -- not a JD Edwards export.
 OBJECT P554210 FORM W554210A SYSTEM 55
 INPUT BC OrderTotal NUMBER

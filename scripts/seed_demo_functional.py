@@ -50,6 +50,11 @@ COMPANY, STORY, DOMAIN = "bwm", "S-BW-RETURNTYPE", "DOM-BWM-CUST-SERVICE"
 if backlog._load(STORY) is not None:  # noqa: SLF001 -- idempotence check only
     print(json.dumps({"story": STORY, "seeded": "already"}))
     sys.exit(0)
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _demo_ai import ensure_demo_ai_connection  # noqa: E402
+
+ensure_demo_ai_connection(COMPANY)
 sel = framework.selected_active(COMPANY)
 if sel is None:
     sys.exit("run seed_demo_process.py first (no active process framework)")
