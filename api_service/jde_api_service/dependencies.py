@@ -163,7 +163,7 @@ def require_domain_owner_access(ctx: AuthContext, business_domain_id: str | None
         raise HTTPException(
             status_code=403,
             detail="this story has no business domain, so no Domain Owner can act on it yet -- "
-            "a Product Manager or Admin must assign one first",
+            "a Application Manager or Admin must assign one first",
         )
     assigned = membership_service.domain_ids_for_membership(ctx.identity.id, ctx.customer_id)
     if business_domain_id not in assigned:

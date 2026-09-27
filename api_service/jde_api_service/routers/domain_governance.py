@@ -88,7 +88,7 @@ def _transition(change_id: str, from_stages: set[str], authorise):
 
 def _require_domain_owner_or_product_manager(ctx: AuthContext) -> None:
     """"Ask Jade about this requirement" is asked by either a Domain
-    Owner (mid review) or a Product Manager (on an already-approved
+    Owner (mid review) or a Application Manager (on an already-approved
     requirement) -- see ask_about_requirement_endpoint's own docstring.
     Deliberately not domain-scoped even for a Domain Owner caller: this
     only ever produces a conversation turn and, at most, a proposed
@@ -97,7 +97,7 @@ def _require_domain_owner_or_product_manager(ctx: AuthContext) -> None:
     "which domain" -- unlike start/edit/approve/reject below, which
     actually change governance state and stay domain-scoped."""
     if not (ctx.roles & {"domain_owner", "product_manager"}):
-        raise HTTPException(status_code=403, detail="requires the Domain Owner or Product Manager role")
+        raise HTTPException(status_code=403, detail="requires the Domain Owner or Application Manager role")
 
 
 @router.get("/business-domains", response_model=list[BusinessDomain])
@@ -135,7 +135,7 @@ def assign_domain(
     change_id: str, payload: AssignDomainInput, ctx: AuthContext = Depends(require_role("product_manager", "admin"))
 ) -> DomainReview:
     """Choosing the domain chooses who may approve the requirement, so it
-    is a triage decision (Product Manager or Admin), and it is closed
+    is a triage decision (Application Manager or Admin), and it is closed
     once a Domain Owner has started: moving a story into another domain
     mid-review would hand the decision to someone else."""
     change = _change_with_story(change_id, ctx.customer_id)

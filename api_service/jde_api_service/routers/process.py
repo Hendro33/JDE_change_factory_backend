@@ -4,7 +4,7 @@ as-built record.
 
 Authority comes from the session. Administrators import and activate
 frameworks. A story's processes, maps and as-built finalisation are
-decided by a Product Manager, or by the Domain Owner assigned to the
+decided by a Application Manager, or by the Domain Owner assigned to the
 story's business domain. Another company's story or framework is simply
 not found.
 """
@@ -57,7 +57,7 @@ def _domain(story_id: str) -> Optional[str]:
 
 
 def _require_reviewer(ctx: AuthContext, story_id: str) -> None:
-    """A Product Manager, or the Domain Owner assigned to this story's domain
+    """A Application Manager, or the Domain Owner assigned to this story's domain
     -- re-read from the database, not from the request's cached roles."""
     roles = membership_service.roles_for(ctx.identity.id, ctx.customer_id)
     if "product_manager" in roles:
@@ -65,7 +65,7 @@ def _require_reviewer(ctx: AuthContext, story_id: str) -> None:
     if "domain_owner" in roles:
         require_domain_owner_access(ctx, _domain(story_id))
         return
-    raise HTTPException(status_code=403, detail="requires a Product Manager, or the Domain Owner assigned to this "
+    raise HTTPException(status_code=403, detail="requires a Application Manager, or the Domain Owner assigned to this "
                                                 "story's business domain")
 
 

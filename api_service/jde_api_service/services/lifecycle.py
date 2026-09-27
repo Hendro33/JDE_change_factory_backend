@@ -153,7 +153,7 @@ def _story_review(change) -> Lifecycle:
         return _mk("story_review", "waiting_decision", NextAction(
             kind="decision", summary="Review the user story and approve it, or ask for changes.",
             owner="domain_owner", action="review_story", tab="story",
-            effect="An approved story goes to the Product Owner to authorise delivery."))
+            effect="An approved story goes to the Application Manager to authorise delivery."))
     if stage in ("domain_owner_requested_revision", "reviewer_agent_refining"):
         return _mk("story_review", "in_progress", _jade("JADE is revising the story with the requested changes.", "story"))
     if stage == "domain_owner_rejected":

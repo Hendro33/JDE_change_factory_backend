@@ -26,7 +26,7 @@ HEALTH_LABELS: dict[str, str] = {
 # "jade" means Jade itself is doing the work -- nobody needs to act.
 Owner = Literal["jade", "domain_owner", "product_manager", "cnc_operator", "admin", "none"]
 OWNER_LABELS: dict[str, str] = {
-    "jade": "JADE", "domain_owner": "Domain Owner", "product_manager": "Product Owner",
+    "jade": "JADE", "domain_owner": "Domain Owner", "product_manager": "Application Manager",
     "cnc_operator": "CNC", "admin": "Administrator", "none": "",
 }
 

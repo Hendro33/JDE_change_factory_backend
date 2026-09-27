@@ -161,3 +161,9 @@ def test_proposed_exact_change_without_analysis_stage_is_a_solution_decision():
     change.architect_decision = None
     lc = lifecycle.derive(change)
     assert (lc.phase, lc.next_action.action) == ("solution_review", "approve_exact_change")
+
+
+def test_application_manager_is_named_as_such():
+    """The operating model's role name: the product_manager role is the ERP Application Manager."""
+    lc = lifecycle.derive(_change(state="BACKLOG_READY", business_domain_id="D1", domain_review_stage="ready_for_application_manager"))
+    assert lc.next_action.owner_label == "Application Manager"
