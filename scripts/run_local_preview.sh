@@ -2,7 +2,7 @@
 # Jade on this machine: the real backend and frontend, always the latest
 # code of the checked-out branches. BicycleWorks (and the other seeded
 # customers) are DEMO customers with test data; a customer you create in
-# Admin > Customer Setup is real and only ever uses live connections.
+# Administration > Organisation is real and only ever uses live connections.
 #
 #   scripts/run_local_preview.sh           # start; the first run installs and seeds
 #   scripts/run_local_preview.sh --reset   # ONLY when asked: throws the preview data away (asks to confirm)
@@ -66,11 +66,15 @@ if [ ! -f "$CRED" ]; then
   (umask 077; "$VENV/bin/python" - > "$CRED" <<'PY'
 import secrets
 from cryptography.fernet import Fernet
-for k in ("ADMIN_PW", "CNC_PW", "DO_PW"):
+for k in ("ADMIN_PW", "CNC_PW", "DO_PW", "AM_PW"):
     print(f"{k}={secrets.token_urlsafe(12)}")
 print(f"CREDENTIAL_KEY={Fernet.generate_key().decode()}")
 PY
   )
+fi
+# Credential files from earlier versions gain the Application Manager's password once.
+if ! grep -q '^AM_PW=' "$CRED"; then
+  (umask 077; echo "AM_PW=$("$VENV/bin/python" -c 'import secrets; print(secrets.token_urlsafe(12))')" >> "$CRED")
 fi
 # shellcheck disable=SC1090
 source "$CRED"
@@ -79,7 +83,7 @@ export JDE_API_DATA_DIR="$DATA/api" JDE_BACKLOG_DIR="$DATA/backlog" JDE_CHANGE_D
 export JDE_CREDENTIAL_KEY="$CREDENTIAL_KEY" JDE_API_ALLOWED_ORIGINS="http://localhost:$UI_PORT" JDE_COOKIE_SECURE=false
 # Used only if the admin account does not exist yet; an existing account is never reset.
 export JDE_BOOTSTRAP_ADMIN_EMAIL=admin@e2e.local JDE_BOOTSTRAP_ADMIN_NAME="E2E Admin" JDE_BOOTSTRAP_ADMIN_PASSWORD="$ADMIN_PW"
-export JADE_E2E_CNC_PASSWORD="$CNC_PW" JADE_E2E_DO_PASSWORD="$DO_PW"
+export JADE_E2E_CNC_PASSWORD="$CNC_PW" JADE_E2E_DO_PASSWORD="$DO_PW" JADE_E2E_AM_PASSWORD="$AM_PW"
 # JDE writes: live writes are not enabled. Simulated writes run only for demo customers.
 export JDE_MCP_MOCK_MODE=true
 # JDE connection settings (address, certificate, live mode) are made in the app.
@@ -111,7 +115,7 @@ curl -sf "http://localhost:$UI_PORT" >/dev/null || { echo "Frontend did not star
 
 # -- Demonstration stories: each added once, only if absent (never over existing records) --
 if [ -f "$DATA/seeded" ]; then touch "$DATA/seeded-technical" "$DATA/seeded-process"; fi   # earlier preview versions
-for seed in technical process functional; do
+for seed in technical process functional roles; do
   if [ ! -f "$DATA/seeded-$seed" ]; then
     echo "Adding the $seed demonstration story to the DEMO customer (scripted stand-ins, simulated JDE)..."
     (cd "$BACKEND" && "$VENV/bin/python" "scripts/seed_demo_$seed.py" bwm) >> "$DATA/seed.log" 2>&1 \
@@ -146,16 +150,19 @@ cat <<INFO
   Jade -- running on this computer
 
   Open:      http://localhost:$UI_PORT   (in a browser on this computer)
-  Demo customer: BicycleWorks Manufacturing BV (test data). Create your real customer in Admin > Customer Setup.
+  Demo customer: BicycleWorks Manufacturing BV (test data). Create your real customer in Administration > Organisation.
 
 $SIGNIN
-  Demo accounts for the demo customer only (passwords in $CRED): do@e2e.local, cnc@e2e.local
+  Demo accounts for the demo customer only (passwords in $CRED):
+    do@e2e.local  Domain Owner         -- Business Demand, User Story Review (DO_PW)
+    am@e2e.local  Application Manager  -- Application Management (AM_PW)
+    cnc@e2e.local CNC operator         -- activations in Technical Work (CNC_PW)
 
-  JDE connection: Admin > Integrations (JDE panel) -- address, certificate and credential are all set there.
+  JDE connection: Administration > Systems & Connections > JD Edwards -- address, certificate and credential are all set there.
     ${JDE_DISCOVERY_LIVE_ENABLED:+operator override: JDE_DISCOVERY_LIVE_ENABLED=$JDE_DISCOVERY_LIVE_ENABLED}
   JDE writes: not enabled for real customers; simulated only inside demo customers.
 
-  Start at Delivery > Process & Maps > S-BW-RETURNS, then follow the journey bar.
+  Start at Application Management > Process & Maps > S-BW-RETURNS, then follow the journey bar.
   Stop with Ctrl-C; start again to continue with the same data.
 
 INFO
