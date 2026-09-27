@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Literal
+
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 
 from ..config import settings
@@ -86,8 +88,9 @@ def get_backlog(ctx: AuthContext = Depends(require_customer_access)) -> list[Cha
 
 
 @router.get("/metrics", response_model=FactoryMetrics)
-def get_metrics(ctx: AuthContext = Depends(require_customer_access)) -> FactoryMetrics:
-    return get_metrics_service().metrics_for_customer(ctx.customer_id)
+def get_metrics(ctx: AuthContext = Depends(require_customer_access),
+                period: Literal["week", "month", "year", "lifetime"] = "lifetime") -> FactoryMetrics:
+    return get_metrics_service().metrics_for_customer(ctx.customer_id, period=period)
 
 
 @router.get("/activity", response_model=list[ActivityEntry])

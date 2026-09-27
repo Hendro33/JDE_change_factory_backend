@@ -7,7 +7,7 @@ hard-coded, so this keeps behaving correctly as real data grows.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from ..models.change import Change
@@ -90,8 +90,22 @@ class MetricsService:
         out.sort(key=lambda x: x.count, reverse=True)
         return out
 
-    def metrics_for_customer(self, customer_id: str) -> FactoryMetrics:
+    def metrics_for_customer(self, customer_id: str, period: str = "lifetime", *, now: Optional[datetime] = None) -> FactoryMetrics:
+        if period not in {"week", "month", "year", "lifetime"}:
+            raise ValueError("Unknown Insights period")
         all_changes = self._changes.list_for_customer(customer_id)
+        if period != "lifetime":
+            end = now or datetime.now(timezone.utc)
+            start = end - timedelta(days={"week": 7, "month": 30, "year": 365}[period])
+            def included(change: Change) -> bool:
+                try:
+                    at = datetime.fromisoformat(change.created_at.replace("Z", "+00:00"))
+                    if at.tzinfo is None:
+                        at = at.replace(tzinfo=timezone.utc)
+                    return start <= at <= end
+                except (ValueError, TypeError):
+                    return False
+            all_changes = [c for c in all_changes if included(c)]
 
         def in_state(*states: str) -> int:
             return sum(1 for c in all_changes if c.state in states)
@@ -116,7 +130,7 @@ class MetricsService:
         awaiting_exact_change_approval = sum(
             1 for c in all_changes if c.exact_change is not None and c.change_approval is None
         )
-        in_delivery = len(self._delivery_queue.list_for_customer(customer_id)) if self._delivery_queue else 0
+        in_delivery = sum(e.change_id in {c.id for c in all_changes} for e in self._delivery_queue.list_for_customer(customer_id)) if self._delivery_queue else 0
         in_build = sum(1 for c in all_changes if c.state in _IN_BUILD)
         in_testing = in_state("TESTING")
         completed = sum(1 for c in all_changes if c.state in _COMPLETED)
