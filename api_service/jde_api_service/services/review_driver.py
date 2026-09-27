@@ -36,6 +36,8 @@ Respond with ONLY a single fenced json code block (nothing before or after it) w
   "user_story": {
     "statement": "<the As a/I want/so that statement>",
     "business_context": "<specific business context>",
+    "business_impact_rating": "Low" | "Medium" | "High" | null,
+    "business_benefit_rating": "Small" | "Medium" | "High" | null,
     "acceptance_criteria": [{"id": "AC1", "text": "...", "verified_by": "T1"}],
     "test_script": [{"id": "T1", "action": "...", "expected": "..."}],
     "business_rules": ["<explicit constraints/rules actually stated, or empty>"],
@@ -45,7 +47,7 @@ Respond with ONLY a single fenced json code block (nothing before or after it) w
     "revision_count": <integer>
   }
 }
-Leave any business-impact-adjacent field as an empty string / empty list rather than inventing a value, per improve-agent's own instructions. Same for business_rules and assumptions.
+Ratings are proposals for human confirmation only. Business impact: Low = local and limited, Medium = several related activities, High = cross-domain or business-critical. Business benefit: Small = modest local improvement, Medium = meaningful team/process improvement, High = substantial cross-domain or strategic value. Use null when evidence is insufficient. Never assume low impact or high benefit from missing evidence. Keep unsupported narrative fields empty and do not invent business rules or assumptions.
 """.strip()
 
 

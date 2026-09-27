@@ -27,6 +27,7 @@ from __future__ import annotations
 from typing import Literal, Optional
 
 from .base import ApiModel
+from .ratings import RatingConfirmation
 from .change import ApprovalRecord, UserStory
 from .decision_feedback import FeedbackReasonCode
 
@@ -116,6 +117,7 @@ class ConversationTurn(ApiModel):
 
 
 class DomainReview(ApiModel):
+    rating_confirmations: list[RatingConfirmation] = []
     change_id: str
     business_domain_id: Optional[str] = None
     # Section 2's "expose uncertainty rather than inventing a

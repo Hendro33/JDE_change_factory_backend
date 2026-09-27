@@ -61,6 +61,8 @@ After the pipeline reaches a final outcome, respond with ONLY a single fenced js
   "user_story": {
     "statement": "<the As a/I want/so that statement>",
     "business_context": "<specific business context>",
+    "business_impact_rating": "Low" | "Medium" | "High" | null,
+    "business_benefit_rating": "Small" | "Medium" | "High" | null,
     "acceptance_criteria": [{"id": "AC1", "text": "...", "verified_by": "T1"}],
     "test_script": [{"id": "T1", "action": "...", "expected": "..."}],
     "business_rules": ["<explicit constraints/rules the source actually stated, or empty>"],
@@ -78,6 +80,7 @@ After the pipeline reaches a final outcome, respond with ONLY a single fenced js
   "failed_criteria": ["<only when check_outcome is not proposed_to_backlog>"]
 }
 Documents: if the agents have the jade-knowledge tools, they call list_documents and read what is readable. document_citations lists only sections actually returned by read_document; it is empty when no document was read. Never describe the content of a document that was listed as not readable or excluded -- say it could not be read.
+Ratings are proposals for Domain Owner confirmation, never approval. Business impact means the breadth/disruption of business processes affected: Low = local and limited, Medium = several related activities, High = cross-domain or business-critical. Business benefit means expected value: Small = modest local improvement, Medium = meaningful team/process improvement, High = substantial cross-domain or strategic value. Use null when evidence is insufficient. Do not infer benefit solely from urgency or technical complexity.
 Leave any business_impact field as an empty string if the source did not state it -- never invent a value, per each agent's own instructions. Same rule for business_rules and assumptions: an empty list means none were stated/needed, never a guess dressed up as one.
 """.strip()
 
@@ -120,6 +123,8 @@ def _user_story_from_summary(raw: dict) -> UserStory:
     return UserStory(
         statement=us.get("statement") or "",
         business_context=us.get("business_context") or "",
+        business_impact_rating=us.get("business_impact_rating") if us.get("business_impact_rating") in {"Low", "Medium", "High"} else None,
+        business_benefit_rating=us.get("business_benefit_rating") if us.get("business_benefit_rating") in {"Small", "Medium", "High"} else None,
         acceptance_criteria=[
             AcceptanceCriterion(id=a.get("id", ""), text=a.get("text", ""), verified_by=a.get("verified_by"))
             for a in (us.get("acceptance_criteria") or [])

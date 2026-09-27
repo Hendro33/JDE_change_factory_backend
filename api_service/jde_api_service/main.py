@@ -220,3 +220,7 @@ _BUILD_COMMIT = _build_commit()
 @app.get("/health", tags=["health"])
 def health() -> dict:
     return {"status": "ok", "commit": _BUILD_COMMIT}
+
+# Structured planning ratings; independent of all delivery gates.
+from .routers.story_ratings import router as story_ratings_router
+app.include_router(story_ratings_router)

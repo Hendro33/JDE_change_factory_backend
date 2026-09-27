@@ -43,6 +43,8 @@ Respond with ONLY a single fenced json code block (nothing before or after it) w
   "kind": "explanation" | "proposed_amendment",
   "proposed_user_story": null | {
     "statement": "...", "business_context": "...",
+    "business_impact_rating": "Low" | "Medium" | "High" | null,
+    "business_benefit_rating": "Small" | "Medium" | "High" | null,
     "acceptance_criteria": [{"id": "AC1", "text": "...", "verified_by": "T1"}],
     "test_script": [{"id": "T1", "action": "...", "expected": "..."}],
     "business_rules": ["..."], "assumptions": ["..."], "open_questions": ["..."],
@@ -50,6 +52,7 @@ Respond with ONLY a single fenced json code block (nothing before or after it) w
     "revision_count": <integer, the current one unless you are proposing a real revision>
   }
 }
+Ratings are proposals for human confirmation only. Business impact: Low = local and limited, Medium = several related activities, High = cross-domain or business-critical. Business benefit: Small = modest local improvement, Medium = meaningful team/process improvement, High = substantial cross-domain or strategic value. Use null when evidence is insufficient. Never assume low impact or high benefit from missing evidence.
 kind is "explanation" whenever you are only answering, clarifying or explaining -- proposed_user_story MUST be null in that case, and the requirement is not touched.
 kind is "proposed_amendment" ONLY when what was said is genuinely new information, a correction, or an additional business rule/constraint that should change the requirement -- in that case proposed_user_story MUST be the FULL requirement as you would revise it (every field, not a partial patch), keeping everything still correct and changing only what the new information actually justifies. Never invent content beyond what was actually said, exactly as your own instructions already require.
 """.strip()
@@ -165,6 +168,7 @@ Respond with ONLY a single fenced json code block (nothing before or after it) w
   "answer": "<a direct, conversational answer to the question -- plain text>",
   "kind": "explanation" | "recommend_reanalysis"
 }
+Ratings are proposals for human confirmation only. Business impact: Low = local and limited, Medium = several related activities, High = cross-domain or business-critical. Business benefit: Small = modest local improvement, Medium = meaningful team/process improvement, High = substantial cross-domain or strategic value. Use null when evidence is insufficient. Never assume low impact or high benefit from missing evidence.
 kind is "explanation" whenever you are only answering or clarifying why the current recommended route/implementation spec is what it is -- do not call propose_change or resolve_without_change, you have no tools for that here; just explain the existing decision.
 kind is "recommend_reanalysis" ONLY when what was said is genuinely new information that could change which route is right, or a correction to something the existing analysis got wrong -- you are NOT re-running the analysis yourself here, only flagging that a fresh Architecture Review run looks warranted. Say in the answer, in plain language, what specifically should be re-examined.
 """.strip()

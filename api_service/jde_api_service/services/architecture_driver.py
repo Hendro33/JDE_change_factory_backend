@@ -69,6 +69,7 @@ After you have called either resolve_without_change or propose_change (exactly o
   "architect_decision": {
     "recommended_route": "Functional Agent" | "Technical Agent" | "Mixed" | "Human Implementation" | "Resolve without Change" | "Clarification Required",
     "confidence": <0-1>,
+    "technical_impact_rating": "Low" | "Medium" | "High" | null,
     "existing_functionality_found": "<what standard functionality/configuration you found, or empty string>",
     "alternatives_considered": [{"approach": "...", "whyNot": "..."}],
     "objects_affected": ["<application/object ids actually confirmed via discovery>"],
@@ -82,6 +83,7 @@ After you have called either resolve_without_change or propose_change (exactly o
     "validation_approach": "<how the change will be tested/validated>"
   }
 }
+Technical impact is a proposal for Application Manager confirmation: Low = isolated configuration with limited dependencies, Medium = several objects or integrations affected, High = broad dependencies, data/regression exposure or critical interfaces. Use null if evidence is insufficient; never infer a low impact merely from no dependencies being discovered. This rating authorises nothing.
 Add one more top-level key, "evidence", in the same json block:
   "evidence": {
     "citations": [{"claim": "<a design decision or fact it rests on>", "evidence_ids": ["OBS-... or ART-...@rN or DOC-...@rN or PROFILE@rN, or a process citation_id from get_process_context (PROC:..., MAPPING@rN, MAP:to_be@vN[:step])"], "basis": "observed" | "customer_attestation" | "process_reference" | "assumption"}],
@@ -156,6 +158,7 @@ def _architect_decision_from_summary(raw: dict) -> ArchitectDecision:
         objects_affected=list(ad.get("objects_affected") or []),
         dependencies_and_conflicts=list(ad.get("dependencies_and_conflicts") or []),
         rollback_strategy=ad.get("rollback_strategy") or "",
+        technical_impact_rating=ad.get("technical_impact_rating") if ad.get("technical_impact_rating") in {"Low", "Medium", "High"} else None,
         decided_at=datetime.now(timezone.utc).isoformat(),
     )
 

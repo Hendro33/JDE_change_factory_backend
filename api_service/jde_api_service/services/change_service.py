@@ -461,7 +461,8 @@ def _with_lifecycle(change: Change) -> Change:
         change.lifecycle = lifecycle.derive(change)
     except Exception:  # noqa: BLE001 -- presentational; the records stay authoritative
         change.lifecycle = None
-    return change
+    from .story_ratings import attach
+    return attach(change)
 
 
 class ChangeService:
@@ -528,4 +529,5 @@ class ChangeService:
         return None
 
     def backlog_for_customer(self, customer_id: str) -> list[Change]:
-        return [c for c in self._stories_for_customer(customer_id) if c.state == "BACKLOG_READY"]
+        from .story_ratings import attach
+        return [attach(c) for c in self._stories_for_customer(customer_id) if c.state == "BACKLOG_READY"]

@@ -12,6 +12,7 @@ from typing import Literal, Optional
 
 from .base import ApiModel
 from .lifecycle import Lifecycle
+from .ratings import ImpactLevel, BenefitLevel, StoryRatings
 
 ChangeSource = Literal["Business", "Support / Topdesk", "Optimisation", "DevOps", "Jira"]
 
@@ -64,6 +65,9 @@ class DocumentCitation(ApiModel):
 
 
 class UserStory(ApiModel):
+    # AI proposals only; human confirmation lives in the domain review audit record.
+    business_impact_rating: Optional[ImpactLevel] = None
+    business_benefit_rating: Optional[BenefitLevel] = None
     statement: str
     business_context: str = ""
     acceptance_criteria: list[AcceptanceCriterion] = []
@@ -84,6 +88,7 @@ class UserStory(ApiModel):
 
 
 class ArchitectDecision(ApiModel):
+    technical_impact_rating: Optional[ImpactLevel] = None
     recommended_route: ImplementationRoute
     confidence: float
     existing_functionality_found: str = ""
@@ -250,6 +255,7 @@ class ClosureRecord(ApiModel):
 
 
 class Change(ApiModel):
+    ratings: Optional[StoryRatings] = None
     id: str
     customer_id: str
     title: str
