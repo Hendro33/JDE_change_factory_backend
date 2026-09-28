@@ -80,6 +80,7 @@ def current_roles(user_id: str, company_id: str) -> frozenset[str]:
             rows = conn.execute(
             "SELECT r.role FROM company_memberships m "
             "JOIN users u ON u.id = m.user_id "
+            "JOIN companies c ON c.id = m.company_id AND c.archived_at IS NULL "
             "JOIN membership_roles r ON r.membership_id = m.id "
             "WHERE m.user_id = ? AND m.company_id = ? AND m.status = 'active' AND u.is_active = 1",
             (user_id, company_id),

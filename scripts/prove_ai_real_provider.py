@@ -46,23 +46,17 @@ import _proof_ai  # noqa: E402
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--out", default=os.path.join(ROOT, "docs", "proof", "ai_real_provider"))
-parser.add_argument("--rehearse", action="store_true",
-                    help="run against JADE_AI_TEST_PROVIDER_URL (the loopback fake) to check the procedure; "
-                         "the result is labelled a rehearsal and is NOT evidence about Anthropic")
 args = parser.parse_args()
 
 KEY = _proof_ai.require_key()
 MODEL = os.environ.get(_proof_ai.MODEL_ENV, "claude-haiku-4-5")
-if bool(os.environ.get("JADE_AI_TEST_PROVIDER_URL")) != args.rehearse:
-    sys.exit("A real run must reach Anthropic (unset JADE_AI_TEST_PROVIDER_URL); a --rehearse run needs it set.")
-EXPECTED_PROVIDER = "anthropic-test-provider" if args.rehearse else "anthropic"
+EXPECTED_PROVIDER = "anthropic"
 
 DATA = tempfile.mkdtemp(prefix="jade-ai-real-")
 for name, sub in (("JDE_API_DATA_DIR", "api"), ("JDE_BACKLOG_DIR", "backlog"), ("JDE_CHANGE_DIR", "changes"),
                   ("JDE_EVIDENCE_DIR", "evidence")):
     os.environ[name] = os.path.join(DATA, sub)
 os.environ["JDE_CREDENTIAL_KEY"] = __import__("cryptography.fernet", fromlist=["Fernet"]).Fernet.generate_key().decode()
-os.environ["JDE_MCP_MOCK_MODE"] = "true"
 os.environ["JDE_COOKIE_SECURE"] = "false"
 os.environ["JDE_BOOTSTRAP_ADMIN_EMAIL"] = "real-provider-proof@jade.invalid"
 os.environ["JDE_BOOTSTRAP_ADMIN_NAME"] = "Proof Operator (synthetic)"
@@ -93,9 +87,7 @@ ai_runtime.ADAPTER.build_options = _recording_build
 
 PDF = _docs.pdf(["SYNTHETIC delivery standard, page 1: sales orders ship within two working days.",
                  "SYNTHETIC delivery standard, page 2: public holidays are not working days."])
-report: dict = {"model": MODEL, "checks": {},
-                "kind": "REHEARSAL against the loopback test provider -- not evidence about Anthropic" if args.rehearse
-                else "REAL provider run (Anthropic API)"}
+report: dict = {"model": MODEL, "checks": {}, "kind": "REAL provider run (Anthropic API)"}
 
 
 def check(name, ok):
@@ -123,19 +115,18 @@ with TestClient(app) as c:
         rev = next(p for p in packs if p["packId"] == f"tpl-{role}")["revisions"][0]["revision"]
         c.put(f"/admin/ai/assignments/{role}", json={"packId": f"tpl-{role}", "revision": rev}).raise_for_status()
 
-    if not args.rehearse:
-        # Negative control (not billable): an invalid key through the same network path must be rejected,
-        # so a later success cannot come from credentials substituted along the way.
-        try:
-            ai_connection._send_test_message("sk-ant-api03-INVALID-negative-control-" + "0" * 40, MODEL)
-            neg = "ACCEPTED"
-        except ai_connection.ConnectionTestFailed as exc:
-            neg = str(exc)
-        report["negative_control"] = neg
-        check("a deliberately invalid key is rejected on the same network path (no credential substitution)",
-              "rejected" in neg)
-        if "rejected" not in neg:
-            sys.exit("negative control failed: stopping before any billable request")
+    # Negative control (not billable): an invalid key through the same network path must be rejected,
+    # so a later success cannot come from credentials substituted along the way.
+    try:
+        ai_connection._send_test_message("sk-ant-api03-INVALID-negative-control-" + "0" * 40, MODEL)
+        neg = "ACCEPTED"
+    except ai_connection.ConnectionTestFailed as exc:
+        neg = str(exc)
+    report["negative_control"] = neg
+    check("a deliberately invalid key is rejected on the same network path (no credential substitution)",
+          "rejected" in neg)
+    if "rejected" not in neg:
+        sys.exit("negative control failed: stopping before any billable request")
     t = c.post("/admin/ai/connection/test", json={"confirmBillable": True}).json()
     report["connection_test"] = {"outcome": t["outcome"], "detail": t["detail"]}
     check("connection test answered from the configured model", t["outcome"] == "ok" and MODEL in t["detail"])

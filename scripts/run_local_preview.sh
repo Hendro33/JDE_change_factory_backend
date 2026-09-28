@@ -1,27 +1,32 @@
 #!/usr/bin/env bash
-# Jade on this machine: the real backend and frontend, always the latest
-# code of the checked-out branches. BicycleWorks (and the other seeded
-# customers) are DEMO customers with test data; a customer you create in
-# Administration > Organisation is real and only ever uses live connections.
+# Jade on this computer: the real backend and frontend, the latest code of the
+# checked-out branches, and your own data. Nothing is simulated and nothing is
+# pre-loaded: you sign in with the temporary setup account, create your own
+# administrator account, and set up your customers, users and connections
+# (AI, Jira, JD Edwards) in Administration.
 #
-#   scripts/run_local_preview.sh           # start; the first run installs and seeds
-#   scripts/run_local_preview.sh --reset   # ONLY when asked: throws the preview data away (asks to confirm)
+#   scripts/run_local_preview.sh           # start (the first run installs)
+#   scripts/run_local_preview.sh --reset   # ONLY when asked: throws this data away (asks to confirm)
 #
-# Everything the preview saves (accounts, password hashes, encrypted
-# credentials, setup, frameworks, mappings, maps, records) lives in the
-# backend's database and data files under .preview-data/ (git-ignored), and
-# is reused on every start. Throwaway demo passwords are generated once into
-# .preview-data/credentials.env (readable only by you) and never printed.
+# Everything Jade saves (accounts, password hashes, encrypted credentials,
+# settings, stories, records) lives under .jade-data/ (git-ignored) and is
+# reused on every start. The setup password and the credential encryption key
+# are generated once into .jade-data/credentials.env (readable only by you)
+# and never printed. An older .preview-data/ folder (demo data) is left
+# untouched and is not used.
+#
+# Optional server settings go in .jade-data/server.env (one KEY=value per
+# line); only the settings listed below are read from it.
 set -euo pipefail
 BACKEND=$(cd "$(dirname "$0")/.." && pwd)
 FRONTEND=${JADE_FRONTEND_DIR:-$BACKEND/../JDE_change_factory_frontend}
-DATA=${JADE_PREVIEW_DATA:-$BACKEND/.preview-data}
+DATA=${JADE_DATA:-$BACKEND/.jade-data}
 VENV=${JADE_PREVIEW_VENV:-$BACKEND/.venv}
 API_PORT=${JADE_API_PORT:-8000}
 UI_PORT=${JADE_UI_PORT:-5173}
 
 if [ "${1:-}" = "--reset" ]; then
-  read -r -p "Delete ALL preview data in $DATA (accounts, frameworks, maps, records)? Type yes: " answer
+  read -r -p "Delete ALL Jade data in $DATA (accounts, settings, stories, records)? Type yes: " answer
   if [ "$answer" = "yes" ]; then rm -rf "$DATA"; else echo "Nothing deleted."; exit 1; fi
 fi
 [ -d "$FRONTEND/src" ] || { echo "Frontend not found at $FRONTEND -- clone it next to the backend, or set JADE_FRONTEND_DIR"; exit 1; }
@@ -66,35 +71,28 @@ if [ ! -f "$CRED" ]; then
   (umask 077; "$VENV/bin/python" - > "$CRED" <<'PY'
 import secrets
 from cryptography.fernet import Fernet
-for k in ("ADMIN_PW", "CNC_PW", "DO_PW", "AM_PW"):
-    print(f"{k}={secrets.token_urlsafe(12)}")
+print(f"ADMIN_PW={secrets.token_urlsafe(16)}")
 print(f"CREDENTIAL_KEY={Fernet.generate_key().decode()}")
 PY
   )
-fi
-# Credential files from earlier versions gain the Application Manager's password once.
-if ! grep -q '^AM_PW=' "$CRED"; then
-  (umask 077; echo "AM_PW=$("$VENV/bin/python" -c 'import secrets; print(secrets.token_urlsafe(12))')" >> "$CRED")
 fi
 # shellcheck disable=SC1090
 source "$CRED"
 
 export JDE_API_DATA_DIR="$DATA/api" JDE_BACKLOG_DIR="$DATA/backlog" JDE_CHANGE_DIR="$DATA/changes" JDE_EVIDENCE_DIR="$DATA/evidence"
 export JDE_CREDENTIAL_KEY="$CREDENTIAL_KEY" JDE_API_ALLOWED_ORIGINS="http://localhost:$UI_PORT" JDE_COOKIE_SECURE=false
-# Used only if the admin account does not exist yet; an existing account is never reset.
-export JDE_BOOTSTRAP_ADMIN_EMAIL=admin@e2e.local JDE_BOOTSTRAP_ADMIN_NAME="E2E Admin" JDE_BOOTSTRAP_ADMIN_PASSWORD="$ADMIN_PW"
-export JADE_E2E_CNC_PASSWORD="$CNC_PW" JADE_E2E_DO_PASSWORD="$DO_PW" JADE_E2E_AM_PASSWORD="$AM_PW"
-# JDE writes: live writes are not enabled. Simulated writes run only for demo customers.
-export JDE_MCP_MOCK_MODE=true
-# JDE connection settings (address, certificate, live mode) are made in the app.
-# Optional operator overrides only: $DATA/server.env may lock live discovery off
-# (JDE_DISCOVERY_LIVE_ENABLED=false), narrow destinations or add a server CA bundle.
-unset JDE_DISCOVERY_LIVE_ENABLED JDE_DISCOVERY_ALLOWED_HOSTS JDE_DISCOVERY_CA_BUNDLE
+# The temporary setup account: used only if it does not exist yet; an existing
+# account is never reset, and it is switched off once you finish setup.
+export JDE_BOOTSTRAP_ADMIN_EMAIL=setup@jade.local JDE_BOOTSTRAP_ADMIN_NAME="Jade setup" JDE_BOOTSTRAP_ADMIN_PASSWORD="$ADMIN_PW"
+# JDE connection settings (address, certificate, credential) are made in the app.
+SERVER_SETTINGS="JDE_DISCOVERY_LIVE_ENABLED JDE_DISCOVERY_ALLOWED_HOSTS JDE_DISCOVERY_CA_BUNDLE JDE_DATABASE_URL JDE_DATABASE_SCHEMA JDE_BOOTSTRAP_CUSTOMER_NAME JDE_SMTP_HOST JDE_SMTP_PORT JDE_SMTP_USERNAME JDE_SMTP_PASSWORD JDE_SMTP_STARTTLS JDE_MAIL_FROM JDE_PUBLIC_URL JDE_ANTHROPIC_BASE_URL"
+# shellcheck disable=SC2086
+unset $SERVER_SETTINGS
 if [ -f "$DATA/server.env" ]; then
   while IFS='=' read -r key value; do
-    case "$key" in
-      JDE_DISCOVERY_LIVE_ENABLED|JDE_DISCOVERY_ALLOWED_HOSTS|JDE_DISCOVERY_CA_BUNDLE) export "$key=$value" ;;
-      ''|\#*) ;;
+    case "$key" in ''|\#*) continue ;; esac
+    case " $SERVER_SETTINGS " in
+      *" $key "*) export "$key=$value" ;;
       *) echo "Ignoring $key in $DATA/server.env (not a permitted server setting)" ;;
     esac
   done < "$DATA/server.env"
@@ -104,7 +102,7 @@ fi
 BPID=$!
 (cd "$FRONTEND" && VITE_USE_MOCK_API=false VITE_API_BASE_URL="http://localhost:$API_PORT" exec npx vite --port "$UI_PORT" --strictPort > "$DATA/frontend.log" 2>&1) &
 FPID=$!
-trap 'kill $BPID $FPID 2>/dev/null; wait 2>/dev/null; echo "Jade preview stopped (data kept in $DATA)."' EXIT INT TERM
+trap 'kill $BPID $FPID 2>/dev/null; wait 2>/dev/null; echo "Jade stopped (data kept in $DATA)."' EXIT INT TERM
 
 for _ in $(seq 1 90); do
   curl -sf "http://localhost:$API_PORT/health" >/dev/null && curl -sf "http://localhost:$UI_PORT" >/dev/null && break
@@ -113,17 +111,6 @@ done
 curl -sf "http://localhost:$API_PORT/health" >/dev/null || { echo "Backend did not start; see $DATA/backend.log"; exit 1; }
 curl -sf "http://localhost:$UI_PORT" >/dev/null || { echo "Frontend did not start; see $DATA/frontend.log"; exit 1; }
 
-# -- Demonstration stories: each added once, only if absent (never over existing records) --
-if [ -f "$DATA/seeded" ]; then touch "$DATA/seeded-technical" "$DATA/seeded-process"; fi   # earlier preview versions
-for seed in technical process functional roles; do
-  if [ ! -f "$DATA/seeded-$seed" ]; then
-    echo "Adding the $seed demonstration story to the DEMO customer (scripted stand-ins, simulated JDE)..."
-    (cd "$BACKEND" && "$VENV/bin/python" "scripts/seed_demo_$seed.py" bwm) >> "$DATA/seed.log" 2>&1 \
-      || { echo "Seeding failed; see $DATA/seed.log"; exit 1; }
-    touch "$DATA/seeded-$seed"
-  fi
-done
-
 # -- First sign-in: while the temporary setup account is active, copy its password to the clipboard
 #    (never shown) and explain "Finish setup"; afterwards, just point to the owner's own account.
 SETUP_ACTIVE=$(JDE_API_DATA_DIR="$DATA/api" "$VENV/bin/python" -c '
@@ -131,14 +118,14 @@ import glob, os, sqlite3
 active = False
 for db in glob.glob(os.path.join(os.environ["JDE_API_DATA_DIR"], "*.sqlite3")) + glob.glob(os.path.join(os.environ["JDE_API_DATA_DIR"], "*.db")):
     try:
-        row = sqlite3.connect(db).execute("SELECT is_active FROM users WHERE email = ?", ("admin@e2e.local",)).fetchone()
+        row = sqlite3.connect(db).execute("SELECT is_active FROM users WHERE email = ?", ("setup@jade.local",)).fetchone()
         active = active or bool(row and row[0])
     except sqlite3.Error:
         pass
 print("yes" if active else "no")' 2>/dev/null)
 if [ "$SETUP_ACTIVE" = "yes" ]; then
   if command -v pbcopy >/dev/null; then printf %s "$ADMIN_PW" | pbcopy; COPIED="on your clipboard now, just paste it"; else COPIED="the ADMIN_PW line in $CRED"; fi
-  SIGNIN="  First sign-in: admin@e2e.local, the temporary setup account (password: $COPIED).
+  SIGNIN="  First sign-in: setup@jade.local, the temporary setup account (password: $COPIED).
   Then fill in 'Finish setup' at the top of the page to create your own administrator account;
   the setup account is switched off as soon as yours exists."
 else
@@ -150,20 +137,16 @@ cat <<INFO
   Jade -- running on this computer
 
   Open:      http://localhost:$UI_PORT   (in a browser on this computer)
-  Demo customer: BicycleWorks Manufacturing BV (test data). Create your real customer in Administration > Organisation.
 
 $SIGNIN
-  Demo accounts for the demo customer only (passwords in $CRED):
-    do@e2e.local  Domain Owner         -- Business Demand, User Story Review (DO_PW)
-    am@e2e.local  Application Manager  -- Application Management (AM_PW)
-    cnc@e2e.local CNC operator         -- activations in Technical Work (CNC_PW)
 
-  JDE connection: Administration > Systems & Connections > JD Edwards -- address, certificate and credential are all set there.
-    ${JDE_DISCOVERY_LIVE_ENABLED:+operator override: JDE_DISCOVERY_LIVE_ENABLED=$JDE_DISCOVERY_LIVE_ENABLED}
-  JDE writes: not enabled for real customers; simulated only inside demo customers.
+  Set up in Administration:
+    Organisation              your customers (the first one is created for you -- rename it)
+    Users & Access            Domain Owners, Application Managers, CNC operators
+    Agents & AI               the customer's Anthropic API key and model
+    Systems & Connections     Jira and JD Edwards (AIS address, certificate, credential, Test connection)
 
-  Start at Application Management > Process & Maps > S-BW-RETURNS, then follow the journey bar.
-  Stop with Ctrl-C; start again to continue with the same data.
+  Data: $DATA   Stop with Ctrl-C; start again to continue with the same data.
 
 INFO
 wait $BPID

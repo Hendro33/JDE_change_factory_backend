@@ -455,9 +455,7 @@ def list_integrations(ctx: AuthContext = Depends(require_customer_access)) -> li
     jira_config = get_jira_integration_service().get_for_customer(ctx.customer_id)
     mode, reason = jira_mode(ctx.customer_id)
     jira_live = mode == "live"
-    if mode == "demo":
-        jira_detail = "Demo mode: this deployment uses a simulated Jira (JDE_JIRA_MOCK_MODE=true)"
-    elif mode == "unavailable":
+    if mode == "unavailable":
         jira_detail = f"Unavailable: {reason}"
     else:
         jira_detail = f"Connected to project {jira_config.project_key}"
@@ -475,16 +473,6 @@ def list_integrations(ctx: AuthContext = Depends(require_customer_access)) -> li
             ),
         ),
         IntegrationStatus(name="Jira Service Management", connected=jira_live, detail=jira_detail),
-        IntegrationStatus(
-            name="Topdesk",
-            connected=False,
-            detail="Not connected -- source and source reference are free-text fields today, no live connector",
-        ),
-        IntegrationStatus(
-            name="Slack / Teams approvals",
-            connected=False,
-            detail="Not connected -- approvals happen in-app today",
-        ),
     ]
 
 
@@ -518,7 +506,6 @@ def _jira_status(customer_id: str) -> JiraConnectionStatus:
     credentials = get_jira_credentials_service()
     mode, reason = jira_mode(customer_id)
     return JiraConnectionStatus(
-        mock_mode=mode == "demo",
         state=mode,
         unavailable_reason=reason if mode == "unavailable" else "",
         credentials_configured=credentials.is_configured(customer_id),
@@ -550,6 +537,11 @@ def update_jira_credentials(
     Saving a valid credential here is, by itself, enough to make this
     customer's connector live (registry.jira_mode), once the site/project
     configuration is complete too -- no backend file edit required."""
+    email, token = (payload.email or "").strip(), (payload.api_token or "").strip()
+    missing = [n for n, v in (("the Jira account e-mail", "@" in email), ("the API token", bool(token))) if not v]
+    if missing:
+        raise HTTPException(status_code=422, detail="Nothing was saved: enter " + " and ".join(missing) + ".")
+    payload = JiraCredentialsUpdate(email=email, api_token=token)
     try:
         get_jira_credentials_service().upsert(ctx.customer_id, payload, actor=ctx.identity.display_name)
     except credential_crypto.CredentialKeyMissing as exc:

@@ -29,7 +29,7 @@ from .domain_review_service import DomainReviewService
 from .engagement_scope_service import EngagementScopeService
 from .enhancement_run_service import EnhancementRunService
 from .jira_credentials_service import JiraCredentialsService
-from .jira_gateway import JiraGateway, JiraHttpGateway, JiraMockGateway
+from .jira_gateway import JiraGateway, JiraHttpGateway
 from .jira_integration_service import JiraIntegrationService
 from .jira_sync_service import JiraSyncService
 from .metrics_service import MetricsService
@@ -115,15 +115,10 @@ class JiraUnavailable(RuntimeError):
 def jira_mode(customer_id: str) -> tuple[str, str]:
     """(mode, reason) for one company's Jira connector.
 
-    demo        -- only when the deployment explicitly runs Jira in demo
-                   mode (JDE_JIRA_MOCK_MODE=true); the mock gateway is used.
     live        -- a readable credential and a complete configuration.
-    unavailable -- anything else, with the reason. There is no automatic
-                   fallback to the mock: a real-mode deployment with a
-                   missing, unreadable or incomplete setup says so and
-                   blocks every Jira operation."""
-    if settings.jira_mock_mode:
-        return "demo", "This deployment runs Jira in demo mode (JDE_JIRA_MOCK_MODE=true); nothing reaches a real Jira."
+    unavailable -- anything else, with the reason: a missing, unreadable
+                   or incomplete setup says so and blocks every Jira
+                   operation. Jira is never simulated."""
     credentials = get_jira_credentials_service()
     storage = credentials.storage_status(customer_id)
     if storage == "none":
@@ -147,8 +142,6 @@ def jira_is_live_for_customer(customer_id: str) -> bool:
 
 def get_jira_gateway(customer_id: str) -> JiraGateway:
     mode, reason = jira_mode(customer_id)
-    if mode == "demo":
-        return JiraMockGateway()
     if mode == "unavailable":
         raise JiraUnavailable(reason)
     creds = get_jira_credentials_service().get_for_customer(customer_id)

@@ -29,7 +29,6 @@ from typing import Any, Optional
 
 from . import agent_runtime
 from ..models.change import AcceptanceCriterion, BusinessImpact, DocumentCitation, TestStep, UserStory
-from ..persistence.pilot_data_bicycleworks import CUSTOMER_ID as BICYCLEWORKS_CUSTOMER_ID
 from .customer_link_service import CustomerLinkService
 from .enhancement_run_service import EnhancementRunService
 
@@ -251,7 +250,8 @@ async def run_enhancement(
             # visible to the customer it belongs to, exactly the
             # sidecar-linking step flagged as future work when the
             # sidecar was first built.
-            link_service.link(backlog_story_id, customer_id or BICYCLEWORKS_CUSTOMER_ID)
+            if customer_id:
+                link_service.link(backlog_story_id, customer_id)
 
         run_service.complete(
             request_id,

@@ -64,15 +64,6 @@ class Settings:
     # human running `claude` from the repo root would use.
     repo_root: str = os.environ.get("JDE_API_REPO_ROOT", _REPO_ROOT_DEFAULT)
 
-    # Jira demo mode. Default false: real mode, where each company's
-    # connector is live only with a readable credential and a complete
-    # configuration (Admin > Integrations > Jira), and otherwise reports
-    # itself unavailable and blocks every Jira operation -- it never
-    # falls back to the simulated gateway. Set JDE_JIRA_MOCK_MODE=true
-    # only for an explicit demo or test deployment, where every company
-    # uses the simulated Jira (registry.jira_mode).
-    jira_mock_mode: bool = _env_bool("JDE_JIRA_MOCK_MODE", default=False)
-
     # The session cookie's Secure attribute -- browsers refuse to send
     # a Secure cookie over plain http, so this must be off for local
     # http dev and on for anything reachable over https. Default: on,
@@ -108,7 +99,11 @@ class Settings:
     bootstrap_admin_password: str = os.environ.get("JDE_BOOTSTRAP_ADMIN_PASSWORD", "")
     bootstrap_admin_name: str = os.environ.get("JDE_BOOTSTRAP_ADMIN_NAME", "Admin")
     # Comma-separated company ids the bootstrap Admin is a member of
-    # (all roles). Empty means every seeded company.
+    # (all roles). Empty means every customer that exists; on an empty
+    # installation the first customer is created (named below) so the
+    # setup account has somewhere to start. The Admin renames it and
+    # creates further customers in Administration.
+    bootstrap_customer_name: str = os.environ.get("JDE_BOOTSTRAP_CUSTOMER_NAME", "First customer")
     bootstrap_admin_companies: list[str] = field(
         default_factory=lambda: _env_list("JDE_BOOTSTRAP_ADMIN_COMPANIES", "")
     )

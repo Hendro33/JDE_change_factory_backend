@@ -118,12 +118,12 @@ def create_customer(*, name: str, short_name: str, tools_release: str, environme
 class CustomerRegistry:
     def get_customer(self, customer_id: str) -> Optional[Customer]:
         with connection() as conn:
-            row = conn.execute("SELECT * FROM companies WHERE id = ?", (customer_id,)).fetchone()
+            row = conn.execute("SELECT * FROM companies WHERE id = ? AND archived_at IS NULL", (customer_id,)).fetchone()
         return _row_to_customer(row) if row else None
 
     def list_companies(self) -> list[Customer]:
         with connection() as conn:
-            rows = conn.execute("SELECT * FROM companies ORDER BY name").fetchall()
+            rows = conn.execute("SELECT * FROM companies WHERE archived_at IS NULL ORDER BY name").fetchall()
         return [_row_to_customer(r) for r in rows]
 
 
@@ -132,38 +132,3 @@ _registry = CustomerRegistry()
 
 def get_registry() -> CustomerRegistry:
     return _registry
-
-
-# ---------------------------------------------------------------------
-# Seeding -- idempotent, same convention as seed_service.py's dataset
-# seeding. Carries over the exact pre-existing demo companies (same
-# ids, same names) so nothing already built against "vdb"/"nhd"/"mrv"/
-# "bwm" (BicycleWorks -- see seed_service.py's own pilot dataset,
-# already keyed to "bwm") needs to change, and so BicycleWorks is never
-# accidentally created a second time under a different id.
-# ---------------------------------------------------------------------
-_SEED_COMPANIES = [
-    {"id": "vdb", "name": "Van den Berg Logistiek", "short_name": "Van den Berg", "tools_release": "9.2.7", "environment": "DEV"},
-    {"id": "nhd", "name": "Noord-Holland Dairy", "short_name": "NH Dairy", "tools_release": "9.2.8", "environment": "DEV"},
-    {"id": "mrv", "name": "Maasrivier Industrials", "short_name": "Maasrivier", "tools_release": "9.2.5", "environment": "DEV"},
-    {"id": "bwm", "name": "BicycleWorks Manufacturing BV", "short_name": "BicycleWorks", "tools_release": "9.2.7", "environment": "DEV"},
-]
-
-
-def ensure_seed_companies() -> list[str]:
-    """Returns the ids of any companies actually created (empty if all
-    were already present)."""
-    created: list[str] = []
-    now = datetime.now(timezone.utc).isoformat()
-    with connection() as conn:
-        for c in _SEED_COMPANIES:
-            existing = conn.execute("SELECT id FROM companies WHERE id = ?", (c["id"],)).fetchone()
-            if existing is not None:
-                continue
-            conn.execute(
-                "INSERT INTO companies (id, name, short_name, tools_release, environment, created_at, is_demo) "
-                "VALUES (?, ?, ?, ?, ?, ?, 1)",
-                (c["id"], c["name"], c["short_name"], c["tools_release"], c["environment"], now),
-            )
-            created.append(c["id"])
-    return created

@@ -31,3 +31,4 @@ mock_jde_state.json
 
 # Local preview data and throwaway demo credentials (scripts/run_local_preview.sh)
 .preview-data/
+.jade-data/

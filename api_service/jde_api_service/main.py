@@ -42,18 +42,7 @@ from jde_mcp_server import scope as mcp_scope
 from .services import write_pause
 from .services.bootstrap_service import ensure_bootstrap_admin
 from .services.run_recovery import reconcile_interrupted_runs
-from .services.customer_service import ensure_seed_companies
-from .services.registry import (
-    get_business_domain_service,
-    get_change_request_service,
-    get_customer_link_service,
-    get_jira_credentials_service,
-)
-from .services.seed_service import (
-    ensure_bicycleworks_business_domains,
-    ensure_bicycleworks_pilot_dataset,
-    ensure_t001_backlog_link,
-)
+from .services.registry import get_jira_credentials_service
 
 
 @asynccontextmanager
@@ -113,11 +102,9 @@ async def _lifespan(app: FastAPI):
     reencrypted = reencrypt_all()
     if reencrypted:
         logger.info("Encrypted or re-keyed stored credentials under the current key: %s", reencrypted)
-    ensure_seed_companies()
     from .ai import packs as _ai_packs, runtime as _ai_runtime
 
     _ai_packs.ensure_templates(settings.repo_root)
-    _ai_packs.ensure_demo_assignments()
     if _ai_runtime.reconcile_interrupted():
         logger.warning("Marked AI agent runs interrupted by the restart as failed")
     from .knowledge import attachments as _attachments
@@ -126,9 +113,6 @@ async def _lifespan(app: FastAPI):
     if _attachments.cleanup_abandoned():
         logger.info("Deleted abandoned (never submitted) request uploads")
     ensure_bootstrap_admin()
-    ensure_bicycleworks_pilot_dataset(get_change_request_service())
-    ensure_bicycleworks_business_domains(get_business_domain_service())
-    ensure_t001_backlog_link(get_customer_link_service())
     yield
     from jde_mcp_server import docstore as _docstore
 

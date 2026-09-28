@@ -74,7 +74,8 @@ def roles_for(user_id: str, company_id: str) -> frozenset[str]:
     way, which is exactly the "no access" outcome both should have."""
     with connection() as conn:
         row = conn.execute(
-            "SELECT id, status FROM company_memberships WHERE user_id = ? AND company_id = ?",
+            "SELECT m.id, m.status FROM company_memberships m JOIN companies c ON c.id = m.company_id "
+            "WHERE m.user_id = ? AND m.company_id = ? AND c.archived_at IS NULL",
             (user_id, company_id),
         ).fetchone()
         if row is None or row["status"] != "active":
@@ -106,7 +107,7 @@ def companies_for_user(user_id: str) -> list[dict]:
         rows = conn.execute(
             "SELECT m.id as membership_id, m.company_id, c.name, c.short_name, c.tools_release, c.environment, c.is_demo "
             "FROM company_memberships m JOIN companies c ON c.id = m.company_id "
-            "WHERE m.user_id = ? AND m.status = 'active' ORDER BY c.name",
+            "WHERE m.user_id = ? AND m.status = 'active' AND c.archived_at IS NULL ORDER BY c.name",
             (user_id,),
         ).fetchall()
         result = []

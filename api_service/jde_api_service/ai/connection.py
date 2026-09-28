@@ -28,26 +28,23 @@ from ..services import credential_crypto
 PROVIDER = "anthropic"
 PROVIDER_LABEL = "Anthropic API (company API key)"
 API_BASE_URL = "https://api.anthropic.com"
-# Demonstrations and tests only: a fake provider on THIS machine's loopback
-# interface. Anything else is refused, so keys can never be redirected
-# elsewhere; runs against it are recorded as test-provider runs and never
-# count as real evidence.
-TEST_PROVIDER_ENV = "JADE_AI_TEST_PROVIDER_URL"
-TEST_PROVIDER = "anthropic-test-provider"
+# A deployment may route Anthropic traffic through its own HTTPS gateway
+# (e.g. a corporate egress proxy): JDE_ANTHROPIC_BASE_URL, https only.
+BASE_URL_ENV = "JDE_ANTHROPIC_BASE_URL"
 
 
 def endpoint() -> tuple[str, bool]:
-    """(base URL, is_test_provider)."""
+    """(base URL, False). The second value is kept for callers' shape; Jade
+    never talks to a simulated provider."""
     import os
     from urllib.parse import urlparse
 
-    raw = os.environ.get(TEST_PROVIDER_ENV, "").strip()
+    raw = os.environ.get(BASE_URL_ENV, "").strip()
     if not raw:
         return API_BASE_URL, False
-    u = urlparse(raw)
-    if u.scheme != "http" or u.hostname not in ("127.0.0.1", "localhost") or u.path not in ("", "/"):
-        raise AiNotConfigured(f"{TEST_PROVIDER_ENV} may only point at http://127.0.0.1:<port>; nothing was sent")
-    return raw.rstrip("/"), True
+    if urlparse(raw).scheme != "https" or not urlparse(raw).hostname:
+        raise AiNotConfigured(f"{BASE_URL_ENV} must be an https:// address; nothing was sent")
+    return raw.rstrip("/"), False
 
 # Versioned rate card (USD per million tokens, Anthropic first-party list
 # prices). Used only to label a run's cost as an ESTIMATE; the runtime's own
@@ -90,6 +87,10 @@ ACTIVITY_MODELS: dict[str, tuple[str, ...]] = {a: tuple(MODELS) for a in ACTIVIT
 
 DOCUMENT_POLICIES = ("metadata_only", "permitted_content")
 DEFAULT_LIMITS = {"max_usd_per_run": 2.0, "monthly_usd": 50.0, "max_turns": 40}
+# Used when an Admin enters the API key before saving any other setting: the
+# connection is created with these, and every one can be changed afterwards.
+DEFAULT_MODEL = "claude-sonnet-5"
+DEFAULT_DOCUMENT_POLICY = "metadata_only"
 LIMIT_BOUNDS = {"max_usd_per_run": (0.01, 100.0), "monthly_usd": (0.0, 10000.0), "max_turns": (1, 100)}
 
 
@@ -184,7 +185,16 @@ def save_credential(company_id: str, api_key: str, *, actor: str) -> dict:
     with connection(immediate=True) as conn:
         row = _row(conn, company_id)
         if row is None:
-            raise InvalidConfig("save the AI connection settings before its API key")
+            # The key can be entered first: the connection is created with the
+            # defaults (shown on the screen, changeable at any time).
+            conn.execute(
+                "INSERT INTO ai_connections (company_id, provider, model, revision, enabled, document_policy, limits, "
+                "activity_models, updated_at, updated_by) VALUES (?, ?, ?, 1, 1, ?, ?, '{}', ?, ?)",
+                (company_id, PROVIDER, DEFAULT_MODEL, DEFAULT_DOCUMENT_POLICY, json.dumps(DEFAULT_LIMITS), now, actor))
+            _audit(conn, company_id, "configuration_saved", actor,
+                   f"revision 1 (defaults, created with the API key): default model {DEFAULT_MODEL}, enabled True, "
+                   f"documents {DEFAULT_DOCUMENT_POLICY}, limits {DEFAULT_LIMITS}")
+            row = _row(conn, company_id)
         cred_rev = row["credential_revision"] + 1
         conn.execute(
             "UPDATE ai_connections SET credential_secret = ?, credential_hint = ?, credential_revision = ?, "
@@ -226,11 +236,7 @@ def view(company_id: str) -> dict:
         row = _row(conn, company_id)
         audit = conn.execute("SELECT action, detail, actor, at FROM ai_connection_audit WHERE company_id = ? "
                              "ORDER BY id DESC LIMIT 20", (company_id,)).fetchall()
-    try:
-        test_provider = endpoint()[1]
-    except AiNotConfigured:
-        test_provider = True
-    base = {"provider": PROVIDER, "providerLabel": PROVIDER_LABEL, "testProvider": test_provider,
+    base = {"provider": PROVIDER, "providerLabel": PROVIDER_LABEL,
             "runtime": DEFAULT_RUNTIME, "runtimeLabel": RUNTIMES[DEFAULT_RUNTIME]["label"],
             "activities": [{"id": a, "label": i["label"], "roles": list(i["roles"]), "note": i.get("note", ""),
                             "models": list(ACTIVITY_MODELS[a])} for a, i in ACTIVITIES.items()],
@@ -309,8 +315,8 @@ def resolve_for_run(company_id: Optional[str]) -> ResolvedConnection:
     for m in [row["model"], *overrides.values()]:
         if m not in RUNTIMES[DEFAULT_RUNTIME]["models"]:
             raise AiNotConfigured(f"the configured model {m} is not supported by the {DEFAULT_RUNTIME} runtime")
-    _url, is_test = endpoint()
-    return ResolvedConnection(company_id=company_id, provider=TEST_PROVIDER if is_test else row["provider"],
+    endpoint()  # a misconfigured gateway address refuses before anything is sent
+    return ResolvedConnection(company_id=company_id, provider=row["provider"],
                               model=row["model"],
                               revision=row["revision"], credential_revision=row["credential_revision"],
                               document_policy=row["document_policy"], limits=limits, api_key=key,

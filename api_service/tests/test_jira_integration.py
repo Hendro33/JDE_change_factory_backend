@@ -19,15 +19,22 @@ from __future__ import annotations
 
 import pytest
 
-from jde_api_service import config as api_config
 from jde_api_service.models.jira_integration import JiraIntegrationConfigUpdate
 from jde_api_service.services.change_request_service import ChangeRequestService
-from jde_api_service.services.jira_gateway import JiraHttpGateway, JiraMockGateway, _MockIssueState
+from jde_api_service.services.jira_gateway import JiraHttpGateway
 from jde_api_service.services.jira_integration_service import JiraIntegrationService
 from jde_api_service.services.jira_sync_service import JiraSyncService
 from jde_api_service.services.registry import JiraUnavailable, get_jira_gateway
 
 from .conftest import headers
+from .fixtures.jira_double import FakeJiraGateway, _MockIssueState
+
+
+def _use_fake_jira(monkeypatch) -> None:
+    """Jira's HTTP boundary replaced by the test double for this test."""
+    from jde_api_service.services import registry
+
+    monkeypatch.setattr(registry, "get_jira_gateway", lambda customer_id: FakeJiraGateway())
 
 
 def _config_payload(**overrides) -> dict:
@@ -99,7 +106,6 @@ def test_jira_status_never_exposes_credentials(client):
     assert r.status_code == 200
     body = r.json()
     # Real mode, nothing configured: unavailable -- never a silent mock.
-    assert body["mockMode"] is False
     assert body["state"] == "unavailable"
     assert "No Jira credential" in body["unavailableReason"]
     assert body["credentialsConfigured"] is False
@@ -124,10 +130,10 @@ def test_integrations_list_reflects_jira_configuration_state(client):
 
 
 # ---------------------------------------------------------------------
-# End-to-end sync via the router, in explicit demo mode (mock gateway)
+# End-to-end sync via the router, with Jira's HTTP boundary doubled
 # ---------------------------------------------------------------------
 def test_sync_end_to_end_creates_change_requests_without_enhancing_them(client, monkeypatch):
-    monkeypatch.setattr(api_config.settings, "jira_mock_mode", True)  # explicit demo mode
+    _use_fake_jira(monkeypatch)
     client.put("/admin/jira-integration", headers=headers(customer="vdb"), json=_config_payload())
 
     r = client.post("/admin/jira-integration/sync", headers=headers(customer="vdb"))
@@ -190,7 +196,7 @@ def _services(isolated_dirs, gateway):
 def test_no_hardcoded_status_or_field_names(isolated_dirs):
     """Unusual, arbitrary status/field names -- if the connector had
     any hardcoded default, this would fail to find or move the issue."""
-    gateway = JiraMockGateway(seed=[_issue("XX-1", status="Triaged -> Send to AI Team")])
+    gateway = FakeJiraGateway(seed=[_issue("XX-1", status="Triaged -> Send to AI Team")])
     change_requests, integrations, sync = _services(isolated_dirs, gateway)
     integrations.upsert(
         "cust1",
@@ -212,7 +218,7 @@ def test_no_hardcoded_status_or_field_names(isolated_dirs):
 
 
 def test_write_back_never_happens_before_intake_persists(isolated_dirs, monkeypatch):
-    gateway = JiraMockGateway(seed=[_issue("XX-2", status="Ready for Jade")])
+    gateway = FakeJiraGateway(seed=[_issue("XX-2", status="Ready for Jade")])
     change_requests, integrations, sync = _services(isolated_dirs, gateway)
     integrations.upsert(
         "cust1",
@@ -242,7 +248,7 @@ def test_write_back_never_happens_before_intake_persists(isolated_dirs, monkeypa
 
 
 def test_retry_after_transition_failure_does_not_repost_comment(isolated_dirs):
-    class _FlakyGateway(JiraMockGateway):
+    class _FlakyGateway(FakeJiraGateway):
         def __init__(self, seed):
             super().__init__(seed)
             self.transition_lookups = 0
@@ -283,7 +289,7 @@ def test_retry_after_transition_failure_does_not_repost_comment(isolated_dirs):
 
 
 def test_source_metadata_is_imported_but_never_used_for_routing(isolated_dirs):
-    gateway = JiraMockGateway(seed=[
+    gateway = FakeJiraGateway(seed=[
         _issue("XX-4", status="Ready for Jade", metadata={"workType": "Incident", "priority": "High"}),
         _issue("XX-5", status="Ready for Jade", metadata={"workType": "Change", "priority": "Low"}),
     ])
@@ -331,7 +337,7 @@ def test_update_jira_credentials_never_echoes_the_token(client):
     # A credential alone is not enough: the site/project configuration
     # is still missing, so the connector says it is unavailable.
     assert body == {
-        "mockMode": False, "credentialsConfigured": True, "configConfigured": False,
+        "credentialsConfigured": True, "configConfigured": False,
         "state": "unavailable",
         "unavailableReason": "The Jira site, project or status configuration is not complete.",
         "credentialStorage": "encrypted", "credentialEncryptionAvailable": True,
@@ -357,18 +363,6 @@ def test_jira_credentials_are_customer_scoped(client):
 
     nhd_status = client.get("/admin/jira-integration/status", headers=headers(customer="nhd")).json()
     assert nhd_status["credentialsConfigured"] is False
-
-
-def test_deployment_force_mock_overrides_a_configured_credential(client, monkeypatch):
-    """JDE_JIRA_MOCK_MODE=true is the one remaining deployment-level
-    switch -- it still wins even once a customer has saved real
-    credentials, e.g. for a shared demo/staging environment."""
-    monkeypatch.setattr(api_config.settings, "jira_mock_mode", True)
-    client.put("/admin/jira-credentials", headers=headers(customer="vdb"), json=_credentials_payload())
-
-    status = client.get("/admin/jira-integration/status", headers=headers(customer="vdb")).json()
-    assert status["credentialsConfigured"] is True
-    assert status["mockMode"] is True
 
 
 # ---------------------------------------------------------------------
@@ -443,14 +437,6 @@ def test_get_jira_gateway_is_unavailable_by_default_in_real_mode(isolated_dirs):
         get_jira_gateway("cust1")
 
 
-def test_the_mock_gateway_needs_explicit_demo_mode(isolated_dirs, monkeypatch):
-    monkeypatch.setattr(api_config.settings, "jira_mock_mode", False)
-    with pytest.raises(JiraUnavailable):
-        get_jira_gateway("cust1")
-    monkeypatch.setattr(api_config.settings, "jira_mock_mode", True)
-    assert isinstance(get_jira_gateway("cust1"), JiraMockGateway)
-
-
 def test_get_jira_gateway_goes_live_purely_from_saved_credentials(isolated_dirs):
     from jde_api_service.models.jira_integration import JiraCredentialsUpdate
     from jde_api_service.services.registry import get_jira_credentials_service
@@ -473,17 +459,6 @@ def test_get_jira_gateway_goes_live_purely_from_saved_credentials(isolated_dirs)
         get_jira_gateway("cust2")
 
 
-def test_get_jira_gateway_force_mock_overrides_a_configured_credential(isolated_dirs, monkeypatch):
-    from jde_api_service.models.jira_integration import JiraCredentialsUpdate
-    from jde_api_service.services.registry import get_jira_credentials_service
-
-    get_jira_credentials_service().upsert(
-        "cust1", JiraCredentialsUpdate(email="bot@example.com", api_token="secret-token"), actor="Hendro"
-    )
-    monkeypatch.setattr(api_config.settings, "jira_mock_mode", True)
-    assert isinstance(get_jira_gateway("cust1"), JiraMockGateway)
-
-
 # ---------------------------------------------------------------------
 # Disconnect -- removes a saved credential (never just blanks it), and
 # the connector falls straight back to mock, same as before one was
@@ -496,7 +471,7 @@ def test_disconnect_removes_the_credential(client):
     r = client.request("DELETE", "/admin/jira-credentials", headers=headers(customer="vdb"))
     assert r.status_code == 200
     assert r.json() == {
-        "mockMode": False, "credentialsConfigured": False, "configConfigured": False,
+        "credentialsConfigured": False, "configConfigured": False,
         "state": "unavailable",
         "unavailableReason": "No Jira credential is saved for this company. An administrator enters it under Administration › Systems & Connections › Jira.",
         "credentialStorage": "none", "credentialEncryptionAvailable": True,

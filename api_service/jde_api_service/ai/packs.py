@@ -215,26 +215,6 @@ def ensure_templates(repo_root: str) -> None:
                    actor="repository", detail=src["source"])
 
 
-def ensure_demo_assignments() -> None:
-    """Demo customers get the Jade standard packs assigned; real customers
-    start unassigned (their Admin chooses)."""
-    with connection() as conn:
-        demo = [r["id"] for r in conn.execute("SELECT id FROM companies WHERE is_demo = 1").fetchall()]
-    for company_id in demo:
-        for role in ROLES:
-            with connection(immediate=True) as conn:
-                if conn.execute("SELECT 1 FROM agent_pack_assignments WHERE company_id = ? AND role = ?",
-                                (company_id, role)).fetchone():
-                    continue
-                last = conn.execute("SELECT revision FROM agent_pack_revisions WHERE pack_id = ? AND status = "
-                                    "'published' ORDER BY revision DESC LIMIT 1", (template_pack_id(role),)).fetchone()
-                if last is None:
-                    continue
-                conn.execute("INSERT INTO agent_pack_assignments (company_id, role, pack_id, pack_revision, assigned_at, "
-                             "assigned_by) VALUES (?, ?, ?, ?, ?, 'demo seed')",
-                             (company_id, role, template_pack_id(role), last["revision"], _now()))
-
-
 # -- Reading ------------------------------------------------------------------------
 def _pack(conn, pack_id: str, company_id: str):
     """A pack this company may see: a template or its own."""

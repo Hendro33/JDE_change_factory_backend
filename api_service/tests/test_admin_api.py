@@ -136,8 +136,8 @@ def test_integrations_status_is_honest_about_what_is_not_connected(client):
     assert by_name["JD Edwards execution gate"]["connected"] is False  # mock mode in tests
     # Discovery is its own row, and a simulation is never reported as connected.
     assert by_name["JD Edwards discovery (Architect)"]["connected"] is False
-    assert by_name["Topdesk"]["connected"] is False
-    assert by_name["Slack / Teams approvals"]["connected"] is False
+    # Only integrations Jade actually has are listed -- no placeholders.
+    assert "Topdesk" not in by_name and "Slack / Teams approvals" not in by_name
 
 
 def test_domain_owner_approval_records_identity_and_feedback(client, monkeypatch):

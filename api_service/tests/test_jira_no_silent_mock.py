@@ -1,16 +1,13 @@
 """
 Real mode never falls back to the simulated Jira. A missing, unreadable,
 incomplete or rejected setup is reported as "unavailable" and blocks the
-operation; simulated data appears only in explicit demo mode
-(JDE_JIRA_MOCK_MODE=true).
+operation. There is no demo mode.
 """
 
 from __future__ import annotations
 
 import httpx
 from cryptography.fernet import Fernet
-
-from jde_api_service import config as api_config
 
 from .conftest import headers
 from .test_jira_integration import _config_payload
@@ -67,12 +64,11 @@ def test_a_wrong_token_is_reported_as_rejected_not_replaced_by_simulated_data(cl
     assert _jira_change_ids(client) == set()
 
 
-def test_simulated_jira_only_in_explicit_demo_mode(client, monkeypatch):
+def test_there_is_no_demo_mode_to_switch_on(client, monkeypatch):
+    """No environment switch makes Jira simulated: an unconfigured Jira is
+    unavailable whatever the deployment sets."""
+    monkeypatch.setenv("JDE_JIRA_MOCK_MODE", "true")
     client.put("/admin/jira-integration", headers=headers("vdb"), json=_config_payload())
-    assert client.post("/admin/jira-integration/sync", headers=headers("vdb")).status_code == 409
-
-    monkeypatch.setattr(api_config.settings, "jira_mock_mode", True)
     status = client.get("/admin/jira-integration/status", headers=headers("vdb")).json()
-    assert status["state"] == "demo" and status["mockMode"] is True
-    r = client.post("/admin/jira-integration/sync", headers=headers("vdb"))
-    assert r.status_code == 200 and r.json()["imported"]
+    assert status["state"] == "unavailable" and "mockMode" not in status
+    assert client.post("/admin/jira-integration/sync", headers=headers("vdb")).status_code == 409

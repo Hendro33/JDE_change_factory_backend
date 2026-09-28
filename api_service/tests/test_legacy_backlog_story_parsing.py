@@ -90,7 +90,7 @@ def test_t001_customer_link_is_seeded_idempotently_at_startup(client):
     service = get_customer_link_service()
     assert service.customer_for("CR-BW-T001") == "bwm"
 
-    from jde_api_service.services.seed_service import ensure_t001_backlog_link
+    from .fixtures.customers import link_t001
 
-    ensure_t001_backlog_link(service)  # calling again must not raise or change the result
+    link_t001(service)  # calling again must not raise or change the result
     assert service.customer_for("CR-BW-T001") == "bwm"

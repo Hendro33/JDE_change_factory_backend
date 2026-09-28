@@ -153,7 +153,9 @@ def isolated_dirs(tmp_path, monkeypatch):
         docstore.close_pools()
 
         with psycopg.connect(pg_url, autocommit=True) as conn:
-            conn.execute(f'DROP SCHEMA IF EXISTS "{pg_schema}" CASCADE')
+            for (name,) in conn.execute("SELECT nspname FROM pg_namespace WHERE nspname LIKE %s",
+                                        (pg_schema + "%",)).fetchall():
+                conn.execute(f'DROP SCHEMA IF EXISTS "{name}" CASCADE')
 
 
 def _apply_csrf_header(c) -> None:
@@ -203,10 +205,13 @@ def client(isolated_dirs):
     from jde_api_service.main import app
 
     # `with` triggers FastAPI's startup lifecycle (schema migration,
-    # company seeding, pilot-dataset seeding included) the same way a
-    # real `uvicorn` run does -- without it, tests would see different
-    # behaviour than production.
+    # recovery, key rotation) the same way a real `uvicorn` run does --
+    # without it, tests would see different behaviour than production.
     with TestClient(app) as c:
+        # Jade starts empty; the tests' own customers (tests/fixtures/customers.py).
+        from .fixtures.customers import create_all
+
+        create_all()
         _create_member("u-hendro", "hendro@test.local", "Hendro", ["vdb", "nhd", "mrv", "bwm"])
         _create_member("u-ellen", "ellen@test.local", "Ellen Vos", ["vdb"])
         login = c.post("/auth/login", json={"email": "hendro@test.local", "password": TEST_PASSWORD})

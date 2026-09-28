@@ -753,4 +753,14 @@ MIGRATIONS: list[tuple[int, str]] = [
         CREATE UNIQUE INDEX IF NOT EXISTS users_email_lower ON users (lower(email));
         """,
     ),
+    (
+        14,
+        """
+        -- Jade no longer ships demo customers. Existing ones are archived
+        -- (hidden everywhere, nothing deleted): their data stays in the
+        -- database for audit, but no one can open them.
+        ALTER TABLE companies ADD COLUMN archived_at TEXT;
+        UPDATE companies SET archived_at = COALESCE(updated_at, created_at) WHERE is_demo = 1;
+        """,
+    ),
 ]

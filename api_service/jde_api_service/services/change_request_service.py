@@ -1,14 +1,12 @@
 """
 ChangeRequest persistence.
 
-One store, multiple ways to write into it -- create_direct (a person
-using the "New change request" form), create_from_topdesk (the mock
-Topdesk connector's normalized output) and create_from_jira (the Jira
-sync service's normalized output) all converge on the same _create()
-and the same JsonFileStore. There is no separate ticket database and no
-separate workflow per source; a Jira- or Topdesk-sourced record is a
-ChangeRequest exactly like a direct one, distinguished only by its
-sourceType field.
+One store, two ways to write into it -- create_direct (a person using
+the "New change request" form) and create_from_jira (the Jira sync
+service's normalized output) both converge on the same _create() and the
+same document store. There is no separate ticket database and no
+separate workflow per source; a Jira-sourced record is a ChangeRequest
+exactly like a direct one, distinguished only by its sourceType field.
 
 A ChangeRequest is customer-scoped from the moment it's created (the
 customer_id comes from the already-validated X-Customer-Id for real
@@ -27,7 +25,6 @@ from typing import Optional
 from ..models.change_request import ChangeRequest, ChangeRequestCreate, ChangeRequestSourceType
 from ..persistence.json_file_store import JsonFileStore
 from .jira_gateway import JiraIssueSummary
-from .mock_topdesk_connector import MockTopdeskConnector, TopdeskTicket
 
 
 def _parse_received_at(raw: str) -> Optional[datetime]:
@@ -100,31 +97,6 @@ class ChangeRequestService:
             raw_content=payload.raw_content,
             requester=requester,
             request_id=request_id,
-        )
-
-    def create_from_topdesk(
-        self,
-        ticket: TopdeskTicket,
-        customer_id: str,
-        request_id: Optional[str] = None,
-        received_at: Optional[datetime] = None,
-    ) -> ChangeRequest:
-        """The one integration point where Topdesk-shaped data becomes
-        a ChangeRequest -- MockTopdeskConnector.normalize() is the only
-        function that knows Topdesk's field names; everything here
-        after is the same common model and the same store as
-        create_direct."""
-        normalized = MockTopdeskConnector.normalize(ticket)
-        return self._create(
-            customer_id=customer_id,
-            source_type=normalized["source_type"],
-            business_source=normalized["business_source"],
-            source_reference=normalized["source_reference"],
-            title=normalized["title"],
-            raw_content=normalized["raw_content"],
-            requester=normalized["requester"],
-            request_id=request_id,
-            received_at=received_at,
         )
 
     def create_from_jira(
