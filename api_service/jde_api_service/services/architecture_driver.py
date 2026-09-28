@@ -138,10 +138,16 @@ story_id to use throughout, in every tool call: {story_id}
 {_SCHEMA_INSTRUCTIONS}"""
 
 
-def _alternatives_from(raw: list[dict]) -> list[dict]:
+def _alternatives_from(raw: list) -> list[dict]:
+    """Alternatives as {approach, whyNot}. A model that lists them as plain
+    text is kept as the approach (its reason not stated), never dropped and
+    never failing the whole analysis."""
     out = []
     for a in raw or []:
-        out.append({"approach": a.get("approach", ""), "whyNot": a.get("whyNot") or a.get("why_not", "")})
+        if isinstance(a, dict):
+            out.append({"approach": str(a.get("approach", "")), "whyNot": str(a.get("whyNot") or a.get("why_not", ""))})
+        elif str(a).strip():
+            out.append({"approach": str(a).strip(), "whyNot": ""})
     return out
 
 

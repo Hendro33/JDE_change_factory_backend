@@ -127,7 +127,8 @@ def _understand(change) -> Lifecycle:
         return _mk("understand", "failed", NextAction(
             kind="task", summary="JADE could not finish analysing this request. Check the problem and try again.",
             owner="product_manager", action="start_analysis", tab="overview",
-            effect="JADE analyses the request again and writes the user story."))
+            effect="JADE analyses the request again and writes the user story."),
+            open_items=[_friendly_error(change.processing_error)] if change.processing_error else [])
     if stage == "done":
         # A finished run that did not produce a backlog story: the check
         # found gaps a person has to resolve.
@@ -446,6 +447,9 @@ def _friendly_error(raw: Optional[str]) -> str:
     if not raw:
         return ""
     low = raw.lower()
+    if "401" in low or "failed to authenticate" in low or "api key is invalid" in low or "invalid x-api-key" in low:
+        return ("Anthropic rejected this customer's AI key. An Administrator must replace it "
+                "(Administration › Agents & AI), then run this step again.")
     if "ai connection" in low or "api key" in low:
         return "The AI connection for this customer is not set up or not working (Administration › Agents & AI)."
     if "budget" in low:

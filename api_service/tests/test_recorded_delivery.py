@@ -159,3 +159,42 @@ def test_an_unreachable_ais_is_reported_and_nothing_is_recorded(client, monkeypa
     assert r.status_code == 409 and "cannot read the value back live" in r.json()["detail"]
     assert client.get("/changes/S-RD-DOWN", headers=headers("vdb")).json()["exactChange"]["execution"]["writeState"] \
         == "ready"
+
+
+def test_a_connection_with_a_low_record_limit_still_reads_the_before_value(client):
+    # A customer may allow only a few records per query; the delivery read
+    # stays within that limit instead of being refused.
+    ready_company(client, "vdb", limits={"maxRecords": 5, "timeoutSeconds": 5})
+    rec = _change(client, "S-RD-LIMIT", connected=False)
+    assert rec["binding"]["before_state"]["known"] and rec["binding"]["before_state"]["value"] == "S3"
+
+
+def test_the_application_manager_sees_the_value_jde_held_when_approved(client):
+    from jde_mcp_server import approval
+
+    ready_company(client, "vdb")
+    _save_scope(client, "vdb", _full_scope())
+    _approved_story("S-RD-CURRENT")
+    change_id = approval.propose_change("S-RD-CURRENT", {**OPERATION, "story_id": "S-RD-CURRENT"},
+                                        "processing_option_update")["change_id"]
+    ec = client.get("/changes/S-RD-CURRENT", headers=headers("vdb")).json()["exactChange"]
+    assert ec["currentValue"] == "" and "when the change is approved" in ec["currentValueNote"]
+    _approve(change_id)
+    ec = client.get("/changes/S-RD-CURRENT", headers=headers("vdb")).json()["exactChange"]
+    assert ec["currentValue"] == "S3" and ec["currentValueNote"].startswith("read when approved: live AIS read")
+
+
+def test_without_a_process_framework_the_process_checkpoints_do_not_block_the_as_built(client):
+    # A new customer that has not loaded a process framework yet: the story
+    # lifecycle treats the process decision as not applicable, and so does the
+    # as-built record -- which states it as a limitation instead.
+    from jde_api_service.process import framework
+
+    _change(client, "S-RD-NOFW")
+    assert framework.selected_active("vdb") is None
+    body = client.get("/changes/S-RD-NOFW/as-built", headers=headers("vdb")).json()
+    cps = {c["id"]: c for c in body["checkpoints_now"]}
+    assert cps["process_decided"]["complete"] and "no process framework is active" in cps["process_decided"]["detail"]
+    assert cps["to_be_map"]["complete"]
+    rec = client.post("/changes/S-RD-NOFW/as-built", headers=headers("vdb")).json()
+    assert any("No process framework was active" in x for x in rec["content"]["limitations"])

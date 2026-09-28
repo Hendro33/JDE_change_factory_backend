@@ -144,7 +144,10 @@ def gather(company_id: str, story_id: str, change) -> dict:
                   "state": change.state if change else None, "user_story": us,
                   "approved": bool(change and change.state not in ("RECEIVED", "REFINING", "BACKLOG_READY", "REJECTED"))},
         "process": {"mapping": story_process.mapping_view(company_id, story_id),
-                    "maps": {k: maps.latest_version(company_id, story_id, k) for k in maps.KINDS}},
+                    "maps": {k: maps.latest_version(company_id, story_id, k) for k in maps.KINDS},
+                    # Without an active process framework there is nothing to map
+                    # against (the story lifecycle treats the decision as not applicable).
+                    "framework_active": _framework_active(company_id)},
         "story_revision": _story_revision(company_id, story_id),
         "design": _design(company_id, story_id, change), "route": route,
         "implementation": {"technical": tech, "functional": func},
@@ -168,17 +171,31 @@ def _design_approved(src: dict) -> tuple:
             if f.get("approval") else "the exact change has not been approved")
 
 
+def _framework_active(company_id: str) -> bool:
+    from . import framework
+
+    return framework.selected_active(company_id) is not None
+
+
+_NO_FRAMEWORK = "not applicable: no process framework is active for this customer"
+
+
 def _checkpoints(src: dict) -> list[dict]:
     m = src["process"]["mapping"]
     to_be = src["process"]["maps"]["to_be"]
+    # Records made before this field existed were made with a framework.
+    no_framework = m is None and src["process"].get("framework_active", True) is False
     d = src["design"]
     b = d["baseline"]
     cps = [
         ("story_approved", "Story approved", src["story"]["approved"], src["story"]["state"] or ""),
-        ("process_decided", "Processes confirmed, or no-mapping recorded, by a reviewer", m is not None,
-         f"mapping revision {m['revision']} ({m['status']}) by {m['reviewer_name']}" if m else "no reviewer decision"),
-        ("to_be_map", "To-be process map recorded", to_be is not None or (m is not None and m["status"] == "no_mapping"),
-         f"version {to_be['version']}" if to_be else "none (no mapping applies)" if m and m["status"] == "no_mapping" else "none"),
+        ("process_decided", "Processes confirmed, or no-mapping recorded, by a reviewer", m is not None or no_framework,
+         f"mapping revision {m['revision']} ({m['status']}) by {m['reviewer_name']}" if m
+         else _NO_FRAMEWORK if no_framework else "no reviewer decision"),
+        ("to_be_map", "To-be process map recorded",
+         to_be is not None or (m is not None and m["status"] == "no_mapping") or (no_framework and to_be is None),
+         f"version {to_be['version']}" if to_be else "none (no mapping applies)" if m and m["status"] == "no_mapping"
+         else _NO_FRAMEWORK if no_framework else "none"),
         _design_approved(src),
         ("design_current", "Design not awaiting reassessment", bool(b) and b["status"] == "current",
          (b["status"].replace("_", " ") + (f": {b['reassessment'][-1]['detail']}" if b["reassessment"] else "")) if b else "no design baseline"),
@@ -252,6 +269,9 @@ def _deviations_and_limits(src: dict) -> tuple[list[str], list[str]]:
     if b and not b.get("process_context"):
         lim.append("The design's evidence baseline records no process context (designed before processes were confirmed).")
     m = src["process"]["mapping"]
+    if m is None and src["process"].get("framework_active", True) is False:
+        lim.append("No process framework was active for this customer, so the story's business processes were not "
+                   "mapped.")
     if m:
         for r in m["refs"]:
             if r["status_now"]["state"] in ("changed", "removed", "framework_inactive"):
@@ -312,7 +332,8 @@ def markdown(record: dict) -> str:
     m = c["process"]["mapping"]
     L += ["## Processes", ""]
     if not m:
-        L.append("No reviewer decision recorded.")
+        L.append("No process framework was active; processes were not mapped." if c["process"].get("framework_active") is False
+                 else "No reviewer decision recorded.")
     elif m["status"] == "no_mapping":
         L.append(f"No process mapping applies (revision {m['revision']}, {m['reviewer_name']}): {m['no_mapping_reason']}")
     else:

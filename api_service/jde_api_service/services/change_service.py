@@ -260,8 +260,17 @@ def _change_from_story(
                 # Deliverable by a person (the recorded route) unless the
                 # catalogue marks it Restricted or Suspended.
                 capability_executable = capability_status not in capability_catalog.PERSON_DELIVERY_BLOCKED_STATUSES
+        before = (change_record.get("binding") or {}).get("before_state") or {}
+        if before.get("known") and isinstance(before.get("value"), str):
+            current_value, current_note = before["value"], f"read when approved: {before.get('source', 'live read')}"
+        elif change_record.get("binding"):
+            current_value, current_note = "", f"not established at approval: {before.get('reason', 'unknown')}"
+        else:
+            current_value, current_note = "", "read live from JD Edwards when the change is approved"
         exact_change = ExactChange(
             tool=op.get("tool", ""),
+            current_value=current_value,
+            current_value_note=current_note,
             application=op.get("application", ""),
             version=op.get("version", ""),
             option=op.get("option", ""),

@@ -413,3 +413,12 @@ def test_two_customers_may_upload_the_same_object_and_each_sees_only_its_own(cli
         assert other not in read["content"]
         text = client.get(f"/admin/jde/artifacts/{mine['artifactId']}/1/text", headers=headers(company)).text
         assert f"{company} credit check" in text and f"{other} credit check" not in text
+
+
+def test_alternatives_listed_as_plain_text_are_kept_not_a_failed_analysis():
+    from jde_api_service.services.architecture_driver import _alternatives_from
+
+    assert _alternatives_from(["a new version of P4210", {"approach": "a UDC", "why_not": "not per version"}, ""]) == [
+        {"approach": "a new version of P4210", "whyNot": ""},
+        {"approach": "a UDC", "whyNot": "not per version"},
+    ]

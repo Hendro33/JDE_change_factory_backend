@@ -163,7 +163,10 @@ class ExactChange(ApiModel):
     application: str
     version: str
     option: str
+    # The value JD Edwards held when the approval was bound (read live).
+    # Empty until then; current_value_note says why.
     current_value: str = ""
+    current_value_note: str = ""
     proposed_value: str = ""
     environment: str = "DEV"
     test_orchestration: str = ""

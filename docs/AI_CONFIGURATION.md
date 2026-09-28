@@ -135,8 +135,7 @@ extraction, knowledge tools).
 
 | Evidence | Real Anthropic? | How |
 |---|---|---|
-| `tests/test_ai_runtime.py`, `tests/test_request_documents.py` | no (mocked runtime) | connection/key handling, no provider call on save, blocking cases, forbidden tools, tampered/disabled packs, snapshot kept during a run, per-activity models, context packages, spawn-level env of two concurrent runs, attachments, policy, citations |
-| `scripts/prove_runtime_isolation.py` | no (real CLI, loopback fake provider) | two concurrent customers: each request carried only its own key and model; host key/token never sent; separate config dirs; pack instructions reached the provider; no background subagents; blocked runs sent nothing |
+| `tests/test_ai_runtime.py`, `tests/test_request_documents.py` | no (model replaced at the SDK boundary) | connection/key handling, no provider call on save, blocking cases, forbidden tools, tampered/disabled packs, snapshot kept during a run, per-activity models, context packages, spawn-level env of two concurrent runs, attachments, policy, citations |
 | `e2e/ai/ai_flow.py` (frontend repo) | no (real app + real CLI, scripted fake provider) | the whole Admin/User flow in a browser, restart, new browser, cross-customer |
 | `scripts/prove_ai_real_provider.py` | **yes, billable, needs approval** | see below |
 

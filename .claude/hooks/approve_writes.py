@@ -29,6 +29,11 @@ import sys
 # -- do not assume a new tool is safe just because it isn't listed here;
 # start every new tool as a write requiring approval and only relax that
 # once it's proven read-only.
+# Jade's MCP server has no JDE write tools today: approved changes are applied
+# in DEV by a person and recorded (api_service/jde_api_service/delivery/), and
+# test Orchestrations are started by a person from the app. This hook stays as
+# a backstop: if a write tool with one of these names is ever added again, an
+# agent cannot call it without an interactive human confirmation.
 WRITE_TOOLS = {
     "mcp__jde-change-factory__set_processing_option",
     # A test run is an action in JDE too (it can create orders or other

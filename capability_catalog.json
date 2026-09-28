@@ -25,12 +25,12 @@
         "application_release": "Any (processing options are a stable JDE mechanism since Tools Release 9.1.4.6 per Oracle discovery docs)",
         "tools_release": "9.1.4.6+",
         "customisations": "None known to affect this capability -- reconfirm per engagement",
-        "adapter_revision": "mcp_server/jde_mcp_server/ais_client.py AISClient.set_processing_option, gated by scope.py+approval.py+capability_catalog.py"
+        "adapter_revision": "recorded delivery: api_service/jde_api_service/delivery/functional.py (record_applied) with live read-back through delivery/live.py, gated by approval.py authorise_functional_delivery + capability_catalog.py"
       },
       "execution": {
-        "mechanism": "AIS Form Service Request against the Processing Option Revisions form (jderest/formservice)",
+        "mechanism": "Applied in DEV by an authorised person (Processing Option Revisions), then recorded in Jade; an automated AIS Form Service Request is a later, separately validated adapter",
         "input_schema": "{story_id, change_id, application, version, option, value}",
-        "commit_boundary": "Single field write, single commit -- one operation, no multi-field transaction",
+        "commit_boundary": "Single processing-option value -- one approved change, one recorded application",
         "expected_side_effects": "None beyond the processing-option value itself; the option must not itself be documented as triggering other JDE behaviour on save"
       },
       "scope": {
@@ -46,7 +46,7 @@
       },
       "preconditions": {
         "required_records": "The target version must already exist and be a customer-named (non-template) version",
-        "expected_current_value": "Read via read_approved_target (the change's own target only) and recorded as the rollback value BEFORE any write, every time",
+        "expected_current_value": "Read live through the approved discovery read of the change's own target when the approval is bound, and kept as the rollback value",
         "dependencies": "None beyond the version's existence",
         "locks_and_absence_checks": "Not implemented -- see recovery.concurrency_note; this is a known gap, not a claimed control"
       },
@@ -57,10 +57,10 @@
         "evidence_requirements": "capture_evidence with prior value, new value, and test result, every time -- verify_evidence_chain before any sign-off"
       },
       "recovery": {
-        "retry_policy": "No automatic retry -- a failed write is reported, not retried silently (functional-agent.md's own boundary)",
+        "retry_policy": "No automatic retry -- a read-back that does not show the approved value is recorded as failed and reported, never retried silently",
         "ambiguous_result_handling": "Any unexpected warning or side effect stops the operation and is reported, never auto-accepted",
         "compensation_note": "A rollback is itself a write, requiring its own propose_change/approval -- never performed automatically",
-        "concurrency_note": "No compare-and-write lock exists yet; a fresh read immediately before write reduces but does not eliminate a race -- unresolved concurrency risk is a real gap, not a false one"
+        "concurrency_note": "Jade does not lock the value in JDE; the live read-back after the person applies the change shows whether the approved value is what JDE holds, but another change between apply and read-back is not excluded"
       },
       "delivery": {
         "classification": "Configuration-data change -- not an object/version transfer; CNC's package/promotion process does not apply the same way a development object would",

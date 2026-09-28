@@ -209,3 +209,11 @@ def test_application_manager_is_named_as_such():
     """The operating model's role name: the product_manager role is the ERP Application Manager."""
     lc = lifecycle.derive(_change(state="BACKLOG_READY", business_domain_id="D1", domain_review_stage="ready_for_application_manager"))
     assert lc.next_action.owner_label == "Application Manager"
+
+
+def test_a_rejected_ai_key_is_named_on_the_failed_analysis():
+    lc = lifecycle.derive(_change(id="CR-9", state="RECEIVED", processing_stage="failed",
+                                  processing_error="RuntimeError: orchestration ended in error: Failed to authenticate. "
+                                                   "API Error: 401 API key is invalid."))
+    assert (lc.phase, lc.health, lc.next_action.action) == ("understand", "failed", "start_analysis")
+    assert any("rejected this customer's AI key" in i for i in lc.open_items)

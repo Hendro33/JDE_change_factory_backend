@@ -173,8 +173,8 @@ def create_customer(payload: CustomerInput, ctx: AuthContext = Depends(require_r
 _SCOPE_SHARED_NOTE = (
     "The Engagement Scope below is this company's own and is what the execution gate enforces for its "
     "stories: approved versions, dated spike experiments, the DEV environment binding and the approval "
-    "policy. The JDE (AIS) connection itself is still one deployment-wide setting shared by every company; "
-    "making it per-company is a later step."
+    "policy. The JD Edwards connection (AIS address, certificate, credential and approved reads) is also this "
+    "company's own, set up under Administration → Integrations → JDE."
 )
 
 

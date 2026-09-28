@@ -23,7 +23,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Optional
 
-from ..discovery import profile_service, service as discovery_service, transport
+from ..discovery import capabilities, profile_service, service as discovery_service, transport
 from ..services import credential_crypto
 
 ORCHESTRATION_PATH = "/jderest/v3/orchestrator/{name}"
@@ -64,8 +64,11 @@ def read_processing_option(company_id: str, story_id: str, actor_user_id: Option
         profile = discovery_service.profile_service.load(company_id)
         read = discovery_service._approved_read(profile["config"], "processing_option_values") if profile else None
         fields = [option] if read is not None and read.fields else []
+        # As many records as this customer's connection allows per query
+        # (the profile's limit, never above the hard ceiling); no paging.
+        limit = min(profile["config"].limits.max_records, capabilities.HARD_MAX_RECORDS) if profile else 1
         evidence = discovery_service.execute_read(grant, "processing_option_values", f"{application}|{version}",
-                                                  fields, None, 10, raw_out=raw)
+                                                  fields, None, max(1, limit), raw_out=raw)
     except discovery_service.DiscoveryBlocked as exc:
         raise LiveUnavailable(f"the JD Edwards connection cannot read it: {exc}") from None
     except discovery_service.DiscoveryFailed as exc:

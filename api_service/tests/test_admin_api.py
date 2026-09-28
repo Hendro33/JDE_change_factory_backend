@@ -47,7 +47,7 @@ def test_erp_landscape_never_exposes_credentials(client):
     dumped = str(body).lower()
     for forbidden in ("password", "username", "token"):
         assert forbidden not in dumped
-    assert "deployment-wide" in body["scopeGloballySharedNote"]
+    assert "this company's own" in body["scopeGloballySharedNote"] and "deployment-wide" not in body["scopeGloballySharedNote"]
 
 
 def test_erp_landscape_reports_live_verification_once_the_connection_is_enabled(client):

@@ -1,61 +1,32 @@
 # Operating a hosted deployment
 
-This covers what's specific to running `api_service` as a real, hosted
-backend (currently: Render, via `render.yaml` at the repo root) — not
-local development, which the main `README.md` / `GETTING_STARTED.md`
-already cover.
+This covers running Jade as a hosted, multi-customer service. The Azure set-up itself is in `AZURE_DEPLOYMENT.md`;
+running on a Mac is in `PREVIEW.md`.
 
 ## What's durable, and where
 
-Everything this service and `mcp_server` write lives under one mounted
-disk (`/data` in `render.yaml`):
+| Data | Single server | Azure |
+|---|---|---|
+| Users, customers, memberships and roles, sessions, settings, connections (credentials encrypted), stories, approvals, delivery records, evidence, runs | SQLite in `JDE_API_DATA_DIR` | PostgreSQL (`JDE_DATABASE_URL`) |
+| Uploaded files: source exports, reference documents, process-framework workbooks, request attachments | `JDE_API_DATA_DIR` | Blob Storage (`JDE_BLOB_CONTAINER_URL`) |
+| Technical Agent working copies during a run | `JDE_API_DATA_DIR/technical_workspaces` | per-instance scratch (`/data`) |
 
-| Env var | Contents |
-|---|---|
-| `JDE_API_DATA_DIR` | SQLite database (`jde.sqlite3`: users, companies, roles, memberships, invitations, sessions, Jira connections) + this service's own JSON collections (change requests, business domains, engagement scope, ...) |
-| `JDE_BACKLOG_DIR` | mcp_server's backlog records (Gate 2) |
-| `JDE_CHANGE_DIR` | mcp_server's approval records |
-| `JDE_EVIDENCE_DIR` | mcp_server's evidence files |
-
-A restart or redeploy that keeps the same disk attached loses nothing —
-this has been verified locally (stop/restart a real `uvicorn` process
-against the same directory: saved Jira settings, user accounts, and
-even active login sessions all survived) and should be re-verified the
-same way against the actual hosted disk once it exists.
+A restart or redeploy loses nothing: settings, credentials, connection readiness, sessions and stories are all in the
+database.
 
 ## Creating the first Admin
 
-There is no public admin-registration endpoint anywhere in this
-service — registration is invite-only, and only an existing Admin can
-invite someone. `services/bootstrap_service.py` is the one deliberate
-way around that circularity, and it is controlled entirely by two
-server-side environment variables:
+Registration is invite-only, so the first Admin comes from the server's settings (`services/bootstrap_service.py`):
 
-- `JDE_BOOTSTRAP_ADMIN_EMAIL`
-- `JDE_BOOTSTRAP_ADMIN_PASSWORD`
+- `JDE_BOOTSTRAP_ADMIN_EMAIL` and `JDE_BOOTSTRAP_ADMIN_PASSWORD` (Key Vault) create a temporary setup account;
+- `JDE_BOOTSTRAP_CUSTOMER_NAME` names the first customer, created on the first start only.
 
-**Set these directly in the hosting platform's dashboard (Render:
-Environment tab), never anywhere else.** The password must never be
-typed into chat, a commit, or any file in this repo — this is why the
-Blueprint declares both with `sync: false`: Render will ask you to
-fill them in yourself when you deploy, and never stores or displays
-them back to anyone but you.
-
-Once you've confirmed you can log in as that Admin on the live site:
-
-1. Go back to the Environment tab.
-2. Blank out (or delete) `JDE_BOOTSTRAP_ADMIN_PASSWORD`.
-3. Redeploy (Render redeploys automatically on an env var change).
-
-`ensure_bootstrap_admin()` is idempotent and already skips itself once
-that email is registered, so this isn't strictly required for
-correctness — but removing the password afterward means it can never
-be read back out of the dashboard or reused if the account is ever
-deleted.
+Sign in as the setup account and use **Finish setup** to create your own administrator account. The setup account is
+then switched off and never re-enabled by a restart. Remove `JDE_BOOTSTRAP_ADMIN_PASSWORD` from the settings afterwards.
 
 ## Backup and restore
 
-Proportionate to a single-process pilot: no automated job, one script that takes a **consistent** backup of SQLite and all JSON records together, and restores it.
+**On PostgreSQL (Azure)** use the database service's automated backups and point-in-time restore, plus Blob Storage soft delete / versioning; `scripts/jade_backup.py` refuses to run there. The rest of this section is for the **single-server SQLite** installation: one script that takes a **consistent** backup of SQLite and all JSON records together, and restores it.
 
 ### What "consistent" means here
 
@@ -78,18 +49,18 @@ The pause usually lasts a few seconds. A browser that saves during it gets a rea
 
 ### Taking a backup
 
-In Render's shell (Dashboard → service → **Shell**), which has the service's environment:
+On the server, with the service's environment:
 
 ```bash
 python3 scripts/jade_backup.py backup --out /tmp/jade-$(date +%Y%m%d-%H%M).tar.gz
 python3 scripts/jade_backup.py verify --archive /tmp/jade-YYYYMMDD-HHMM.tar.gz
 ```
 
-The archive contains password and session hashes, and Jira tokens encrypted under `JDE_CREDENTIAL_KEY`. Encrypt it before it leaves the platform (for example `age -r <recipient> -o jade.tar.gz.age jade.tar.gz`), download it to durable storage off the platform, and delete it from `/tmp`. Render's daily disk snapshot is a second layer, but it is not paused, so it is not guaranteed to be consistent across SQLite and JSON.
+The archive contains password and session hashes, and Jira tokens encrypted under `JDE_CREDENTIAL_KEY`. Encrypt it before it leaves the server (for example `age -r <recipient> -o jade.tar.gz.age jade.tar.gz`), keep it in durable storage elsewhere, and delete it from `/tmp`. A disk snapshot is not paused, so it is not guaranteed to be consistent across SQLite and JSON.
 
 ### Restoring
 
-1. Upload the archive into the service (Render's shell file transfer, or `render ssh` piping it in).
+1. Copy the archive onto the server.
 2. Make sure `JDE_CREDENTIAL_KEY` (or `JDE_CREDENTIAL_KEY_PREVIOUS`) holds the key the archive needs. `verify` prints `credential_key_ids_needed` and whether the current environment can read them. See "Recovering the matching credential key" below.
 3. Run:
    ```bash
@@ -120,26 +91,24 @@ The key is deliberately **not** in the backup: whoever holds the archive alone c
 1. When a key is created or rotated, store it in the team password manager as `Jade JDE_CREDENTIAL_KEY <key id>`. The key id is the first 8 hex characters of its SHA-256; print it in the service shell with `python3 -c "import sys; sys.path[:0]=['api_service']; from jde_api_service.services import credential_crypto; print(credential_crypto.current_key_id())"`.
 2. `verify` or `restore` reports `credential_key_ids_needed`. Look up the entry with that id in the password manager.
 3. Set that key as `JDE_CREDENTIAL_KEY`. If the service should keep its newer key, set it as `JDE_CREDENTIAL_KEY_PREVIOUS` instead, and the next start re-encrypts the tokens under the current key. Then restart.
-4. If the key cannot be recovered, only the Jira tokens are lost. Integrations shows Jira as **Unavailable (cannot be decrypted)** and sync is refused. There is no fallback to simulated data. Each company's Admin re-enters its token.
+4. If the key cannot be recovered, only the stored credentials are lost (AI keys, JDE passwords, Jira tokens). The screens show them as unreadable and the connections refuse to run. Each customer's Admin re-enters them.
 
 Keep every retired key in the password manager until no retained backup still lists its id.
 
 ## JDE discovery for the Architect
 
-Each company has one read-only **discovery profile**, set up under Admin → Integrations → JDE. It is separate from the execution gate's JDE settings (`JDE_AIS_*`, used only by `mcp_server`); the two never share credentials.
+Each customer has one **JD Edwards connection**, set up under Administration › Systems & Connections › JDE. It is used for the Architect's approved, read-only discovery reads, for reading the before-value and the applied value of an approved change, and for running approved test Orchestrations. Jade never writes to JD Edwards: changes are applied in DEV by a person and recorded.
 
 **Where things are stored:**
 - **Profile metadata:** in `jde_profiles`, with every saved revision kept in `jde_profile_revisions`.
 - **The credential:** encrypted with `JDE_CREDENTIAL_KEY`.
 - **Observations, sanitised activity, artifact metadata and design evidence baselines:** in SQLite.
-- **Artifact bytes:** under `<JDE_API_DATA_DIR>/artifacts/`.
-- **Hand-off files for the Functional Agent:** under `<JDE_API_DATA_DIR>/design_baselines/`.
-
-All of it is covered by the backup script.
+- **Artifact bytes:** in the blob store (local folder or Azure Blob Storage).
+- **Design hand-offs:** in the database.
 
 **Connection settings and operator overrides.** A company Admin configures the live connection in the app: the AIS
 address (the one permitted destination), the AIS certificate (uploaded, stored in `jde_ca_certificates`, trusted only
-for that connection), the credential (encrypted, bound to that address and certificate) and the mode. Certificate and
+for that connection), and the credential (encrypted, bound to that address and certificate). Certificate and
 host-name/IP verification are never switched off. The server needs no settings; these optional overrides remain:
 
 | Variable | Meaning |
@@ -153,11 +122,9 @@ host-name/IP verification are never switched off. The server needs no settings; 
 - **Identity:** signed in, and the session's environment, role, application release and Tools / server release captured. Environment names are compared exactly and never aliased (`JPS920` is not `PS920`). A `*ALL` role proves only that sign-in works. The path code comes only from JDE's F00941 answer, never from the environment name.
 - **JDE authorisation:** a dedicated user and non-`*ALL` role, verified independently with a linked evidence document, and the approved sample read succeeding within its bounds. The customer's JDE permissions are the primary boundary; Jade's approved reads are an extra restriction.
 - **Network restriction:** AIS accepts only the backend's source address, with evidence.
-- **Jade runtime safeguards:** writes simulated, approved reads defined, window open, credential encrypted, not disabled.
+- **Jade runtime safeguards:** no JDE write path, approved reads defined, window open, credential encrypted, not disabled.
 
 Passing TLS, sign-in or the attestations alone never makes a connection ready. Sample reads are built on the server from the approved read; the browser can preview the exact request (method, URL, body, sha256) but never supplies an endpoint or query.
-
-A live profile never falls back to the simulation, and the simulation never pretends to be live.
 
 **The live transport itself:**
 - verified TLS;
@@ -167,7 +134,7 @@ A live profile never falls back to the simulation, and the simulation never pret
 - one request at a time per company;
 - at most 10 records, no paging, no retries.
 
-The only paths it can call are the token request, logout, `defaultconfig`, `dataservice` (BROWSE only) and `poservice`.
+The only paths it can call are the token request, logout, `defaultconfig`, `dataservice` (BROWSE only), `poservice` and, for an approved test only, `orchestrator/<approved name>`.
 
 **Environment verification.** Test Connection verifies the environment against the documented AIS contract, and keeps four sources of information apart:
 
@@ -189,17 +156,17 @@ Contract sources (docs.oracle.com could not be fetched from the build environmen
 - [defaultconfig](https://docs.oracle.com/en/applications/jd-edwards/cross-product/9.2/rest-api/op-defaultconfig-get.html)
 - [AIS client DefaultConfig](https://docs.oracle.com/en/applications/jd-edwards/cross-product/9.2/ais-client-api-reference/com/oracle/e1/aisclient/DefaultConfig.html)
 
-**Before the first supervised live connection** (none has happened yet):
+**Before a customer's first live connection:**
 1. **Customer/CNC:** a dedicated JDE user and a role that can read only the approved tables and applications in the DEV environment. Jade's read-only design does not make an over-privileged account safe.
 2. **Customer/CNC:** a network route that reaches only the DEV AIS server, and written confirmation that OCM maps the environment to the DEV data source only. Record this in the profile.
 3. **CNC:** a written statement of the Tools release and path code the DEV environment runs on (the runtime attestation). AIS does not report them.
-4. **Operator:** set `JDE_DISCOVERY_ALLOWED_HOSTS` to that host, and `JDE_DISCOVERY_LIVE_ENABLED=true`, for the supervised session only.
+4. **Operator (optional):** set `JDE_DISCOVERY_ALLOWED_HOSTS` to the customers' AIS hosts.
 5. **Admin:** save the live profile with a short window and a minimal approved-read list. Enter the credential.
 6. **With the customer present:**
    - run Test Connection;
    - run one approved sample read per capability;
-   - compare the results, including the session context the token response reports, with what the customer sees in JDE. Response shapes are unverified until this is done (Experiment A1).
-7. **Admin:** enable discovery only after that comparison. Disable the connection when the window ends, and remove `JDE_DISCOVERY_LIVE_ENABLED` again.
+   - compare the results, including the session context the token response reports, with what the customer sees in JDE.
+7. **Admin:** enable discovery only after that comparison. Disable the connection when the window ends.
 
 **Disable Connection** blocks new and queued calls at once. It reports any request already in flight, which finishes; nothing is interrupted mid-request. Re-enabling needs a fresh Test Connection and fresh sample reads.
 
@@ -220,47 +187,36 @@ Choose `full` only with the customer's written agreement.
 
 **Agent runtime.** Every agent run:
 - is restricted to `Task` as its only built-in tool (`services/agent_runtime.py`);
-- has the credential encryption keys, the execution AIS credential (`JDE_AIS_USERNAME`, `JDE_AIS_PASSWORD`) and the bootstrap password blanked in the agent process, and so also in the project MCP server that process starts. Consequence: live execution through an agent run cannot authenticate to AIS. It fails closed. This must be revisited, deliberately, before any authorised live execution;
+- has the credential encryption keys, the database and blob-storage secrets, the SMTP password and the bootstrap password blanked in the agent process, and so also in the project MCP server that process starts. Agents have no way to authenticate to AIS or change JD Edwards;
 - has every project MCP tool it is not allowed removed from its context.
 
 **Design hand-off.** The hand-off file names the exact change its design revision proposed. `get_design_baseline` returns that change with its current approval state.
 
-**Integration proof.** `scripts/prove_architect_discovery.py` runs the real Architect, and then the existing functional-agent (non-executing), through the Claude CLI against the simulated endpoint. The last recorded run is in `docs/proof/architect_discovery_run/`. It needs a Claude login; it is not part of CI.
+## Recorded delivery
 
-## Simulated DEV estate
+**Functional changes** (processing options). After the exact change is approved:
+- The Application Manager applies exactly the approved value in DEV and records it (`POST /changes/{id}/delivery/applied`).
+  Jade re-checks the approval, scope and authority, and reads the value back live. Anything other than the approved
+  value is refused, never recorded. When the connection cannot read it, the person states the value with an evidence
+  reference, and every record says it was stated, not read.
+- The approved test Orchestration runs live (`.../delivery/run-test`), or the person records the result with
+  evidence (`.../delivery/test-result`). A call whose outcome is unknown (for example a timeout) must be reconciled
+  before anything else happens.
 
-Discovery in simulation mode, and simulated execution (the Functional path's mock and the Technical simulation adapter), share one persisted estate per company and environment. It lives under `<JDE_API_DATA_DIR>/sim_estate/` (`JDE_SIM_ESTATE_DIR`).
-- Every change records who made it and why.
-- Drift, failures and timeouts exist only as explicit test conditions.
-- It is covered by backups like the rest of the data directory.
-- It never contains customer data and never contacts JDE.
-- An unknown target is refused, never invented.
+**Technical changes** (business functions, event rules). The Technical Agent (`.claude/agents/technical-agent.md`)
+only prepares an immutable package revision from the customer's uploaded source exports. After a person approves it,
+people apply it through OMW, build it, have the CNC activate it, and verify it, and each step is recorded in Jade
+(`.../technical/packages/{rev}/apply|build|verify`, CNC activation by a `cnc_operator`). The CNC role is never granted
+by bootstrap: an Admin assigns it to a named person.
 
-## Technical work (simulation only)
-
-The Technical Agent (`.claude/agents/technical-agent.md`, `technical/driver.py`) is started per story from Delivery → Technical Work, once a person has approved the Architect's design revision. Its packages are immutable revisions stored in SQLite; its workspaces are under `<JDE_API_DATA_DIR>/technical_workspaces/`.
-
-**Roles.**
-- The design and each exact package revision are approved by a role the company's approval policy allows.
-- Only a **`cnc_operator`** can record a CNC activation. That role is never granted by bootstrap: an Admin assigns it to a named person under Admin → Users.
-- Jade never deploys or promotes a package. The CNC does, and Jade records that it happened.
-
-**Company scope.** The company's engagement scope must authorise the object types (`technical_agent.authorized_object_types`). Objects must carry a customer system code 55–59, and `reserved_product_code` narrows that further if set.
-
-**Execution.**
-- Only the simulation adapter exists. The live adapter is unavailable by design: no mechanism for editing or importing a real JDE object is qualified.
-- No live execution path exists. Execution credentials are never given to any agent; the agent process blanks them.
-- A governed executor that retrieves credentials server-side, after checking the exact approved operation, is future work.
-
-**Unknown outcomes.** An unknown apply or build outcome blocks retry until someone reconciles it from the Technical Work screen. Reconciliation reads the simulated estate.
-
-**Integration proof.** `scripts/prove_technical_agent.py` runs the real Architect and the real Technical Agent through the Claude CLI against the simulated estate, with synthetic approvers. The last recorded run is in `docs/proof/technical_agent_run/`. It needs a Claude login and is not part of CI.
+The engagement scope must authorise the object types (`technical_agent.authorized_object_types`). Objects must carry
+a customer system code 55–59, and `reserved_product_code` narrows that further if set.
 
 ## Credential encryption key
 
-Jira API tokens are stored encrypted in SQLite (`services/credential_crypto.py`). The key is **never** on the disk:
+AI keys, JDE passwords and Jira API tokens are stored encrypted in the database (`services/credential_crypto.py`). The key is **never** stored with the data:
 
-- It comes only from `JDE_CREDENTIAL_KEY` in the service's environment. Set it in the Render dashboard.
+- It comes only from `JDE_CREDENTIAL_KEY` in the service's environment (on Azure: a Key Vault reference).
 - Keep a second copy in the team password manager.
 
 Generate a key on your own machine, and paste it only into those two places:
@@ -271,7 +227,7 @@ python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().
 
 - **Without the key**, saving a credential is refused, so nothing is ever stored in plaintext. The Integrations screen shows that encryption is unavailable.
 - **Backups** (above) contain only ciphertext. A restore needs the key that was current when the backup was taken. Keep old keys in the password manager until no backup still needs them.
-- **Lost key:** only the stored tokens are lost. Set a new key; each company's Admin then re-enters its Jira token. Until then Integrations shows the old ones as "unreadable" and Jira as Unavailable for that company; sync is refused (no fallback to simulated Jira).
+- **Lost key:** only the stored credentials are lost. Set a new key; each customer's Admin then re-enters them. Until then they show as "unreadable" and the connections refuse to run.
 - **Rotation:**
   1. Set the new key as `JDE_CREDENTIAL_KEY`, and the old one as `JDE_CREDENTIAL_KEY_PREVIOUS`.
   2. Redeploy. On start, every token is re-encrypted under the new key.
@@ -285,63 +241,37 @@ Failed sign-ins are counted in SQLite (`services/login_throttle.py`), so the lim
 - **Per account:** after 5 failures in 15 minutes, that account is refused, even with the right password, until the window passes.
 - **Per client address:** after 20 failures in 15 minutes, all sign-ins from that address are refused.
 
-Refusals return HTTP 429 with `Retry-After`. Behind Render's proxy, set `JDE_TRUST_PROXY_HEADERS=true` so the real client address is used. Leave it unset anywhere the `X-Forwarded-For` header is not overwritten by a trusted proxy.
+Refusals return HTTP 429 with `Retry-After`. Behind Azure's front end (or any proxy), set `JDE_TRUST_PROXY_HEADERS=true` so the real client address is used. Leave it unset anywhere the `X-Forwarded-For` header is not overwritten by a trusted proxy.
 
 To unlock an account early (for example, a user who mistyped repeatedly), delete its rows from the service shell:
 
-```bash
-python3 -c "import sqlite3; c=sqlite3.connect('/data/api_data/jde.sqlite3'); c.execute(\"DELETE FROM login_failures WHERE scope='account' AND key='user@example.com'\"); c.commit()"
+```sql
+DELETE FROM login_failures WHERE scope = 'account' AND key = 'user@example.com';   -- in the SQLite or PostgreSQL database
 ```
 
-## Password resets without an email provider
+## E-mail: invitations and password resets
 
-Until an email provider is configured, no email is sent.
+With `JDE_SMTP_HOST` set (Azure Communication Services Email, Microsoft 365, SendGrid or any SMTP submission service;
+see `services/email_service.py`), invitations and password resets are e-mailed, with links built from
+`JDE_PUBLIC_URL`. Every screen says truthfully what happened:
 
-- **Invitations:** the link is shown to the inviting Admin.
-- **Password resets:** a company Admin creates the link under Admin > Users. The anonymous "forgot password" form never returns a link, because that would let anyone reset anyone's password.
-- **Limit on Admins:** an Admin cannot create a reset link for someone who also belongs to a company where that Admin is not an Admin.
+- **E-mailed:** the Admin sees "e-mailed to …" and no link.
+- **Not configured or failed:** the Admin sees why, and the link to hand over personally.
+- **Forgot password:** the form never reveals whether an address exists. Without a mail server it tells the person to
+  ask their Administrator.
+- **Limit on Admins:** an Admin cannot create a reset link for someone who also belongs to a customer where that Admin
+  is not an Admin.
 
 ## HTTPS, CORS, and cookies
 
-- **HTTPS**: automatic on Render for both its `*.onrender.com` URL and
-  any custom domain you attach — no code or config here handles TLS
-  termination directly.
-- **CORS**: `JDE_API_ALLOWED_ORIGINS` must be the frontend's exact
-  origin (scheme + host, no trailing slash, no wildcard) —
-  `https://jade.consultiq.nl`. `allow_credentials=True` is already set
-  in `main.py`, which is what lets the session cookie cross origins at
-  all; browsers refuse `allow_credentials` combined with a wildcard
-  origin, so this can never be `*`.
-- **Cookies**: `JDE_COOKIE_SECURE=true` (cookies only sent over
-  HTTPS), `JDE_COOKIE_SAMESITE=lax` when the API is on a
-  `*.consultiq.nl` subdomain (recommended — see below), and
-  `JDE_COOKIE_DOMAIN=.consultiq.nl` (or whatever the shared
-  registrable domain is) so the same cookie is valid across both
-  `api.consultiq.nl` and `jade.consultiq.nl`. If the API instead stays
-  on a bare `*.onrender.com` URL (a genuinely different domain from
-  the frontend), `JDE_COOKIE_SAMESITE` must be `none` instead, which
-  browsers only allow when `Secure` is also set (already the default
-  here).
-- **CSRF**: independent of the above — a double-submit cookie
-  (`jde_csrf`), checked against the `X-CSRF-Token` header on every
-  state-changing request (`dependencies.verify_csrf_if_unsafe`). No
-  extra configuration needed; it works the same regardless of the
-  SameSite setting, as defence in depth.
-
-## Prefer an API subdomain under consultiq.nl
-
-Recommended over a bare `*.onrender.com` URL, for two reasons:
-1. It lets `JDE_COOKIE_DOMAIN`/`JDE_COOKIE_SAMESITE=lax` treat the API
-   and the frontend as the same site (safer than the cross-site
-   `SameSite=None` case, and simpler to reason about).
-2. It reads better and survives a future move off Render (Azure or
-   elsewhere) without changing the URL the frontend, or anyone's
-   bookmarks, point at.
-
-To set it up once the service exists: in Render's dashboard, add a
-Custom Domain (e.g. `api.consultiq.nl`) to the service; Render gives
-you a CNAME target to add at wherever consultiq.nl's DNS is managed.
-Render provisions HTTPS for it automatically once that CNAME resolves.
+- **HTTPS**: terminated by the Azure front end (Container Apps / App Service) for the default and custom domains.
+- **CORS**: `JDE_API_ALLOWED_ORIGINS` must be the frontend's exact origin (scheme and host, no trailing slash, no
+  wildcard), e.g. `https://jade.consultiq.nl`. Credentials are allowed, so a wildcard can never work.
+- **Cookies**: `JDE_COOKIE_SECURE=true`. Serve the API under the same registrable domain as the frontend (e.g.
+  `api.jade.consultiq.nl`) with `JDE_COOKIE_DOMAIN` set and `JDE_COOKIE_SAMESITE=lax`. If the API is on a different
+  site, `JDE_COOKIE_SAMESITE=none` is needed instead.
+- **CSRF**: a double-submit cookie (`jde_csrf`), checked against the `X-CSRF-Token` header on every state-changing
+  request. No configuration needed.
 
 ## Process frameworks, process maps and as-built records
 
@@ -377,8 +307,10 @@ Render provisions HTTPS for it automatically once that CNAME resolves.
   - Each generation is a new version, with its Markdown stored.
   - It is finalised only when every checkpoint is complete **and** its sources are unchanged since generation.
   - Checkpoints are: story approved, processes decided, to-be map, design approved and not flagged, exact approval,
-    applied, built, CNC activation, verified.
-  - Simulated delivery carries the SIMULATED DELIVERY notice in the record and its Markdown.
+    applied, built, CNC activation, verified (or, for a functional change: applied, test passed, applied value is
+    the approved value).
+  - Delivery is recorded: the record says for each step whether Jade read it live or a person stated it.
+  - Without an active process framework, the process checkpoints are not applicable and the record says so.
 
 ## Story refinement from findings
 
@@ -397,40 +329,21 @@ Render provisions HTTPS for it automatically once that CNAME resolves.
 
 ## Local preview
 
-`scripts/run_local_preview.sh` does the following:
-- creates its own virtual environment on the first run and installs the backend and frontend;
-- starts the real backend (:8000) and the frontend (:5173);
-- adds each demonstration story once, only if it is absent:
-  - `seed_demo_technical.py`, `seed_demo_process.py` and `seed_demo_functional.py`;
-  - they use scripted stand-ins, the synthetic framework and simulated JDE.
+`scripts/run_local_preview.sh` runs the same code on one machine, with SQLite and a local folder for files, and no
+data pre-loaded. See `PREVIEW.md`.
 
-Everything is kept in `.preview-data/` (git-ignored) and reused on every start:
-- the database, with accounts, password hashes and encrypted credentials;
-- data files, frameworks and their original workbooks, mappings, maps and records.
+## Deployment trust controls
 
-Throwaway demo passwords are generated once into `.preview-data/credentials.env` (mode 600) and never printed or
-logged. An existing admin account is never reset. `--reset` deletes the data only after typed confirmation.
-Browser demonstration: frontend `e2e/process/`.
-
-## JDE connection: server-managed settings
-
-These are customer settings, stored in the profile and edited in Admin › Integrations › JDE:
-- connection name, mode, AIS address, environment, purpose and trial approval, role, releases, path code;
-- authentication method, contacts, network notes, attestations and linked evidence;
-- approved reads, window, limits and data sharing.
-
-These are **deployment trust controls**, set on the server only and never from a browser:
+Customer settings (the JD Edwards connection, AI key, Jira) are edited in the app. These are set on the server only,
+never from a browser:
 
 | Setting | Purpose |
 |---|---|
-| `JDE_DISCOVERY_LIVE_ENABLED=true` | Global switch for live discovery. Off by default |
-| `JDE_DISCOVERY_ALLOWED_HOSTS` | The AIS hosts the backend may contact |
+| `JDE_DISCOVERY_LIVE_ENABLED=false` | Locks every JD Edwards connection off (emergency stop) |
+| `JDE_DISCOVERY_ALLOWED_HOSTS` | The only AIS hosts the backend may contact |
 | `JDE_DISCOVERY_CA_BUNDLE` | Optional PEM file for a private CA. Certificate verification is never switched off |
+| `JDE_ANTHROPIC_BASE_URL` | Optional HTTPS gateway in front of the Anthropic API |
 | `JDE_CREDENTIAL_KEY` | The credential-encryption key |
 
-Server-managed settings in the preview:
-- The preview launcher reads only the first three, and only from `.preview-data/server.env`.
-- It always sets `JDE_MCP_MOCK_MODE=true`, so JDE writes stay simulated.
-
-The panel shows each server-managed prerequisite and a plain diagnostic when one blocks the configured endpoint (TLS
-trust, DNS, connect timeout and VPN hints). Diagnostics never include credentials, tokens or response bodies.
+The JDE panel shows each server-managed prerequisite and a plain diagnostic when one blocks a connection (TLS trust,
+DNS, connect timeout, VPN hints). Diagnostics never include credentials, tokens or response bodies.
