@@ -8,5 +8,11 @@ dependencies = [
     "httpx>=0.27.0",
 ]
 
+[project.optional-dependencies]
+postgres = [
+    "psycopg[binary]>=3.2",
+    "psycopg-pool>=3.2",
+]
+
 [tool.setuptools]
 packages = ["jde_mcp_server"]

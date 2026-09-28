@@ -130,6 +130,9 @@ async def _lifespan(app: FastAPI):
     ensure_bicycleworks_business_domains(get_business_domain_service())
     ensure_t001_backlog_link(get_customer_link_service())
     yield
+    from jde_mcp_server import docstore as _docstore
+
+    _docstore.close_pools()
 
 
 app = FastAPI(

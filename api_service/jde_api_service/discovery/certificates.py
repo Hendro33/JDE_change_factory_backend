@@ -81,8 +81,8 @@ def store(company_id: str, pem: str, actor: str) -> dict[str, Any]:
     now = datetime.now(timezone.utc).isoformat()
     with connection(immediate=True) as conn:
         conn.execute(
-            "INSERT OR IGNORE INTO jde_ca_certificates (company_id, sha256, pem, summary, uploaded_by, uploaded_at) "
-            "VALUES (?, ?, ?, ?, ?, ?)", (company_id, sha, pem, json.dumps(summary), actor, now))
+            "INSERT INTO jde_ca_certificates (company_id, sha256, pem, summary, uploaded_by, uploaded_at) "
+            "VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING", (company_id, sha, pem, json.dumps(summary), actor, now))
     return get_summary(company_id, sha)  # type: ignore[return-value]
 
 

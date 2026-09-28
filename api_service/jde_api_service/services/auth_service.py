@@ -93,7 +93,7 @@ def create_user(email: str, password: str, display_name: str, *, user_id: Option
     uid = user_id or f"u-{uuid.uuid4().hex[:12]}"
     now = _iso(_now())
     with connection() as conn:
-        existing = conn.execute("SELECT id FROM users WHERE email = ?", (email,)).fetchone()
+        existing = conn.execute("SELECT id FROM users WHERE lower(email) = lower(?)", (email,)).fetchone()
         if existing is not None:
             raise EmailAlreadyRegistered(email)
         conn.execute(
@@ -113,7 +113,7 @@ def _row_to_user(row) -> User:
 
 def get_user_by_email(email: str) -> Optional[User]:
     with connection() as conn:
-        row = conn.execute("SELECT * FROM users WHERE email = ? COLLATE NOCASE", (email,)).fetchone()
+        row = conn.execute("SELECT * FROM users WHERE lower(email) = lower(?)", (email,)).fetchone()
         return _row_to_user(row) if row else None
 
 

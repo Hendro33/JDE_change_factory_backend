@@ -19,7 +19,7 @@ the approval: the gate cannot verify authority, so nothing runs.
 from __future__ import annotations
 
 import os
-import sqlite3
+from contextlib import contextmanager
 from typing import Iterable
 
 AUTH_DB_ENV = "JDE_AUTH_DB_PATH"
@@ -33,28 +33,35 @@ class AuthorityRevoked(Exception):
     """The approver no longer holds a role that may approve this change."""
 
 
-def _connect() -> sqlite3.Connection:
-    path = os.environ.get(AUTH_DB_ENV, "")
-    if not path or not os.path.exists(path):
-        raise AuthorityUnverifiable(
-            f"the approver's current authority cannot be checked: {AUTH_DB_ENV} is not set or points at no "
-            "database -- refusing (fail-closed)"
-        )
-    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=5)
-    conn.row_factory = sqlite3.Row
-    return conn
+@contextmanager
+def _reading():
+    """A read of Jade's database (joins an open transaction). Anything that
+    stops the read refuses: authority that cannot be checked is not granted."""
+    from . import docstore
+
+    path = None
+    if not docstore.database_url():
+        # The execution gate must be wired explicitly (main._wire_execution_gate
+        # exports the path); an unwired gate never falls back to a default file.
+        path = os.environ.get(AUTH_DB_ENV)
+        if not path or not os.path.exists(path):
+            raise AuthorityUnverifiable(
+                "the approver's current authority cannot be checked: Jade's database is not reachable -- "
+                "refusing (fail-closed)")
+    with docstore.transaction(immediate=False, path=path) as conn:
+        yield conn
 
 
 def require_simulation_allowed(company_id: str) -> None:
     """Simulated JDE execution exists only for demo customers. A real
     customer never gets a simulated write presented as a delivery."""
-    conn = _connect()
     try:
-        row = conn.execute("SELECT is_demo FROM companies WHERE id = ?", (company_id,)).fetchone()
-    except sqlite3.Error as exc:
+        with _reading() as conn:
+            row = conn.execute("SELECT is_demo FROM companies WHERE id = ?", (company_id,)).fetchone()
+    except AuthorityUnverifiable:
+        raise
+    except Exception as exc:  # noqa: BLE001 -- fail closed on any read failure
         raise AuthorityUnverifiable(f"whether {company_id} is a demo customer cannot be read: {exc}") from exc
-    finally:
-        conn.close()
     if row is None or not row["is_demo"]:
         raise SimulationNotAllowed(
             "live JDE writes are not enabled in this deployment, and simulated execution is only available for "
@@ -68,19 +75,19 @@ class SimulationNotAllowed(Exception):
 
 def current_roles(user_id: str, company_id: str) -> frozenset[str]:
     """Roles held right now; empty for an inactive user or membership."""
-    conn = _connect()
     try:
-        rows = conn.execute(
+        with _reading() as conn:
+            rows = conn.execute(
             "SELECT r.role FROM company_memberships m "
             "JOIN users u ON u.id = m.user_id "
             "JOIN membership_roles r ON r.membership_id = m.id "
             "WHERE m.user_id = ? AND m.company_id = ? AND m.status = 'active' AND u.is_active = 1",
             (user_id, company_id),
-        ).fetchall()
-    except sqlite3.Error as exc:
+            ).fetchall()
+    except AuthorityUnverifiable:
+        raise
+    except Exception as exc:  # noqa: BLE001 -- fail closed on any read failure
         raise AuthorityUnverifiable(f"the approver's current authority cannot be read: {exc}") from exc
-    finally:
-        conn.close()
     return frozenset(r["role"] for r in rows)
 
 

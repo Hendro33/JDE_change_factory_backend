@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import os
 import sys
+import uuid
 from pathlib import Path
 
 import pytest
@@ -78,6 +80,17 @@ def isolated_dirs(tmp_path, monkeypatch):
         monkeypatch.setattr(scope_module, attr, str(api_data_dir / sub))
     # The gate re-reads the approver's current roles from this database.
     monkeypatch.setenv("JDE_AUTH_DB_PATH", str(api_data_dir / "jde.sqlite3"))
+    # JDE_TEST_DATABASE_URL=postgresql://... runs the whole suite on
+    # PostgreSQL (the hosted/Azure engine): every test gets its own schema.
+    pg_schema = None
+    pg_url = os.environ.get("JDE_TEST_DATABASE_URL", "").strip()
+    if pg_url:
+        pg_schema = "t_" + uuid.uuid4().hex[:16]
+        monkeypatch.setenv("JDE_DATABASE_URL", pg_url)
+        monkeypatch.setenv("JDE_DATABASE_SCHEMA", pg_schema)
+    else:
+        monkeypatch.delenv("JDE_DATABASE_URL", raising=False)
+        monkeypatch.delenv("JDE_DATABASE_SCHEMA", raising=False)
     monkeypatch.setenv("JDE_WRITE_PAUSE_FILE", str(tmp_path / "WRITE_PAUSED"))
     monkeypatch.setenv("JDE_DESIGN_BASELINE_DIR", str(api_data_dir / "design_baselines"))
     # Discovery: a fresh simulated estate and closed circuit breakers per test;
@@ -126,12 +139,21 @@ def isolated_dirs(tmp_path, monkeypatch):
     _real_gensalt = bcrypt.gensalt
     monkeypatch.setattr(bcrypt, "gensalt", lambda *a, **kw: _real_gensalt(rounds=4))
 
-    return {
+    yield {
         "api_data_dir": api_data_dir,
         "backlog_dir": backlog_dir,
         "change_dir": change_dir,
         "evidence_dir": evidence_dir,
     }
+    if pg_schema:
+        import psycopg
+
+        from jde_mcp_server import docstore
+
+        docstore.close_pools()
+
+        with psycopg.connect(pg_url, autocommit=True) as conn:
+            conn.execute(f'DROP SCHEMA IF EXISTS "{pg_schema}" CASCADE')
 
 
 def _apply_csrf_header(c) -> None:
@@ -259,6 +281,6 @@ def place_in_owned_domain(client, change_id: str, customer: str = "bwm", domain_
             ).fetchone()
             if row is not None:
                 conn.execute(
-                    "INSERT OR IGNORE INTO domain_assignments (membership_id, business_domain_id) VALUES (?, ?)",
+                    "INSERT INTO domain_assignments (membership_id, business_domain_id) VALUES (?, ?) ON CONFLICT DO NOTHING",
                     (row["id"], domain_id),
                 )

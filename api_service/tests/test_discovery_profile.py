@@ -7,7 +7,6 @@ discovery off until it is re-verified.
 
 from __future__ import annotations
 
-import sqlite3
 
 import pytest
 
@@ -18,13 +17,10 @@ PASSWORD = "s3cret-Discovery-pw"
 
 
 def _db_rows(sql: str, *args):
-    from jde_api_service.persistence.db import db_path
+    from jde_api_service.persistence.db import connection
 
-    conn = sqlite3.connect(db_path())
-    try:
-        return conn.execute(sql, args).fetchall()
-    finally:
-        conn.close()
+    with connection() as conn:
+        return [tuple(r) for r in conn.execute(sql, args).fetchall()]
 
 
 def test_the_profile_is_versioned_in_the_database_and_saving_never_contacts_jde(client, monkeypatch):
@@ -58,9 +54,12 @@ def test_the_credential_is_encrypted_and_never_returned(client):
     assert view["credentialUsernameMasked"].startswith("JA") and "JADEDISC" not in view["credentialUsernameMasked"]
     stored = _db_rows("SELECT credential_secret FROM jde_profiles WHERE company_id = 'vdb'")[0][0]
     assert stored.startswith("enc:v1:") and PASSWORD not in stored
+    import os
+
     from jde_api_service.persistence.db import db_path
 
-    assert PASSWORD.encode() not in open(db_path(), "rb").read()
+    if not os.environ.get("JDE_DATABASE_URL"):
+        assert PASSWORD.encode() not in open(db_path(), "rb").read()
     for path in ("/admin/jde/profile",):
         assert PASSWORD not in client.get(path, headers=headers("vdb")).text
 

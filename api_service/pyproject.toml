@@ -40,6 +40,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# PostgreSQL (hosted / Azure Database for PostgreSQL): set JDE_DATABASE_URL.
+postgres = [
+    "psycopg[binary]>=3.2",
+    "psycopg-pool>=3.2",
+]
 test = [
     "pytest>=8.0.0",
 ]

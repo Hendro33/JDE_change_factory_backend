@@ -30,6 +30,21 @@ from .test_concurrency_and_stale_authority import _membership, _set_roles
 from .test_execution_attempts import _ready_change, _state
 from .test_stage1_execution_safeguards import _approved_story, _execute, _propose
 
+# This tool backs up the built-in SQLite database; on PostgreSQL it refuses
+# (test_on_postgresql_the_tool_refuses_and_names_the_database_backups).
+pytestmark = pytest.mark.skipif(bool(os.environ.get("JDE_TEST_DATABASE_URL")),
+                                reason="SQLite backup tool; PostgreSQL uses the database service's backups")
+
+
+def test_on_postgresql_the_tool_refuses_and_names_the_database_backups(monkeypatch, tmp_path):
+    from jde_api_service.services import backup_restore
+
+    monkeypatch.setenv("JDE_DATABASE_URL", "postgresql://jade@db.example/jade")
+    with pytest.raises(backup_restore.BackupRefused, match="point-in-time restore"):
+        backup_restore.create_backup(str(tmp_path / "x.tar.gz"), by="test")
+    with pytest.raises(backup_restore.RestoreRefused, match="PostgreSQL"):
+        backup_restore.restore_backup(str(tmp_path / "x.tar.gz"), by="test")
+
 
 def _build_state(client, monkeypatch) -> dict:
     """Every kind of state a restore must bring back."""

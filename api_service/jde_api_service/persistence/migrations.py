@@ -745,4 +745,12 @@ MIGRATIONS: list[tuple[int, str]] = [
         );
         """,
     ),
+    (
+        13,
+        """
+        -- Sign-in e-mail addresses are unique regardless of case on every
+        -- database engine (SQLite's COLLATE NOCASE has no PostgreSQL equivalent).
+        CREATE UNIQUE INDEX IF NOT EXISTS users_email_lower ON users (lower(email));
+        """,
+    ),
 ]

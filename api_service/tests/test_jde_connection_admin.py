@@ -163,6 +163,10 @@ def test_credentials_never_appear_in_responses_logs_or_exports(client, caplog, t
                           json={"capabilityId": "udc_values", "target": "00/DT"}).text]
     assert all(SECRET not in b for b in bodies)
     assert SECRET not in caplog.text
+    import os
+
+    if os.environ.get("JDE_DATABASE_URL"):
+        return  # PostgreSQL: backups are the database service's, not this archive
     archive = tmp_path / "backup.tar.gz"
     backup_restore.create_backup(str(archive), by="test", settle_seconds=0)
     import tarfile

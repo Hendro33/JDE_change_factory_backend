@@ -57,6 +57,19 @@ class RestoreRefused(RuntimeError):
     pass
 
 
+_PG_MESSAGE = (
+    "this installation stores its data in PostgreSQL: use the database service's own backups "
+    "(on Azure: automated backups with point-in-time restore) and the file store's; "
+    "this tool backs up the built-in SQLite database only")
+
+
+def _require_sqlite() -> None:
+    from jde_mcp_server import docstore
+
+    if docstore.database_url():
+        raise BackupRefused(_PG_MESSAGE)
+
+
 def data_locations() -> dict[str, str]:
     """Every directory Jade writes, by a stable name used inside the archive.
     All records are in the database under the data directory; the data
@@ -171,6 +184,7 @@ def _active_work(locations: dict[str, str]) -> list[str]:
 def create_backup(out_path: str, *, by: str, settle_seconds: float = 2.0) -> dict:
     """Write a .tar.gz archive of every data location plus manifest.json,
     taken during a write pause. Returns the manifest."""
+    _require_sqlite()
     locations = data_locations()
     with write_pause.paused("backup", by, settle_seconds=settle_seconds):
         active = _active_work(locations)
@@ -284,6 +298,10 @@ def restore_backup(archive: str, *, by: str, replace_existing: bool = False) -> 
     Restart the service afterwards so nothing keeps pre-restore state in
     memory. Returns a report including whether the current credential key
     can read the restored Jira tokens."""
+    from jde_mcp_server import docstore
+
+    if docstore.database_url():
+        raise RestoreRefused(_PG_MESSAGE)
     locations = data_locations()
     with tempfile.TemporaryDirectory(prefix="jade-restore-") as unpacked:
         manifest = _extract_verified(archive, unpacked)

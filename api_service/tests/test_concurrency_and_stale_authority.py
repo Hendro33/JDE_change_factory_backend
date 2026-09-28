@@ -21,6 +21,8 @@ authority usable.
 
 from __future__ import annotations
 
+import os
+
 import threading
 import time
 
@@ -291,6 +293,8 @@ def test_authority_lost_between_the_tools_checks_and_dispatch_is_caught_inside_t
     assert real_read(ais_client.sim_target("vdb", "P4210", "CIQ0001", "PDOCTYPE")) != "SO"
 
 
+@pytest.mark.skipif(bool(os.environ.get("JDE_TEST_DATABASE_URL")),
+                    reason="SQLite wiring; on PostgreSQL an unreachable server fails closed in current_roles")
 def test_without_the_membership_database_nothing_runs(client, monkeypatch):
     from jde_mcp_server import approval
 

@@ -12,7 +12,7 @@ Before public deployment or real-token use:
 
 from __future__ import annotations
 
-import sqlite3
+import os
 import time
 
 from cryptography.fernet import Fernet
@@ -100,11 +100,10 @@ def _save_token(client, token: str = "real-looking-token-123"):
 
 
 def _stored_token() -> str:
-    conn = sqlite3.connect(_db_path())
-    try:
+    from jde_api_service.persistence.db import connection
+
+    with connection() as conn:
         return conn.execute("SELECT api_token FROM jira_credentials WHERE company_id = 'vdb'").fetchone()[0]
-    finally:
-        conn.close()
 
 
 def test_the_token_is_stored_encrypted_and_the_database_file_never_holds_it(client):
@@ -113,7 +112,8 @@ def test_the_token_is_stored_encrypted_and_the_database_file_never_holds_it(clie
     assert stored.startswith("enc:v1:")
     assert "real-looking-token-123" not in stored
     # A backup is a copy of this file: the token is not in it anywhere.
-    assert b"real-looking-token-123" not in open(_db_path(), "rb").read()
+    if not os.environ.get("JDE_DATABASE_URL"):  # SQLite: the database file itself never holds it
+        assert b"real-looking-token-123" not in open(_db_path(), "rb").read()
 
     from jde_api_service.services.registry import get_jira_credentials_service
 
