@@ -70,6 +70,5 @@ class Lifecycle(ApiModel):
     # questions" on the story.
     open_items: list[str] = []
     route: Optional[str] = None
-    simulated: bool = False
 
 

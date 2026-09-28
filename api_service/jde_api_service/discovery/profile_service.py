@@ -26,7 +26,7 @@ from ..persistence.revisions import next_revision
 from ..services import credential_crypto
 from . import capabilities
 from .models import CapabilityView, CheckResult, JdeProfileConfig, JdeProfileView
-from .transport import (SIMULATION_LABEL, Trust, allowed_hosts, live_allowed_by_deployment, live_status_detail,
+from .transport import (Trust, allowed_hosts, live_allowed_by_deployment, live_status_detail,
                         tls_trust)
 
 HEALTH_CHECKS = ("reachability", "authentication", "environment", "approved_read")
@@ -177,7 +177,7 @@ def destination(config: JdeProfileConfig) -> str:
 
 def credential_bound(profile: dict) -> bool:
     """A saved password only goes to the address and certificate it was
-    entered for. Simulation never sends it anywhere."""
+    entered for."""
     config: JdeProfileConfig = profile["config"]
     if config.connection_mode != "live" or not profile.get("credential_secret"):
         return True
@@ -226,8 +226,7 @@ def capability_status(profile: Optional[dict], capability_id: str) -> tuple[str,
         return "unverified", "no discovery profile"
     check = _current(profile["capability_checks"].get(capability_id), profile)
     if check.state == "ok":
-        suffix = " (simulation)" if profile["config"].connection_mode == "simulation" else ""
-        return "supported", f"approved sample read succeeded {check.checked_at}{suffix}"
+        return "supported", f"approved sample read succeeded {check.checked_at}"
     if check.state == "stale":
         return "unverified", "verified for an earlier profile revision; run the approved sample read again"
     if check.state == "failed":
@@ -268,7 +267,7 @@ def enable_blockers(profile: dict) -> list[str]:
         out.append("the customer has not confirmed the JDE identity is narrowly privileged (read-only role)")
     if not config.runtime_attestation_confirmed or not config.runtime_attestation_evidence.strip():
         out.append("the CNC has not attested the Tools release and path code the environment runs on "
-                   "(the AIS contract does not report them)")
+                   "(Jade also checks them against JDE where it can)")
     if not config.approved_reads:
         out.append("no approved read operations")
     if config.discovery_window is None:
@@ -415,11 +414,8 @@ def _account_problems(profile: dict) -> list[str]:
 
 
 def readiness(profile: dict) -> tuple[list[dict], bool]:
-    """Separately visible readiness groups. For a LIVE connection every
-    required item must be satisfied before discovery can be enabled; in
-    simulation the live-only items are marked not applicable."""
-    from jde_mcp_server.config import settings as mcp_settings
-
+    """Separately visible readiness groups. Every required item must be
+    satisfied before discovery can be enabled."""
     config: JdeProfileConfig = profile["config"]
     live = config.connection_mode == "live"
     h = health(profile)
@@ -485,9 +481,8 @@ def readiness(profile: dict) -> tuple[list[dict], bool]:
               config.isolation_evidence.strip() or "not confirmed"),
     ]
     safeguards = [
-        _item("writes_disabled", "JDE writes disabled (execution stays simulated)", "server_managed",
-              bool(mcp_settings.mock_mode), "simulated execution only" if mcp_settings.mock_mode
-              else "JDE_MCP_MOCK_MODE is off: live execution is possible on this server", required=live),
+        _item("writes_disabled", "Jade never writes to JDE (changes are applied by a person and recorded)",
+              "server_managed", True, "no JDE write path exists in Jade", required=live),
         _item("approved_reads", "Approved reads defined (exact targets, columns, record limit)", "configuration",
               bool(config.approved_reads), f"{len(config.approved_reads)} approved read(s), at most "
                                            f"{config.limits.max_records} records each"),
@@ -580,7 +575,7 @@ def view(company_id: str) -> JdeProfileView:
         enabled_by=profile.get("enabled_by"), enabled_at=profile.get("enabled_at"),
         disabled=bool(profile["disabled"]), disabled_by=profile.get("disabled_by"),
         disabled_at=profile.get("disabled_at"), enable_blockers=enable_blockers(profile),
-        mode_label=SIMULATION_LABEL if config.connection_mode == "simulation" else "LIVE customer AIS endpoint",
+        mode_label="LIVE customer AIS endpoint",
         live_allowed_by_deployment=live_allowed_by_deployment(trust_for(company_id, config)),
         updated_at=profile["updated_at"], updated_by=profile["updated_by"],
         prerequisites=prerequisites(profile), server_prerequisites=server_prerequisites(config, company_id),

@@ -20,16 +20,14 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import tempfile
 import time
 from typing import Iterable, Optional
 
-from .backlog import require_approved, BacklogError
+from .backlog import require_approved
 from . import authority, capability_catalog, docstore
 from .scope import (
     check_environment_binding,
     company_for_story,
-    find_spike_experiment,
     load_company_scope,
     require_approval_policy,
     scope_revision,
@@ -103,7 +101,7 @@ def propose_change(story_id: str, operation: dict, capability_id: str, environme
     targets, and a DEV-only environment -- BEFORE a human is even asked
     to approve it, not just at execution time. Fails fast on a
     structurally invalid proposal rather than letting a human approve
-    something that could never pass require_exact_change anyway.
+    something that could never pass authorise_functional_delivery anyway.
 
     capability_id is deliberately a separate parameter, not a key
     inside 'operation': 'operation' is exactly the write payload that
@@ -116,7 +114,7 @@ def propose_change(story_id: str, operation: dict, capability_id: str, environme
     Only the catalogue-only, engagement-independent checks run here
     (capability_id is real; environment is literally "DEV") -- the full
     company-scope-backed environment isolation check and the capability's
-    CURRENT executability both belong at require_exact_change instead
+    CURRENT deliverability both belong at authorise_functional_delivery instead
     (immediately before the write itself), not here: a change can sit
     pending for a while, and re-approving it against a company scope that
     hasn't even been written yet for a brand-new engagement shouldn't be
@@ -289,13 +287,6 @@ def _require_live_approval(change_id: str) -> tuple[dict, dict]:
             f"change {change_id} was recorded for company {record.get('company_id')!r} but its story now "
             f"belongs to {company_id!r} -- refusing."
         )
-    from .config import settings as _settings
-
-    if _settings.mock_mode:
-        try:
-            authority.require_simulation_allowed(company_id)
-        except (authority.SimulationNotAllowed, authority.AuthorityUnverifiable) as exc:
-            raise ChangeApprovalError(f"change {change_id}: {exc}") from exc
     scope = load_company_scope(company_id)
     policy = require_approval_policy(scope)
     recorded = record.get("approver_authority") or {}
@@ -316,66 +307,66 @@ def _require_live_approval(change_id: str) -> tuple[dict, dict]:
 
 
 # ---------------------------------------------------------------------
-# The real control. Every write tool calls this immediately before
-# doing anything in JDE.
+# The real control for delivering an approved functional change. Every
+# recorded delivery step calls this -- once when it is requested and again
+# inside the change's lock, immediately before the step is stored.
 # ---------------------------------------------------------------------
-def require_exact_change(change_id: str, operation: dict) -> dict:
-    """Returns the approved record; the caller re-reads the company's
-    scope via record["company_id"] for its own scope checks."""
-    from . import execution  # imported here: execution builds on this module
+def authorise_functional_delivery(change_id: str) -> tuple[dict, dict]:
+    """Everything that must be true for a person to apply this approved
+    change in DEV and record it, re-derived from source: the story and the
+    exact change approved and unexpired, the approver's CURRENT authority,
+    no earlier step in flight or of unknown outcome, the approval's basis
+    (design revision, no invalidation, and -- where Jade can read it -- the
+    target still in its before-state), the capability deliverable, and the
+    company's scope: DEV bound, a customer-owned version in its approved
+    versions, an allowed value, a declared and unprotected option category.
+    Returns (record, company scope)."""
+    from . import execution
+    from .scope import (
+        ScopeViolation,
+        check_allowed_value,
+        check_functional_scope,
+        check_option_category,
+        reject_if_oracle_owned_version,
+    )
 
     record, scope = _require_live_approval(change_id)
-    # An earlier attempt that is in flight, applied, or of unknown outcome
-    # blocks this one: no blind retry, no second application.
+    if record.get("kind") == "technical":
+        raise ChangeApprovalError(f"{change_id} is a technical package; it is delivered through its milestones")
     execution.require_ready(record, execution.WRITE)
-    # The basis the approval was given against must still hold: same design
-    # revision, no recorded invalidation, the target still in its before-state.
     from . import binding
 
-    binding.require_valid(record)
-    # The write is compared with the approved operation minus its test
-    # binding: the test name is enforced separately, by
-    # require_change_covers_test, and the write tool never sends it.
-    approved_write = {k: v for k, v in record["operation"].items() if k != "test_orchestration"}
-    if _canonical(operation) != _canonical(approved_write):
-        raise ChangeApprovalError(
-            "the operation about to execute does not match the exact change a human approved "
-            "-- refusing (fail-closed). This is not a false positive to work around: something "
-            "about the operation changed after approval, and that is exactly what this check exists to catch."
-        )
-
-    # Design update Section 3/5.2: re-check the capability's CURRENT
-    # status and the environment's CURRENT isolation binding
-    # immediately before writing -- both can have changed since this
-    # change was proposed or even since it was approved. Sourced from
-    # the APPROVED RECORD's own capability binding, never from the
-    # caller-supplied 'operation'.
-    capability_id = record.get("capability_id")
-    capability_revision = record.get("capability_revision")
+    # The person applies the change in JDE BEFORE recording it, so the
+    # target has changed by design: the current value is compared with the
+    # APPROVED value when the step is recorded (api_service delivery/), not
+    # with the before-state here.
+    found = binding.problems(record, read_current=False, require_known_before=False)
+    if found:
+        raise binding.BindingInvalid(f"change {change_id} is not eligible: " + "; ".join(found))
+    capability_id, capability_revision = record.get("capability_id"), record.get("capability_revision")
     if not capability_id or not capability_revision:
         raise ChangeApprovalError(
-            "approved change record has no capability_id/capability_revision -- "
-            "this can only happen to a change proposed before the capability "
-            "catalogue existed; re-propose it so it binds to a capability."
-        )
-    require_supported_operation(capability_id, operation)
+            "approved change record has no capability binding -- this can only happen to a change proposed before "
+            "the capability catalogue existed; propose it again")
+    op = record["operation"]
+    enforcement = require_supported_operation(capability_id, op)
     check_environment_binding(scope, record["environment"])
-    spike = find_spike_experiment(
-        scope,
-        capability_id,
-        capability_revision,
-        operation.get("application", ""),
-        operation.get("version", ""),
-        operation.get("option", ""),
-        record["environment"],
-    )
-    capability_catalog.require_executable(
-        capability_id, capability_revision, record["environment"], spike_experiment_approved=spike is not None
-    )
-    return record
+    try:
+        capability_catalog.require_deliverable_by_person(capability_id, capability_revision, record["environment"])
+    except capability_catalog.CapabilityError as exc:
+        raise ChangeApprovalError(str(exc)) from exc
+    reject_if_oracle_owned_version(op.get("version", ""))
+    entry = check_functional_scope(scope, op.get("application", ""), op.get("version", ""), op.get("option", ""))
+    check_allowed_value(entry, str(op.get("value", "")))
+    if entry.get("capability_id") != capability_id:
+        raise ScopeViolation(
+            f"{op.get('application')}/{op.get('version')}/{op.get('option')} is approved for capability "
+            f"{entry.get('capability_id')!r}, not {capability_id!r}")
+    check_option_category(scope, entry, enforcement)
+    return record, scope
 
 
-def require_change_covers_test(change_id: str, test_orchestration_name: str) -> dict:
+def require_change_covers_test(change_id: str, test_orchestration_name: Optional[str]) -> dict:
     """Section 17.1's 'bind the automated test invocation to the
     approved Test Specification rather than a generic story-level test
     permission', implemented pragmatically: the approved change record
@@ -397,10 +388,15 @@ def require_change_covers_test(change_id: str, test_orchestration_name: str) -> 
     execution.require_ready(record, execution.TEST)
     from . import binding
 
-    found = binding.problems(record, read_current=False)  # the write itself changed the target, by design
+    # The write itself changed the target, by design; an approval whose
+    # before-state could not be read (the person stated the applied value)
+    # is still tested -- the before-state was never needed to verify it.
+    found = binding.problems(record, read_current=False, require_known_before=False)
     if found:
         raise binding.BindingInvalid(f"change {change_id} is not eligible: " + "; ".join(found))
     expected = record["operation"].get("test_orchestration")
+    if test_orchestration_name is None:
+        return record  # a person records the test result; no orchestration is named or run
     if expected != test_orchestration_name:
         raise ChangeApprovalError(
             f"'{test_orchestration_name}' was not the test named in the approved change "
@@ -411,13 +407,11 @@ def require_change_covers_test(change_id: str, test_orchestration_name: str) -> 
 
 
 def preflight(change_id: str) -> dict:
-    """What the gate would decide for this change right now, check by
-    check, without executing anything or recording an attempt. Every
-    check that can be evaluated is reported, so a person sees all the
-    reasons at once instead of one refusal at a time."""
+    """What the delivery gate would decide for this change right now, check
+    by check, without recording anything. Every check that can be evaluated
+    is reported, so a person sees all the reasons at once instead of one
+    refusal at a time."""
     from . import backlog, execution, scope as scope_module
-    from .ais_client import FSR_SET_PROCESSING_OPTION, require_bound_environment
-    from .config import settings
 
     checks: list[dict] = []
 
@@ -432,20 +426,20 @@ def preflight(change_id: str) -> dict:
 
     record = _load(change_id)
     if record is None:
-        return {"change_id": change_id, "executable": False, "mode": "unknown",
+        return {"change_id": change_id, "executable": False, "mode": "recorded",
                 "checks": [{"check": "Change record exists", "ok": False, "detail": f"no change record {change_id}"}]}
     op = record.get("operation", {})
     check("Story approved (Gate 2)", lambda: backlog.require_approved(record["story_id"]))
     check("Exact change approved, unexpired, same company, approver authority current", lambda: _require_live_approval(change_id))
-    if settings.mock_mode:
-        check("Simulated execution allowed (demo customers only; live JDE writes are not enabled)",
-              lambda: authority.require_simulation_allowed(company_for_story(record["story_id"])))
     # The company's scope is read on its own, so its checks are reported
     # even while the approval itself is still missing.
     scope = check("Company scope saved for the story's company",
                   lambda: load_company_scope(company_for_story(record["story_id"])))
     scope = scope if isinstance(scope, dict) else None
     check("Operation supported for this capability", lambda: require_supported_operation(record.get("capability_id", ""), op))
+    check("Capability may be delivered (not Restricted or Suspended; current catalogue revision)",
+          lambda: capability_catalog.require_deliverable_by_person(
+              record.get("capability_id", ""), record.get("capability_revision", ""), record["environment"]))
     if scope is not None:
         check("DEV environment bound and isolation confirmed", lambda: scope_module.check_environment_binding(scope, record["environment"]))
         entry = check("Target is in the company's approved versions",
@@ -455,42 +449,26 @@ def preflight(change_id: str) -> dict:
         enforcement = check("Capability has a complete enforcement contract",
                             lambda: capability_catalog.require_enforcement(record.get("capability_id", "")))
         if isinstance(enforcement, dict):
-            check("Mechanism allowed by the company", lambda: scope_module.check_mechanism(scope, enforcement["mechanism"]))
             if isinstance(entry, dict):
                 check("Option category declared, not protected, not never-touch",
                       lambda: scope_module.check_option_category(scope, entry, enforcement))
             if op.get("test_orchestration"):
                 check("Test is approved, its mechanism allowed, its side effects permitted",
                       lambda: scope_module.check_test_boundary(scope, op["test_orchestration"], enforcement))
-        spike = scope_module.find_spike_experiment(
-            scope, record.get("capability_id", ""), record.get("capability_revision", ""),
-            op.get("application", ""), op.get("version", ""), op.get("option", ""), record["environment"],
-        )
-        check("Capability executable (validated, or inside a current spike window)",
-              lambda: capability_catalog.require_executable(
-                  record.get("capability_id", ""), record.get("capability_revision", ""), record["environment"],
-                  spike_experiment_approved=spike is not None))
-        check("AIS connection points at the bound DEV environment", lambda: require_bound_environment(scope))
     check("Version is not Oracle-owned (XJDE/ZJDE)", lambda: scope_module.reject_if_oracle_owned_version(op.get("version", "")))
-    check("No earlier attempt in flight, applied or of unknown outcome", lambda: execution.require_ready(record, execution.WRITE))
+    check("No earlier step in flight, applied or of unknown outcome", lambda: execution.require_ready(record, execution.WRITE))
     if record.get("status") == "approved":
         from . import binding
 
         def basis_holds() -> None:
-            found = binding.problems(record, read_current=execution.effective_state(record, execution.WRITE) == "ready")
+            found = binding.problems(record, read_current=False, require_known_before=False)
             if found:
                 raise binding.BindingInvalid("; ".join(found))
 
         check("Approval basis still holds (design revision, evidence, no invalidation, target before-state)", basis_holds)
-    if not settings.mock_mode:
-        def fsr_recorded() -> None:
-            if FSR_SET_PROCESSING_OPTION is None:
-                raise RuntimeError("FSR_SET_PROCESSING_OPTION is not recorded yet (Experiment A prerequisite A-P5)")
-
-        check("Live write payload (FSR) recorded and reviewed", fsr_recorded)
     return {
         "change_id": change_id,
-        "mode": "mock" if settings.mock_mode else "live",
+        "mode": "recorded",
         "executable": all(c["ok"] for c in checks),
         "write_state": execution.effective_state(record, execution.WRITE),
         "test_state": execution.effective_state(record, execution.TEST),

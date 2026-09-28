@@ -4,10 +4,12 @@ No entry point can expose an unrestricted JDE read.
 The former get_object / get_version / get_processing_options MCP tools read
 any object through the execution AIS connection with no company scope. They
 are removed from the .mcp.json server (the server every Claude Code run in
-this repository loads), from ais_client, from every agent definition and
-from every driver allowlist. JDE research goes only through the governed,
-company-bound discovery tools; the Functional Agent reads only its own
-change's target.
+this repository loads), from every agent definition and from every driver
+allowlist. Jade never writes to JDE: the project server has no tool that
+reads, writes or tests in JDE (read_approved_target, set_processing_option
+and run_orchestration are gone, with the execution AIS client behind them),
+and the Technical Agent has no apply/build/verify tool. JDE research goes
+only through the governed, company-bound discovery tools.
 """
 
 from __future__ import annotations
@@ -17,13 +19,14 @@ import json
 import pathlib
 import re
 
-import pytest
-
-from .conftest import headers
-from .test_stage1_execution_safeguards import _approve, _approved_story, _full_scope, _propose, _save_scope
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 UNRESTRICTED = {"get_object", "get_version", "get_processing_options"}
+# Tools that reached JDE directly from an agent; removed with the automated
+# delivery path (a person delivers, Jade verifies live through discovery).
+JDE_ACTION_TOOLS = {"read_approved_target", "set_processing_option", "run_orchestration"}
+PROJECT_TOOLS = {"capture_evidence", "get_approved_story", "get_capability_status", "get_design_baseline",
+                 "propose_change", "propose_to_backlog", "resolve_without_change", "verify_evidence_chain"}
 
 
 def _registered_tools() -> set[str]:
@@ -35,15 +38,21 @@ def _registered_tools() -> set[str]:
 def test_the_mcp_json_server_registers_no_unrestricted_read():
     names = _registered_tools()
     assert not names & UNRESTRICTED
-    assert {"read_approved_target", "get_design_baseline", "set_processing_option"} <= names
+    assert not names & JDE_ACTION_TOOLS  # no agent tool reads, writes or tests in JDE
+    assert names == PROJECT_TOOLS  # pinned: a new tool must be added here deliberately
     mcp_json = json.loads((REPO / ".mcp.json").read_text())
     assert list(mcp_json["mcpServers"]) == ["jde-change-factory"]  # the only project MCP server
 
 
-def test_the_execution_client_has_no_unrestricted_read_methods():
-    from jde_mcp_server.ais_client import AISClient
+def test_the_project_server_has_no_jde_client_at_all():
+    """The execution AIS client and the approved-target reader are gone: the
+    project MCP server has no code path that talks to JDE."""
+    import importlib.util
 
-    assert not UNRESTRICTED & set(dir(AISClient))
+    for module in ("jde_mcp_server.ais_client", "jde_mcp_server.approved_target", "jde_mcp_server.sim_estate"):
+        assert importlib.util.find_spec(module) is None, module
+    server_src = (REPO / "mcp_server" / "jde_mcp_server" / "server.py").read_text()
+    assert "httpx" not in server_src and "requests" not in server_src
 
 
 def test_no_agent_definition_or_driver_allowlist_names_an_unrestricted_read():
@@ -84,25 +93,6 @@ def test_hooks_and_settings_do_not_pre_approve_raw_reads():
     assert not re.search("get_object|get_version|get_processing_options", settings)
 
 
-def test_read_approved_target_reads_only_the_changes_own_target(client):
-    from jde_mcp_server.approval import ChangeApprovalError
-    from jde_mcp_server.approved_target import read_approved_target
-
-    _save_scope(client, "vdb", _full_scope())
-    _approved_story("S-TS-1")
-    change = _propose("S-TS-1")
-    out = read_approved_target("S-TS-1", change["change_id"])
-    assert out["available"] is True and out["target"] == {"application": "P4210", "version": "CIQ0001", "option": "PDOCTYPE"}
-    _approved_story("S-TS-2")
-    with pytest.raises(ChangeApprovalError):
-        read_approved_target("S-TS-2", change["change_id"])  # another story's change
-    from jde_mcp_server import approval
-
-    approval.reject_change(change["change_id"], "Hendro", "no", company_id="vdb")
-    with pytest.raises(ChangeApprovalError, match="rejected"):
-        read_approved_target("S-TS-1", change["change_id"])
-
-
 def test_the_architect_runtime_is_denied_every_other_project_tool():
     from jde_api_service.services import architecture_driver
 
@@ -111,7 +101,8 @@ def test_the_architect_runtime_is_denied_every_other_project_tool():
     allowed = {t.rsplit("__", 1)[-1] for t in architecture_driver._ALLOWED_TOOLS if t.startswith("mcp__jde-change-factory__")}
     disallowed = {t.rsplit("__", 1)[-1] for t in architecture_driver._DISALLOWED_TOOLS}
     assert allowed | disallowed == registered and not allowed & disallowed
-    assert {"set_processing_option", "run_orchestration", "capture_evidence", "read_approved_target"} <= disallowed
+    assert allowed == {"get_approved_story", "resolve_without_change", "propose_change"}
+    assert {"capture_evidence", "get_design_baseline", "propose_to_backlog"} <= disallowed
 
 
 def test_every_agent_driver_uses_the_restricted_runtime():
@@ -159,6 +150,9 @@ def test_the_technical_runtime_is_task_plus_its_own_run_bound_tools_only():
     assert set(technical_driver.DISALLOWED) == {f"mcp__jde-change-factory__{t}" for t in architecture_driver.PROJECT_SERVER_TOOLS}
     # No technical tool approves, records a CNC activation, reads credentials or reaches a network or shell.
     names = [t.rsplit("__", 1)[-1] for t in technical_tools.ALLOWED_TOOLS]
+    # ...and none applies, builds or tests in JDE: people deliver the package.
+    assert not {"apply_approved_package", "build_applied_package", "run_verification_tests"} & set(names)
+    assert not [n for n in names if n.startswith(("apply", "build", "run_", "deploy", "set_"))]
     assert not [n for n in names if n.startswith(("approve", "reject", "record")) or "cnc" in n]
     for forbidden in ("credential", "shell", "bash", "http", "sql", "fetch", "write_file", "exec"):
         assert not any(forbidden in n.lower() for n in names), forbidden
@@ -182,8 +176,10 @@ def test_no_subagent_definition_can_widen_its_drivers_runtime():
     for agent, allowed in drivers.items():
         extra = set(_agent_tools(agent)) - set(allowed)
         assert not extra, (agent, extra)
-    # The functional-agent has no driver in this increment: its write, test and
-    # evidence tools are only reachable through the gate, never granted here.
+    # The functional-agent is not active: it has no driver, read-only tools
+    # and no write or test tool anywhere.
+    assert set(_agent_tools("functional-agent")) == {f"mcp__jde-change-factory__{t}" for t in
+                                                     ("get_design_baseline", "get_capability_status", "verify_evidence_chain")}
     assert not any(set(_agent_tools("functional-agent")) & set(a) for a in
                    (architecture_driver._ALLOWED_TOOLS, technical_driver.ALLOWED, conversation_driver._SOLUTION_ALLOWED_TOOLS))
 

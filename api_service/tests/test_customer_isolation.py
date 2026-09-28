@@ -70,3 +70,33 @@ def test_missing_customer_header_is_rejected_on_every_scoped_endpoint(client):
     ]:
         r = getattr(client, method)(path, headers=headers(customer=None))
         assert r.status_code == 422, f"{method.upper()} {path} should require X-Customer-Id"
+
+
+def _customer_scoped_routes():
+    """Every API route that reads or changes a customer's data: its
+    operation takes the X-Customer-Id header (the customer context)."""
+    from jde_api_service.main import app
+
+    out = []
+    for path, ops in app.openapi()["paths"].items():
+        for method, op in ops.items():
+            if any(p.get("in") == "header" and p.get("name", "").lower() == "x-customer-id"
+                   for p in op.get("parameters") or []):
+                out.append((method.upper(), path))
+    return out
+
+
+def test_a_user_of_one_customer_can_never_reach_another_customers_data_on_any_route(client, ellen_client):
+    """Ellen belongs to vdb only. For EVERY customer-scoped route -- stories,
+    delivery, technical work, discovery and JDE connection, AI, Jira, users,
+    settings, process framework, knowledge -- asking for nhd is refused
+    before anything is read or changed."""
+    import re
+
+    _seed_story_for(client, "S-NHD-ISO", "nhd")
+    routes = _customer_scoped_routes()
+    assert len(routes) > 80, len(routes)  # the sweep really covers the API
+    for method, path in routes:
+        url = re.sub(r"\{[^}]+\}", "S-NHD-ISO", path)
+        r = ellen_client.request(method, url, headers=headers("nhd"), json={})
+        assert r.status_code == 403, f"{method} {path} answered {r.status_code} for another customer"

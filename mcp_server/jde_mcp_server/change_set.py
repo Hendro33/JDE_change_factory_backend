@@ -16,7 +16,7 @@ in mcp_server/jde_mcp_server/server.py exposes a Change Set tool to any
 agent -- there is deliberately no MCP surface for this at all yet.
 Multi-step outcomes are handled today the only way this codebase
 actually supports: propose_change / approve_change /
-require_exact_change, called once per operation, in sequence, each a
+authorise_functional_delivery, called once per operation, in sequence, each a
 fully independent exact-change approval (design update Section 5.2's
 "Implement single-operation execution first").
 """

@@ -56,11 +56,6 @@ def save_profile(payload: JdeProfileUpdate, ctx: AuthContext = Depends(require_r
     """Stores a new revision. Does not contact JDE. A material change
     switches discovery off until re-verified and re-enabled."""
     config = JdeProfileConfig.model_validate(payload.model_dump(exclude={"expected_revision"}))
-    from ..services.customer_service import is_demo_company
-
-    if config.connection_mode == "simulation" and not is_demo_company(ctx.customer_id):
-        raise HTTPException(status_code=422, detail="Simulation is only available for demo customers. Use Live with "
-                                                    "the customer's real AIS address.")
     if config.ca_certificate_sha256:
         from ..discovery import certificates
 

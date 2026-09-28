@@ -240,8 +240,6 @@ def _system_gaps(ledger: RunLedger, profile: Optional[dict]) -> tuple[list[dict]
         if cov.get("truncated"):
             limits.append(f"{ref}: TRUNCATED -- only {cov['analysed_chars']:,} of {cov['total_chars']:,} characters "
                           "were available for analysis; conclusions about the rest of the file are not supported")
-    if any(o["mode"] == "simulation" for o in ledger.observations):
-        limits.append("Live observations in this baseline are SIMULATED, not the customer's JDE")
     if any(not o["sharing"]["values_shared"] for o in ledger.observations):
         limits.append("Some values were redacted under the company's data-sharing policy; the Architect saw "
                       "structure and counts only for those reads")

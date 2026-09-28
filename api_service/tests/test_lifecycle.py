@@ -84,30 +84,55 @@ def test_failed_solutioning_gives_business_wording():
     assert "AI connection" in lc.open_items[0] and "Admin sets" not in lc.open_items[0]
 
 
-def _functional(write="ready", test="ready", approved=True, executable=True):
+def _functional(write="ready", test="ready", approved=True, executable=True, verification=None, orchestration=""):
     return _change(
         architecture_review_stage="done", architect_decision=_decision("Functional Agent"),
         exact_change=ExactChange(tool="set_processing_option", application="P4210", version="V1", option="1",
-                                 capability_executable=executable,
-                                 execution=ExecutionStatus(write_state=write, test_state=test)),
+                                 capability_executable=executable, test_orchestration=orchestration,
+                                 execution=ExecutionStatus(write_state=write, test_state=test,
+                                                           verification=verification or {})),
         change_approval=ApprovalRecord(approval_id="C1", kind="change", status="approved") if approved else None,
     )
 
 
+def _step(lc):
+    return (lc.phase, lc.health, lc.next_action.action)
+
+
 def test_functional_route_progression():
+    """The recorded route: approve -> a person applies the value in DEV and
+    records it -> the test runs (or is recorded) -> the as-built is finalised."""
     assert lifecycle.derive(_functional(approved=False)).next_action.action == "approve_exact_change"
     assert lifecycle.derive(_functional(approved=False)).phase == "solution_review"
-    assert (lifecycle.derive(_functional()).phase, lifecycle.derive(_functional()).health) == ("delivery", "in_progress")
-    assert lifecycle.derive(_functional(write="applied")).phase == "validation"
-    released = lifecycle.derive(_functional(write="applied", test="completed"))
-    assert (released.phase, released.next_action.action) == ("release", "finalise_asbuilt")
-    assert lifecycle.derive(_functional(write="unknown")).health == "failed"
+    approved = lifecycle.derive(_functional())
+    assert _step(approved) == ("delivery", "waiting", "record_applied")
+    assert approved.next_action.owner == "product_manager"
+    assert _step(lifecycle.derive(_functional(write="applied"))) == ("validation", "waiting", "run_or_record_test")
+    assert "orchestration" in lifecycle.derive(_functional(write="applied", orchestration="ORCH_SO")).next_action.summary
+    released = lifecycle.derive(_functional(write="applied", test="completed", verification={"passed": True}))
+    assert _step(released) == ("release", "waiting", "finalise_asbuilt")
     assert lifecycle.derive(_functional(executable=False)).health == "blocked"
+    assert not hasattr(released, "simulated")
+
+
+def test_functional_unknown_outcomes_need_reconciliation():
+    # A write of unknown outcome (left by an older, interrupted automated write).
+    for state in ("unknown", "diverged"):
+        assert _step(lifecycle.derive(_functional(write=state))) == ("delivery", "failed", "reconcile_functional")
+    # A live test orchestration that timed out after sending.
+    assert _step(lifecycle.derive(_functional(write="applied", test="unknown"))) == (
+        "validation", "failed", "reconcile_functional")
+
+
+def test_a_failed_recorded_test_is_not_released():
+    lc = lifecycle.derive(_functional(write="applied", test="completed", verification={"passed": False}))
+    assert _step(lc) == ("validation", "failed", "rerun_solutioning")
+    assert [s.state for s in lc.delivery_steps][:3] == ["done", "failed", "todo"]
 
 
 def test_functional_done_when_asbuilt_final(monkeypatch):
     monkeypatch.setattr(lifecycle, "_asbuilt_final", lambda c, s: {"status": "final"})
-    lc = lifecycle.derive(_functional(write="applied", test="completed"))
+    lc = lifecycle.derive(_functional(write="applied", test="completed", verification={"passed": True}))
     assert (lc.phase, lc.health, lc.outcome) == ("done", "done", "delivered")
     assert [s.state for s in lc.delivery_steps] == ["done", "done", "done", "todo"]
 
@@ -124,19 +149,36 @@ def _technical(monkeypatch, *, design_approved=True, package=True, status="appro
 
 
 def test_technical_route_progression(monkeypatch):
+    """The recorded technical route: approve design -> package -> check in
+    (record_technical_apply) -> build (record_technical_build) -> CNC
+    activation (record_cnc) -> verification (record_technical_verify)."""
     assert _technical(monkeypatch, design_approved=False).next_action.action == "approve_design"
     assert _technical(monkeypatch, package=False).next_action.action == "start_technical_prepare"
+    assert _technical(monkeypatch, package=False, running=True).next_action.owner == "jade"
     assert _technical(monkeypatch, status="proposed").next_action.action == "approve_package"
-    assert _technical(monkeypatch, apply="ready", build="ready").next_action.action == "start_technical_execute"
+    assert _technical(monkeypatch, status="rejected").next_action.action == "start_technical_prepare"
+    checkin = _technical(monkeypatch, apply="ready", build="ready")
+    assert (checkin.phase, checkin.health, checkin.next_action.action) == ("delivery", "waiting", "record_technical_apply")
+    assert _technical(monkeypatch, build="ready").next_action.action == "record_technical_build"
     cnc = _technical(monkeypatch, cnc=False)
-    assert (cnc.phase, cnc.next_action.owner) == ("delivery", "cnc_operator")
-    assert _technical(monkeypatch).phase == "validation"
+    assert (cnc.phase, cnc.next_action.owner, cnc.next_action.action) == ("delivery", "cnc_operator", "record_cnc")
+    verify = _technical(monkeypatch)
+    assert (verify.phase, verify.next_action.action) == ("validation", "record_technical_verify")
     failed = _technical(monkeypatch, verification={"passed": False, "runtime_is_approved_artifact": True, "results": []})
     assert (failed.phase, failed.health) == ("validation", "failed")
     ok = _technical(monkeypatch, verification={"passed": True, "runtime_is_approved_artifact": True,
                                                "results": [{"passed": True}] * 4})
     assert (ok.phase, ok.next_action.action) == ("release", "finalise_asbuilt")
     assert ok.delivery_steps[1].detail == "4 / 4 tests passed"
+
+
+def test_technical_failed_build_and_unknown_steps(monkeypatch):
+    broken = _technical(monkeypatch, build="failed")
+    assert (broken.phase, broken.health, broken.next_action.action) == ("delivery", "failed", "start_technical_repair")
+    assert _technical(monkeypatch, build="failed", running=True).next_action.owner == "jade"
+    for apply, build in (("unknown", "ready"), ("applied", "unknown"), ("diverged", "ready")):
+        lc = _technical(monkeypatch, apply=apply, build=build)
+        assert (lc.health, lc.next_action.action) == ("failed", "reconcile_technical")
 
 
 def test_my_work_ownership():
@@ -150,7 +192,7 @@ def test_my_work_ownership():
 def test_delivered_story_stays_done_when_design_is_flagged_later(monkeypatch):
     monkeypatch.setattr(lifecycle, "_asbuilt_final", lambda c, s: {"status": "final"})
     monkeypatch.setattr(lifecycle, "_design_facts", lambda c, s: {"baseline": {"status": "needs_reassessment"}, "design_approved": True})
-    lc = lifecycle.derive(_functional(write="applied", test="completed"))
+    lc = lifecycle.derive(_functional(write="applied", test="completed", verification={"passed": True}))
     assert (lc.phase, lc.outcome) == ("done", "delivered")
     assert lc.open_items and "reassessment" in lc.open_items[0]
 

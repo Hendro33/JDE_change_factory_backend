@@ -8,8 +8,6 @@
       ],
       "cwd": "mcp_server",
       "env": {
-        "JDE_MCP_MOCK_MODE": "true",
-        "JDE_EVIDENCE_DIR": "./evidence",
         "ANTHROPIC_API_KEY": "",
         "CLAUDE_CODE_OAUTH_TOKEN": ""
       }

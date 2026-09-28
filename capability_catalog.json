@@ -51,9 +51,9 @@
         "locks_and_absence_checks": "Not implemented -- see recovery.concurrency_note; this is a known gap, not a claimed control"
       },
       "verification": {
-        "read_back_method": "read_approved_target re-read after the write, independent of the write call's own response",
-        "behavioural_tests": "The named test Orchestration bound to the approved change (run_orchestration), never a substitute test",
-        "negative_tests": "Wrong environment, wrong change_id, tampered value, XJDE/ZJDE target, out-of-scope option -- all covered by prove_the_gate.py",
+        "read_back_method": "the processing-option value read back live through the customer's AIS connection after the person records the change (approved discovery read), independent of the person's own statement",
+        "behavioural_tests": "The named test Orchestration bound to the approved change, run live on the customer's AIS connection; without one, the person records the test result against the acceptance criteria",
+        "negative_tests": "Wrong environment, wrong change_id, tampered value, XJDE/ZJDE target, out-of-scope option -- all refused before anything is recorded (tests in api_service/tests)",
         "evidence_requirements": "capture_evidence with prior value, new value, and test result, every time -- verify_evidence_chain before any sign-off"
       },
       "recovery": {
@@ -68,17 +68,16 @@
       },
       "validation": {
         "status": "needs_spike",
-        "technical_validation": "The GATING logic (story approval, exact-change hash binding, Oracle-owned-version rule, engagement scope, evidence chain) is real, working code, proven end-to-end in prove_the_gate.py -- see evidence_references. The ACTUAL JDE write (the AIS Form Service Request payload) is NOT implemented: ais_client.py's FSR_SET_PROCESSING_OPTION is None, and any live-mode call raises AISClientError until the manual FSR-recording spike (README/GETTING_STARTED Step 4) is completed.",
+        "technical_validation": "The gating logic (story approval, exact-change hash binding, Oracle-owned-version rule, engagement scope, approver authority, evidence chain) is enforced before every recorded delivery step. Automated application (an AIS Form Service Request) is not validated on a customer system yet, so an authorised person applies the approved value in DEV and records it; Jade then reads the value back live through the customer's own AIS connection where the connection permits.",
         "policy_restriction": "None beyond the universal exclusions (tax/GL/AAI/security fields, XJDE/ZJDE) -- this capability is not blanket-Restricted, it is Needs spike pending the technical work above",
         "evidence_references": [
-          "prove_the_gate.py (mock-mode gate proof, all 6 checks passing)",
-          "mcp_server/jde_mcp_server/ais_client.py:34 (FSR_SET_PROCESSING_OPTION = None)"
+          "mcp_server/jde_mcp_server/approval.py (authorise_functional_delivery)",
+          "api_service/jde_api_service/delivery/ (recorded delivery and live read-back)"
         ],
         "validation_date": null,
         "approver": null,
         "revalidation_triggers": [
-          "FSR_SET_PROCESSING_OPTION populated from a real spike",
-          "a real DEV AIS endpoint configured",
+          "an automated write mechanism recorded and validated on a customer DEV system",
           "Tools Release change",
           "scope.py/approval.py/capability_catalog.py gating logic changes"
         ]
@@ -737,46 +736,34 @@
         ]
       },
       "technical_enforcement": {
-        "_comment": "What the technical executor enforces (technical_gate.py). Formats and adapters not listed here, or marked unavailable, cannot be applied.",
+        "_comment": "What technical delivery enforces (technical_gate.py). A candidate in a format marked apply.recorded can be applied by a developer through OMW and recorded in Jade; anything else can be prepared for review only, or not at all.",
         "tool": "apply_technical_package",
         "object_types": [
+          "BSFN",
           "ER"
         ],
         "formats": {
-          "jade_sim_er": {
-            "prepare": true,
-            "apply": {
-              "simulation": true,
-              "live": false
-            },
-            "note": "SYNTHETIC simulation format -- not a JD Edwards export"
-          },
           "c_source": {
             "prepare": true,
             "apply": {
-              "simulation": false,
-              "live": false
+              "recorded": true
             },
-            "note": "business function source: a candidate and diff can be prepared for a developer; no mechanism applies or builds it"
+            "note": "business function source: the approved candidate and diff are applied by a developer through OMW, built and activated by CNC, and each step is recorded in Jade"
           },
           "er_text": {
             "prepare": false,
             "apply": {
-              "simulation": false,
-              "live": false
+              "recorded": false
             },
-            "note": "an ER print export reports specifications; editing it as text changes nothing in JDE"
+            "note": "an ER print export reports specifications; editing it as text changes nothing in JDE -- a developer implements the specification in the ER design tools"
           }
         },
         "adapters": {
-          "simulation": {
+          "recorded": {
             "available": true,
-            "adapter": "jade_simulation_adapter",
-            "version": "sim-1"
-          },
-          "live": {
-            "available": false,
-            "reason": "no customer mechanism for editing or importing development objects has been qualified"
+            "adapter": "person_through_omw",
+            "version": "1",
+            "reason": ""
           }
         },
         "requires_build": true,

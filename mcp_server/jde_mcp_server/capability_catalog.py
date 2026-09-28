@@ -44,6 +44,10 @@ EXECUTABLE_STATUSES = {"validated"}
 # narrowly-scoped experiment (the company scope's spike_experiments list) --
 # never as an ordinary write. See require_executable below.
 SPIKE_ELIGIBLE_STATUSES = {"needs_spike"}
+# A person may apply an approved change in DEV (the recorded delivery route)
+# for any status except these: Restricted blocks routine change regardless
+# of approval; Suspended was disabled pending revalidation.
+PERSON_DELIVERY_BLOCKED_STATUSES = {"restricted", "suspended"}
 
 
 class CapabilityError(RuntimeError):
@@ -213,3 +217,26 @@ def require_executable(capability_id: str, capability_revision: str, environment
         "revalidation. Route this to Human Implementation with a precise "
         "proposal and test specification instead."
     )
+
+
+def require_deliverable_by_person(capability_id: str, capability_revision: str, environment: str) -> dict:
+    """The gate for the recorded delivery route: an authorised person applies
+    the approved change in DEV and records it; Jade verifies it. Automated
+    execution needs the capability's automated mechanism to be validated
+    (require_executable); a person applying it does not -- but a Restricted
+    or Suspended capability is not delivered either way, and the catalogue
+    revision and the DEV-only rule hold exactly as for automated execution."""
+    cap = require_capability(capability_id)
+    if cap.get("revision") != capability_revision:
+        raise CapabilityError(
+            f"capability '{capability_id}' revision mismatch: the change was proposed against revision "
+            f"'{capability_revision}', but the catalogue's current entry is revision '{cap.get('revision')}' -- "
+            "propose it again against the current revision")
+    if environment != "DEV":
+        raise CapabilityError(f"delivery is DEV-only; '{environment}' is not DEV")
+    status = cap.get("validation", {}).get("status")
+    if status in PERSON_DELIVERY_BLOCKED_STATUSES:
+        raise CapabilityError(
+            f"capability '{capability_id}' is {status}: it is not delivered, not even by a person, until the "
+            "catalogue entry itself is changed")
+    return cap

@@ -763,4 +763,33 @@ MIGRATIONS: list[tuple[int, str]] = [
         UPDATE companies SET archived_at = COALESCE(updated_at, created_at) WHERE is_demo = 1;
         """,
     ),
+    (
+        15,
+        """
+        -- Uploaded JDE sources and documents are identified per customer: two
+        -- customers may each upload an object with the same name (e.g. the
+        -- same custom business function), each with its own revisions.
+        CREATE TABLE technical_artifacts_v2 (
+            artifact_id TEXT NOT NULL,
+            revision INTEGER NOT NULL,
+            company_id TEXT NOT NULL,
+            domain_id TEXT,
+            kind TEXT NOT NULL,
+            meta TEXT NOT NULL,
+            sha256 TEXT NOT NULL,
+            size_bytes INTEGER NOT NULL,
+            storage_key TEXT NOT NULL,
+            extraction_status TEXT NOT NULL,
+            extraction_note TEXT NOT NULL DEFAULT '',
+            uploaded_by TEXT NOT NULL,
+            uploaded_at TEXT NOT NULL,
+            PRIMARY KEY (company_id, artifact_id, revision)
+        );
+        INSERT INTO technical_artifacts_v2 SELECT artifact_id, revision, company_id, domain_id, kind, meta, sha256,
+            size_bytes, storage_key, extraction_status, extraction_note, uploaded_by, uploaded_at FROM technical_artifacts;
+        DROP TABLE technical_artifacts;
+        ALTER TABLE technical_artifacts_v2 RENAME TO technical_artifacts;
+        CREATE INDEX idx_technical_artifacts_company_v2 ON technical_artifacts(company_id);
+        """,
+    ),
 ]

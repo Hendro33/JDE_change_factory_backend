@@ -9,10 +9,10 @@ from .conftest import headers
 
 
 def sim_edit(company: str, reason: str, environment: str | None = None):
-    """Change the shared simulated DEV estate as an explicit, recorded test condition."""
-    from jde_mcp_server import sim_estate
+    """Change the fake AIS server's DEV state as an explicit, recorded test condition."""
+    from .fixtures import ais_estate
 
-    return sim_estate.edit(company, environment or ENVIRONMENTS.get(company, "JDV920"), actor="test",
+    return ais_estate.edit(company, environment or ENVIRONMENTS.get(company, "JDV920"), actor="test",
                            reason=f"TEST CONDITION: {reason}")
 
 ENVIRONMENTS = {"vdb": "JDV920", "bwm": "JDVBWM"}
@@ -22,7 +22,7 @@ def profile_body(company: str = "vdb", **overrides) -> dict:
     # Day-aligned, so saving the profile twice in one test is not a window change.
     now = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
     body = {
-        "connectionMode": "simulation",
+        "connectionMode": "live",
         "aisBaseUrl": f"https://ais-{company}.customer.example",
         "environment": ENVIRONMENTS.get(company, "JDV920"),
         "role": "JADEDISC",
@@ -43,9 +43,11 @@ def profile_body(company: str = "vdb", **overrides) -> dict:
             {"capabilityId": "object_librarian", "targets": ["P4210", "P554210", "B5542001"],
              "fields": ["SIOBNM", "SIFUNO", "SISY", "SIMD"]},
             {"capabilityId": "processing_option_values", "targets": ["P4210|CIQ0001"]},
-            {"capabilityId": "table_browse", "targets": ["F4211"], "fields": ["DOCO", "DCTO", "LNID", "LTTR"],
-             "filterFields": ["DCTO"]},
+            {"capabilityId": "table_browse", "targets": ["F4211", "F00941"],
+             "fields": ["DOCO", "DCTO", "LNID", "LTTR", "EMENHV", "EMPATHCD"], "filterFields": ["DCTO", "EMENHV"]},
         ],
+        "networkRestriction": {"backendSourceAddress": "203.0.113.10", "restrictedToSource": True,
+                               "evidence": "customer firewall rule 7 allows AIS from 203.0.113.10 only"},
         "discoveryWindow": {"startsAt": (now - timedelta(days=1)).isoformat(),
                             "endsAt": (now + timedelta(days=2)).isoformat()},
         "limits": {"maxRecords": 10, "timeoutSeconds": 5},
@@ -72,22 +74,47 @@ def save_credential(client, company: str = "vdb", password: str = "s3cret-Discov
     return r.json()
 
 
-def verify_and_enable(client, company: str = "vdb") -> dict:
-    from jde_api_service.discovery import transport
+def _account_evidence(client, company: str) -> str:
+    """The customer's evidence that the dedicated account is narrowly
+    privileged (a reference document), uploaded once per company."""
+    r = client.post("/admin/jde/artifacts", headers=headers(company), json={
+        "kind": "reference_document", "objectName": "JADEDISC", "objectType": "SECURITY", "exportFormat": "text",
+        "exportedAt": "2026-09-25T08:00:00+00:00", "docTitle": "Security Workbench export for JADEDISC",
+        "fileName": "jadedisc_security.txt", "contentBase64": base64.b64encode(b"Read only: F0005, F00941").decode()})
+    assert r.status_code == 200, r.text
+    return f"{r.json()['artifactId']}@r{r.json()['revision']}"
 
+
+def dedicated_account(client, company: str) -> dict:
+    return {"username": "JADEDISC", "role": "JADEDISC", "verifiedBy": "Customer security lead",
+            "verifiedOn": "2026-09-25", "method": "security_configuration_review", "permitsApprovedReads": True,
+            "rejectsProhibitedOperations": True, "evidenceArtifactIds": [_account_evidence(client, company)]}
+
+
+def verify_and_enable(client, company: str = "vdb") -> dict:
+    """Test Connection, run every approved sample read (the environment
+    master read establishes the path code), then Enable -- exactly what an
+    Administrator does in Administration > JD Edwards."""
     r = client.post("/admin/jde/test-connection", headers=headers(company))
     assert r.json()["outcome"] == "ok", r.text
+    env = client.get("/admin/jde/profile", headers=headers(company)).json()["config"]["environment"]
     for read in client.get("/admin/jde/profile", headers=headers(company)).json()["config"]["approvedReads"]:
-        r = client.post("/admin/jde/sample-read", headers=headers(company), json={"capabilityId": read["capabilityId"],
-                        "target": (read.get("targets") or [""])[0]})
-        assert r.json()["outcome"] == "ok", r.text
-    rev = client.get("/admin/jde/profile", headers=headers(company)).json()["revision"]
-    r = client.post("/admin/jde/enable", headers=headers(company), json={"expectedRevision": rev})
+        for target in (read.get("targets") or [""]):
+            body = {"capabilityId": read["capabilityId"], "target": target}
+            if target == "F00941":
+                body.update({"maxRecords": 1, "filters": [{"field": "EMENHV", "op": "=", "value": env}]})
+            r = client.post("/admin/jde/sample-read", headers=headers(company), json=body)
+            assert r.json()["outcome"] == "ok", r.text
+    view = client.get("/admin/jde/profile", headers=headers(company)).json()
+    assert view["ready"], [(g["id"], [i for i in g["items"] if i["required"] and not i["satisfied"]])
+                           for g in view["readiness"]]
+    r = client.post("/admin/jde/enable", headers=headers(company), json={"expectedRevision": view["revision"]})
     assert r.status_code == 200, r.text
     return r.json()["profile"]
 
 
 def ready_company(client, company: str = "vdb", **overrides) -> dict:
+    overrides.setdefault("dedicatedAccount", dedicated_account(client, company))
     save_profile(client, company, **overrides)
     save_credential(client, company)
     return verify_and_enable(client, company)

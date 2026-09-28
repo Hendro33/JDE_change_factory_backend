@@ -3,11 +3,12 @@ Functional Agent design update -- the Capability Catalogue read
 surface (GET /admin/capabilities) and its projection onto a Change's
 exactChange (capabilityId/capabilityStatus/capabilityExecutable).
 
-Both are read-only over the SAME source of truth mcp_server's own
-prove_the_gate.py exercises directly (capability_catalog.json,
-approval.py) -- these tests confirm the API layer surfaces that
-correctly, not that the underlying gate logic works (that's
-prove_the_gate.py's job).
+Both are read-only over the SAME source of truth the gate uses
+(capability_catalog.json, approval.py). Jade never writes to JDE: an
+approved change is delivered by a person (the recorded route) and verified
+by Jade, so capabilityExecutable reports whether a person may deliver it
+(require_deliverable_by_person: everything except Restricted/Suspended),
+while automated execution (require_executable) still needs Validated.
 """
 
 from __future__ import annotations
@@ -48,10 +49,14 @@ def test_get_single_capability_exposes_separate_technical_and_policy_fields(clie
     assert body["capabilityId"] == "processing_option_update"
     validation = body["validation"]
     # Technical validation and policy restriction are kept as two
-    # separate fields beneath status (design update Section 2) -- this
-    # capability's gating logic is proven (prove_the_gate.py) but the
-    # real JDE write is not, and that nuance must survive to the API.
-    assert "prove_the_gate" in validation["technicalValidation"]
+    # separate fields beneath status (design update Section 2) -- the
+    # gating logic is enforced but an automated JDE write is not validated,
+    # so a person applies the value and Jade reads it back live; that
+    # nuance must survive to the API.
+    assert "gating logic" in validation["technicalValidation"]
+    assert "authorised person applies" in validation["technicalValidation"]
+    assert "read" in validation["technicalValidation"] and "live" in validation["technicalValidation"]
+    assert validation["policyRestriction"]
     assert validation["status"] == "needs_spike"
 
 
@@ -61,12 +66,12 @@ def test_unknown_capability_id_is_404(client):
 
 
 def test_exact_change_surfaces_capability_status_and_executability(client, monkeypatch):
-    """A change bound to a Needs-spike capability, fully approved at
-    the story and exact-change level, must still show as NOT
-    executable through the capability lens -- broader mandate does not
-    mean broader execution permission (design update's closing
-    principle), and the governance screen must be able to show that
-    distinction, not just "approved"."""
+    """A change bound to a Needs-spike capability, fully approved at the
+    story and exact-change level, is deliverable by a person (the recorded
+    route) -- capabilityExecutable says so -- while a Restricted or
+    Suspended capability is not deliverable at all, whatever the approval.
+    The governance screen shows the capability lens separately from
+    "approved"."""
     from jde_api_service.services.registry import get_customer_link_service, get_delivery_queue_service
     from jde_mcp_server import approval as approval_module
 
@@ -98,10 +103,60 @@ def test_exact_change_surfaces_capability_status_and_executability(client, monke
     ec = r.json()["exactChange"]
     assert ec["capabilityId"] == "processing_option_update"
     assert ec["capabilityStatus"] == "needs_spike"
-    # Approved at both the story and exact-change level, but the
-    # capability itself is Needs spike with no matching spike
-    # experiment in this company's scope -- so not
-    # executable, and the API must say so explicitly rather than
-    # implying "approved" means "will execute."
-    assert ec["capabilityExecutable"] is False
+    # Needs spike blocks automated execution, not a person's delivery.
+    assert ec["capabilityExecutable"] is True
     assert r.json()["changeApproval"]["status"] == "approved"
+
+    # The same approved change under a Restricted / Suspended capability is
+    # not deliverable, and the API says so rather than implying "approved".
+    from jde_mcp_server import capability_catalog
+
+    real = capability_catalog.get_capability
+    for status in ("restricted", "suspended"):
+        def patched(cid, _status=status):
+            cap = real(cid)
+            return None if cap is None else {**cap, "validation": {**cap["validation"], "status": _status}}
+
+        monkeypatch.setattr(capability_catalog, "get_capability", patched)
+        ec = client.get(f"/changes/{story_id}", headers=headers(customer="vdb")).json()["exactChange"]
+        assert ec["capabilityStatus"] == status
+        assert ec["capabilityExecutable"] is False
+        assert r.json()["changeApproval"]["status"] == "approved"
+    monkeypatch.setattr(capability_catalog, "get_capability", real)
+
+
+def test_person_delivery_and_automated_execution_are_separate_gates():
+    """require_deliverable_by_person (the recorded route) admits Needs spike;
+    require_executable (automated execution) does not without an approved
+    spike experiment. Both keep the revision and DEV-only rules, and neither
+    delivers a Restricted or Suspended capability."""
+    import pytest
+
+    from jde_mcp_server import capability_catalog as cc
+
+    rev = cc.require_capability("processing_option_update")["revision"]
+    assert cc.require_deliverable_by_person("processing_option_update", rev, "DEV")["capability_id"] == "processing_option_update"
+    with pytest.raises(cc.CapabilityError, match="Needs spike"):
+        cc.require_executable("processing_option_update", rev, "DEV")
+    for gate in (cc.require_deliverable_by_person, cc.require_executable):
+        with pytest.raises(cc.CapabilityError, match="DEV"):
+            gate("processing_option_update", rev, "PY")
+        with pytest.raises(cc.CapabilityError, match="revision"):
+            gate("processing_option_update", rev + "-stale", "DEV")
+    assert cc.PERSON_DELIVERY_BLOCKED_STATUSES == {"restricted", "suspended"}
+
+
+def test_custom_object_text_change_is_prepared_by_jade_and_applied_by_a_person():
+    """Jade prepares C source (never ER text) and a person applies it through
+    OMW; there is no simulated ER adapter any more."""
+    from jde_mcp_server import capability_catalog as cc
+
+    cap = cc.require_capability("custom_object_text_change")
+    te = cap["technical_enforcement"]
+    assert te["formats"]["c_source"]["prepare"] is True and te["formats"]["c_source"]["apply"] == {"recorded": True}
+    assert te["formats"]["er_text"]["prepare"] is False and te["formats"]["er_text"]["apply"] == {"recorded": False}
+    assert "jade_sim_er" not in te["formats"]
+    assert list(te["adapters"]) == ["recorded"]
+    assert te["adapters"]["recorded"]["available"] is True
+    assert te["adapters"]["recorded"]["adapter"] == "person_through_omw"
+    assert te["object_types"] == ["BSFN", "ER"]

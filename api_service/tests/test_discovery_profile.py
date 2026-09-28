@@ -2,7 +2,8 @@
 The company JDE discovery profile (Admin > Integrations > JDE): versioned
 persistence, credential protection, company isolation, revisions, and the
 rule that saving never contacts JDE while a material change switches
-discovery off until it is re-verified.
+discovery off until it is re-verified. The connection is always live; the
+customer's AIS is the fake AIS server at the HTTP boundary (conftest).
 """
 
 from __future__ import annotations
@@ -10,7 +11,7 @@ from __future__ import annotations
 
 import pytest
 
-from ._discovery import profile_body, ready_company, save_credential, save_profile, sim_edit
+from ._discovery import dedicated_account, profile_body, ready_company, save_credential, save_profile, sim_edit
 from .conftest import headers
 
 PASSWORD = "s3cret-Discovery-pw"
@@ -23,16 +24,17 @@ def _db_rows(sql: str, *args):
         return [tuple(r) for r in conn.execute(sql, args).fetchall()]
 
 
-def test_the_profile_is_versioned_in_the_database_and_saving_never_contacts_jde(client, monkeypatch):
+def test_the_profile_is_versioned_in_the_database_and_saving_never_contacts_jde(client, monkeypatch, ais):
     from jde_api_service.discovery import transport
 
     def never(*a, **k):
         raise AssertionError("saving a profile must not contact JDE")
 
-    for name in ("check_reachability", "authenticate", "read"):
-        monkeypatch.setattr(transport.SimulatedAisEndpoint, name, never)
+    for name in ("__init__", "check_reachability", "authenticate", "read"):
+        monkeypatch.setattr(transport.LiveAisTransport, name, never)
     first = save_profile(client)
     second = save_profile(client, role="JADEDISC2")
+    assert ais.calls == []  # the customer's AIS saw nothing
     assert (first["revision"], second["revision"]) == (1, 2)
     revisions = _db_rows("SELECT revision, saved_by FROM jde_profile_revisions WHERE company_id = 'vdb' ORDER BY revision")
     assert [r[0] for r in revisions] == [1, 2] and revisions[0][1] == "Hendro"
@@ -84,13 +86,14 @@ def test_no_key_means_no_credential_and_a_lost_key_blocks_discovery(client, monk
 
 
 def test_a_material_change_switches_discovery_off_until_rechecked(client):
-    view = ready_company(client)
+    account = dedicated_account(client, "vdb")
+    view = ready_company(client, dedicatedAccount=account)
     assert view["discoveryEnabled"] is True
     # Contact names are not material.
-    view = save_profile(client, cncContact="Another CNC person")
+    view = save_profile(client, dedicatedAccount=account, cncContact="Another CNC person")
     assert view["discoveryEnabled"] is True
     # The role is.
-    view = save_profile(client, role="JADEDISC2")
+    view = save_profile(client, dedicatedAccount=account, role="JADEDISC2")
     assert view["discoveryEnabled"] is False
     assert {v["state"] for v in view["health"].values()} == {"stale"}
     assert any("stale" in b for b in view["enableBlockers"])
@@ -209,8 +212,14 @@ def test_the_session_response_is_the_evidence_not_the_server_default(client):
     assert items["session environment"]["status"] == "verified"
     assert items["session environment"]["source"] == "AIS token response"
     assert items["application release"]["status"] == "verified"
-    assert {items["Tools / server release"]["status"], items["path code"]["status"],
-            items["OCM data-source routing and isolation"]["status"]} == {"attested"}
+    # The live server reports its AIS release (server level, not the session).
+    assert items["Tools / server release"]["status"] == "verified"
+    assert "server level" in items["Tools / server release"]["source"]
+    # AIS never reports the path code: it waits for the approved F00941 read,
+    # and is never derived from the environment name or the CNC statement.
+    assert items["path code"]["status"] == "pending" and items["path code"]["reported"] is None
+    assert "F00941" in items["path code"]["source"]
+    assert items["OCM data-source routing and isolation"]["status"] == "attested"
     assert any("JPD920" in n for n in env["facets"]["notes"])
 
 
@@ -219,29 +228,39 @@ def test_a_session_granted_a_different_environment_is_a_mismatch(client):
 
     save_profile(client)
     save_credential(client)
-    real = transport.SimulatedAisEndpoint.authenticate
+    real = transport.LiveAisTransport.authenticate
 
     def falls_back(self, username, password, environment, role):
         s = real(self, username, password, environment, role)
         s.context["environment"] = "JPD920"  # AIS put the session somewhere else
         return s
 
-    transport.SimulatedAisEndpoint.authenticate = falls_back
+    transport.LiveAisTransport.authenticate = falls_back
     try:
         r = client.post("/admin/jde/test-connection", headers=headers("vdb")).json()
     finally:
-        transport.SimulatedAisEndpoint.authenticate = real
+        transport.LiveAisTransport.authenticate = real
     assert r["outcome"] == "failed" and "session reports 'JPD920'" in r["detail"]
 
 
-def test_without_a_cnc_attestation_tools_release_and_path_code_stay_unverified(client):
-    save_profile(client, runtimeAttestationConfirmed=False, runtimeAttestationEvidence="")
+def test_without_a_cnc_attestation_enabling_stays_blocked(client):
+    """Live, the AIS server reports its release and the path code comes from
+    the approved F00941 read -- but the CNC's runtime attestation is still
+    required before discovery can be enabled."""
+    save_profile(client, runtimeAttestationConfirmed=False, runtimeAttestationEvidence="",
+                 dedicatedAccount=dedicated_account(client, "vdb"))
     save_credential(client)
     r = client.post("/admin/jde/test-connection", headers=headers("vdb")).json()
-    assert r["outcome"] == "failed"
+    assert r["outcome"] == "ok", r
     env = _env_check(client)
-    assert env["state"] == "unknown"
-    missing = " ".join(env["facets"]["missing_evidence"])
-    assert "Tools / server release" in missing and "path code" in missing
+    assert env["facets"]["attested"]["runtime"] is None
+    items = {i["item"]: i for i in env["facets"]["items"]}
+    assert items["path code"]["status"] == "pending"
+    r = client.post("/admin/jde/sample-read", headers=headers("vdb"), json={
+        "capabilityId": "table_browse", "target": "F00941", "maxRecords": 1,
+        "filters": [{"field": "EMENHV", "op": "=", "value": "JDV920"}]}).json()
+    assert r["outcome"] == "ok", r
     view = client.get("/admin/jde/profile", headers=headers("vdb")).json()
     assert any("attested the Tools release and path code" in b for b in view["enableBlockers"])
+    assert client.post("/admin/jde/enable", headers=headers("vdb"),
+                       json={"expectedRevision": view["revision"]}).status_code == 409

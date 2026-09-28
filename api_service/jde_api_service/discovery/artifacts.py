@@ -26,19 +26,16 @@ import base64
 import binascii
 import hashlib
 import json
-import os
 import re
 from datetime import datetime, timezone
 from typing import Optional, Protocol
 
-from ..config import settings
 from ..persistence.db import connection
 from .models import ArtifactUpload
 
 MAX_BYTES = 2 * 1024 * 1024
 MAX_EXTRACT_CHARS = 60_000
-# jade_sim_er: the SYNTHETIC simulation format (jde_mcp_server/technical_sim.py).
-TEXT_FORMATS = {"text", "c_source", "er_text", "jade_sim_er", "omw_xml", "json", "markdown", "csv"}
+TEXT_FORMATS = {"text", "c_source", "er_text", "omw_xml", "json", "markdown", "csv"}
 
 
 class ArtifactRejected(ValueError):
@@ -50,36 +47,41 @@ class ArtifactStore(Protocol):
     def get(self, storage_key: str) -> bytes: ...
 
 
-class LocalArtifactStore:
-    """Content-addressed files under <data_dir>/artifacts/<company>/. Swap for
-    object storage by implementing the same two methods."""
+class BlobArtifactStore:
+    """Content-addressed files, "artifacts/<company>/<sha256>", in the
+    configured blob store (local folder, or Azure Blob Storage) -- see
+    persistence/blob_store.py. The storage key recorded is "<company>/<sha256>"."""
 
-    def __init__(self, root: Optional[str] = None) -> None:
-        self.root = root or os.path.join(settings.data_dir, "artifacts")
+    PREFIX = "artifacts"
+
+    def __init__(self, blobs=None) -> None:
+        from ..persistence import blob_store
+
+        self._blobs = blobs or blob_store.default()
 
     def put(self, company_id: str, data: bytes) -> str:
         if not re.fullmatch(r"[A-Za-z0-9_-]{1,40}", company_id):
             raise ArtifactRejected("invalid company id")
-        digest = hashlib.sha256(data).hexdigest()
-        key = f"{company_id}/{digest}"
-        path = os.path.join(self.root, key)
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        if not os.path.exists(path):
-            tmp = path + ".tmp"
-            with open(tmp, "wb") as f:
-                f.write(data)
-            os.replace(tmp, path)
+        key = f"{company_id}/{hashlib.sha256(data).hexdigest()}"
+        if not self._blobs.exists(f"{self.PREFIX}/{key}"):
+            self._blobs.put(f"{self.PREFIX}/{key}", data)
         return key
 
     def get(self, storage_key: str) -> bytes:
-        if ".." in storage_key or storage_key.startswith("/"):
-            raise ArtifactRejected("invalid storage key")
-        with open(os.path.join(self.root, storage_key), "rb") as f:
-            return f.read()
+        from ..persistence.blob_store import BlobStoreError
+
+        try:
+            return self._blobs.get(f"{self.PREFIX}/{storage_key}")
+        except BlobStoreError as exc:
+            raise ArtifactRejected("invalid storage key") from exc
+
+
+# The former name, kept for callers that construct it directly.
+LocalArtifactStore = BlobArtifactStore
 
 
 def default_store() -> ArtifactStore:
-    return LocalArtifactStore()
+    return BlobArtifactStore()
 
 
 def _slug(text: str) -> str:

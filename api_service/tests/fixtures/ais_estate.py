@@ -1,27 +1,13 @@
 """
-The ONE simulated DEV estate: what discovery reads and what simulated
-execution changes, for one company and one JDE environment.
+The state behind the test suite's fake AIS server (fake_ais.py): what a
+customer's JD Edwards DEV environment contains, per company and environment
+(tables, processing options, server defaults, session behaviour), stored as
+one JSON file per pair under JDE_SIM_ESTATE_DIR (a per-test directory).
 
-Before this module there were two simulations that did not share state:
-discovery read an in-memory estate inside the API process, and the
-execution gate's mock wrote a separate file (an unknown target read back as
-"MOCK-INITIAL"). An approved simulated change was therefore never visible to
-a later discovery read, and the two could contradict each other.
-
-Now both read and write this estate:
-
-  * scoped by company AND environment (one JSON file per pair under
-    JDE_SIM_ESTATE_DIR), and within it by target (processing options by
-    application|version, tables by name, technical objects by object id);
-  * persisted with a file lock, so the API process and an MCP server process
-    started for an agent run see the same state;
-  * seeded from a fixed template on first use; every change is recorded in
-    the estate's own history (who, why, what), including test conditions;
-  * drift, failures and timeouts exist only as EXPLICIT test conditions
-    (edit() with a reason, add_fault()) -- nothing random.
-
-Everything here is labelled SIMULATION. Nothing in this module can reach a
-customer system; it has no network code at all.
+TEST FIXTURE ONLY. The product never reads this: Jade talks to the
+customer's real AIS server. Tests change the state explicitly -- a person
+applying a change in DEV (edit()), drift, or a failure injected as a test
+condition (add_fault()) -- nothing random.
 """
 
 from __future__ import annotations
@@ -36,7 +22,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Any, Iterator, Optional
 
-SIMULATION_LABEL = "SIMULATION -- simulated DEV estate, not the customer's JDE"
+LABEL = "TEST FIXTURE -- the fake AIS server's DEV environment"
 HISTORY_LIMIT = 300
 
 # Fault modes a test condition may inject. Each is consumed once unless
@@ -46,19 +32,19 @@ HISTORY_LIMIT = 300
 #   timeout_after_apply  -- sent and applied, then no answer
 #   fail                 -- an explicit error answer; nothing applied
 FAULT_MODES = {"fail_before_send", "timeout_before_apply", "timeout_after_apply", "fail"}
-FAULT_OPERATIONS = {"discovery_read", "po_write", "apply", "build", "verify"}
+FAULT_OPERATIONS = {"discovery_read", "orchestration"}
 
 _TEMPLATE: dict[str, Any] = {
     "reachable": True,
     "accept_credentials": True,
     # Shaped like the documented defaultconfig response: SERVER defaults
     # only. It says nothing about which environment a session actually uses.
-    "defaultconfig": {"aisVersion": "simulated-ais", "defaultEnvironment": "JDV920", "defaultRole": "*ALL",
-                      "defaultJasServer": "http://sim-jas.invalid:8080", "capabilityList": ["dataservice", "poservice"]},
+    "defaultconfig": {"aisVersion": "9.2.8.2", "defaultEnvironment": "JDV920", "defaultRole": "*ALL",
+                      "defaultJasServer": "https://jas.customer.example", "capabilityList": ["dataservice", "poservice"]},
     # What the simulated token-request response reports about the session
     # (documented keys). report_context False simulates an AIS that omits
     # them; granted_* restricts what the simulated user may log in to.
-    "session": {"report_context": True, "apps_release": "E920", "jasserver": "http://sim-jas.invalid:8080",
+    "session": {"report_context": True, "apps_release": "E920", "jasserver": "https://jas.customer.example",
                 "granted_environments": None, "granted_roles": None},
     "tables": {
         "F0005": [
@@ -75,6 +61,8 @@ _TEMPLATE: dict[str, Any] = {
             {"SIOBNM": "P554210", "SIFUNO": "APPL", "SISY": "55", "SIMD": "Custom Sales Order Review", "SIPKGNAME": ""},
             {"SIOBNM": "B5542001", "SIFUNO": "BSFN", "SISY": "55", "SIMD": "Custom Credit Check", "SIPKGNAME": ""},
         ],
+        # Environment master: environment -> path code (filled per environment on seed).
+        "F00941": [],
         "F4211": [
             {"DOCO": "10001", "DCTO": "SO", "LNID": "1.000", "LITM": "BIKE-100", "UORG": "2", "LTTR": "540", "NXTR": "560"},
             {"DOCO": "10001", "DCTO": "SO", "LNID": "2.000", "LITM": "HELMET-7", "UORG": "1", "LTTR": "540", "NXTR": "560"},
@@ -125,8 +113,9 @@ def _now_iso() -> str:
 
 def _seed(company_id: str, environment: str) -> dict:
     estate = copy.deepcopy(_TEMPLATE)
-    estate.update({"company_id": company_id, "environment": _norm_env(environment), "label": SIMULATION_LABEL,
+    estate.update({"company_id": company_id, "environment": _norm_env(environment), "label": LABEL,
                    "revision": 1})
+    estate["tables"]["F00941"] = [{"EMENHV": _norm_env(environment), "EMPATHCD": "DV920"}]
     estate["history"].append({"revision": 1, "at": _now_iso(), "actor": "simulation", "reason": "seeded from the template",
                               "change": "seed"})
     return estate

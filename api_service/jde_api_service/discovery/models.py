@@ -12,7 +12,7 @@ from pydantic import Field, field_validator, model_validator
 from ..models.base import ApiModel
 from . import capabilities
 
-ConnectionMode = Literal["simulation", "live"]
+ConnectionMode = Literal["live"]
 # What the environment is FOR -- stated by the customer, never inferred from
 # its name. Discovery is only offered for development environments or an
 # explicitly approved, isolated trial environment (e.g. a prototype/sandbox
@@ -151,7 +151,7 @@ class JdeProfileConfig(ApiModel):
     """Everything about a company's discovery connection except the secret."""
 
     connection_name: str = Field(default="", max_length=80)
-    connection_mode: ConnectionMode = "simulation"
+    connection_mode: ConnectionMode = "live"
     ais_base_url: str
     environment: str
     environment_purpose: EnvironmentPurpose = "development"
@@ -185,6 +185,17 @@ class JdeProfileConfig(ApiModel):
     discovery_window: Optional[DiscoveryWindow] = None
     limits: RequestLimits = Field(default_factory=RequestLimits)
     data_sharing_policy: DataSharingPolicy = "metadata_only"
+
+    @model_validator(mode="before")
+    @classmethod
+    def _legacy_simulation_mode(cls, data: Any) -> Any:
+        """Connections saved as "simulation" (the retired demo mode) load as
+        live connections that must be tested and enabled again."""
+        if isinstance(data, dict):
+            for key in ("connection_mode", "connectionMode"):
+                if data.get(key) == "simulation":
+                    data = {**data, key: "live"}
+        return data
 
     @model_validator(mode="before")
     @classmethod
@@ -360,7 +371,7 @@ class ActivityRow(ApiModel):
 # Technical baseline artifacts and reference documents
 # ---------------------------------------------------------------------
 ArtifactKind = Literal["technical_export", "reference_document"]
-ExportFormat = Literal["text", "c_source", "er_text", "jade_sim_er", "omw_xml", "json", "markdown", "csv",
+ExportFormat = Literal["text", "c_source", "er_text", "omw_xml", "json", "markdown", "csv",
                        "par", "zip", "pdf", "docx", "other"]
 RuntimeCorrespondence = Literal["matches_dev_runtime", "known_mismatch", "unknown"]
 

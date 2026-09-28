@@ -49,8 +49,7 @@ _ALLOWED_TOOLS = [
 # test_tool_surface.py pins this list against the server's registry.
 PROJECT_SERVER_TOOLS = [
     "capture_evidence", "get_approved_story", "get_capability_status", "get_design_baseline", "propose_change",
-    "propose_to_backlog", "read_approved_target", "resolve_without_change", "run_orchestration",
-    "set_processing_option", "verify_evidence_chain",
+    "propose_to_backlog", "resolve_without_change", "verify_evidence_chain",
 ]
 _DISALLOWED_TOOLS = [f"mcp__jde-change-factory__{t}" for t in PROJECT_SERVER_TOOLS
                      if f"mcp__jde-change-factory__{t}" not in _ALLOWED_TOOLS]
@@ -114,14 +113,16 @@ def _capability_block() -> str:
         if cap.get("technical_enforcement"):
             formats = ", ".join(sorted(cap["technical_enforcement"].get("formats") or {}))
             lines.append(f"- {cid}: Technical Agent route (customer-owned development objects; formats {formats}; "
-                         "SIMULATION adapter only). Do NOT call propose_change for it: recommend 'Technical Agent', "
+                         "delivered by people through OMW and recorded). Do NOT call propose_change for it: recommend 'Technical Agent', "
                          "call neither terminal tool, and describe the change in the implementation_spec -- a person "
                          "approves the design and the Technical Agent prepares the exact package")
         elif enf is None:
             lines.append(f"- {cid}: no execution adapter in Jade; propose_change refuses it")
         elif enf["tool"] == "set_processing_option":
             lines.append(f'- {cid}: operation must be exactly {{"tool": "set_processing_option", "story_id", '
-                         f'"application", "version", "option", "value"}} (the value from the engagement\'s allowed set)')
+                         f'"application", "version", "option", "value"}} (the value from the engagement\'s allowed set); '
+                         'optionally "test_orchestration" naming one of the engagement\'s approved tests. A person applies '
+                         'the approved value in DEV and Jade verifies it live')
         else:
             lines.append(f"- {cid}: operation tool must be {enf['tool']}")
     return "\n".join(lines)

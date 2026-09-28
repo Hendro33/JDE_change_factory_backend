@@ -1,6 +1,7 @@
 """The first live connection: TLS trust, identity capture, authentication
 limits, the dedicated account, the bound sample read and readiness.
-No real JDE: a local HTTPS server (real TLS) or an httpx mock."""
+The connection is always live. No real JDE: a local HTTPS server (real
+TLS) or this file's own httpx mock of the customer's AIS."""
 
 from __future__ import annotations
 
@@ -50,11 +51,11 @@ READS = [{"capabilityId": "udc_values", "targets": ["00/DT"], "fields": ["DRSY",
          {"capabilityId": "table_browse", "targets": ["F00941"], "fields": ["EMENHV", "EMPATHCD"], "filterFields": ["EMENHV"]}]
 
 
-def live_profile(client, monkeypatch, requests, **fake):
+def live_profile(client, monkeypatch, requests, *, profile=None, **fake):
     _live(client, monkeypatch, fake_ais(requests, **fake))
     save_profile(client, connectionMode="live", environment="JPS920", role="JADEREAD", pathCode="",
                  expectedApplicationRelease="9.2", expectedToolsRelease="9.2.26.2", approvedReads=READS,
-                 limits={"maxRecords": 5, "timeoutSeconds": 10})
+                 limits={"maxRecords": 5, "timeoutSeconds": 10}, **(profile or {}))
     save_credential(client)
 
 
@@ -290,7 +291,9 @@ def test_path_code_comes_only_from_jde(client, monkeypatch):
 
 def test_readiness_needs_the_dedicated_account_and_network_restriction(client, monkeypatch):
     requests: list = []
-    live_profile(client, monkeypatch, requests, f00941=[{"F00941_EMENHV": "JPS920", "F00941_EMPATHCD": "PS920"}])
+    # No network restriction recorded yet (the shared test profile has one).
+    live_profile(client, monkeypatch, requests, f00941=[{"F00941_EMENHV": "JPS920", "F00941_EMPATHCD": "PS920"}],
+                 profile={"networkRestriction": {}})
     assert client.post("/admin/jde/test-connection", headers=H).json()["outcome"] == "ok"
     for body in ({"capabilityId": "udc_values", "target": "00/DT", "maxRecords": 5},
                  {"capabilityId": "table_browse", "target": "F00941", "maxRecords": 1,
@@ -301,6 +304,9 @@ def test_readiness_needs_the_dedicated_account_and_network_restriction(client, m
     assert list(groups) == ["connectivity", "identity", "jde_authorization", "network_restriction", "runtime_safeguards"]
     assert groups["connectivity"]["satisfied"] and groups["identity"]["satisfied"]
     assert not groups["jde_authorization"]["satisfied"] and not groups["network_restriction"]["satisfied"]
+    # Jade never writes to JDE: the writes-disabled safeguard always holds.
+    safeguards = {i["id"]: i for i in groups["runtime_safeguards"]["items"]}
+    assert safeguards["writes_disabled"]["satisfied"] and "no JDE write path" in safeguards["writes_disabled"]["detail"]
     assert not view["ready"]
     assert client.post("/admin/jde/enable", headers=H, json={"expectedRevision": view["revision"]}).status_code != 200
 

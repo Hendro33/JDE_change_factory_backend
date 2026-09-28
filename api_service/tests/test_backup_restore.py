@@ -9,8 +9,9 @@ checksum first, never deletes current data (it is moved aside), and reports
 whether the server's credential key can read the restored Jira tokens.
 After a restart on the restored data, the system behaves exactly as at
 backup time: memberships and revisions, approvals with their approver and
-expiry, applied / ready / unknown execution states, scope revisions and
-valid evidence chains.
+expiry, delivery states (a write recorded as applied, an approved change
+not yet delivered, a live test orchestration whose outcome is unknown, a
+pending proposal), scope revisions and valid evidence chains.
 """
 
 from __future__ import annotations
@@ -20,15 +21,22 @@ import json
 import os
 import tarfile
 
-import httpx
 import pytest
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 
+from ._discovery import ready_company
 from .conftest import headers
 from .test_concurrency_and_stale_authority import _membership, _set_roles
-from .test_execution_attempts import _ready_change, _state
-from .test_stage1_execution_safeguards import _approved_story, _execute, _propose
+from .test_stage1_execution_safeguards import (
+    OPERATION,
+    _approve,
+    _approved_story,
+    _execute,
+    _full_scope,
+    _propose,
+    _save_scope,
+)
 
 # This tool backs up the built-in SQLite database; on PostgreSQL it refuses
 # (test_on_postgresql_the_tool_refuses_and_names_the_database_backups).
@@ -46,26 +54,41 @@ def test_on_postgresql_the_tool_refuses_and_names_the_database_backups(monkeypat
         backup_restore.restore_backup(str(tmp_path / "x.tar.gz"), by="test")
 
 
+def _ready_change(client, story_id: str, *, test: str | None = None) -> dict:
+    """An approved change; `test` names the approved test orchestration."""
+    from jde_mcp_server import approval
+
+    _save_scope(client, "vdb", _full_scope())
+    _approved_story(story_id)
+    op = {**OPERATION, "story_id": story_id, **({"test_orchestration": test} if test else {})}
+    change = approval.propose_change(story_id, op, "processing_option_update")
+    _approve(change["change_id"])
+    return change
+
+
+def _state(change_id: str, kind: str = "write") -> str:
+    from jde_mcp_server import approval, execution
+
+    return execution.effective_state(approval._load(change_id), kind)
+
+
 def _build_state(client, monkeypatch) -> dict:
     """Every kind of state a restore must bring back."""
-    from jde_mcp_server import ais_client
-
     from jde_mcp_server.evidence import capture_evidence
 
+    from .fixtures import ais_estate
+
+    ready_company(client, "vdb")  # the unknown state needs a live test orchestration
+    # Approved while DEV still holds the before-value, so each one's before-state is read live.
     applied = _ready_change(client, "S-BR-APPLIED")
+    approved = _ready_change(client, "S-BR-APPROVED")  # approved, not yet delivered
+    unknown = _ready_change(client, "S-BR-UNKNOWN", test="ORCH_SO")
     _execute("S-BR-APPLIED", applied["change_id"])
     capture_evidence("S-BR-APPLIED", {"stage": "Test", "detail": "order type SO confirmed in DEV", "actor": "Hendro"})
-    approved = _ready_change(client, "S-BR-APPROVED")  # approved, not yet executed
-    unknown = _ready_change(client, "S-BR-UNKNOWN")
-    real_submit = ais_client._mock_submit
-
-    def timed_out(*args):
-        raise httpx.ReadTimeout("no response")
-
-    monkeypatch.setattr(ais_client, "_mock_submit", timed_out)
-    with pytest.raises(httpx.ReadTimeout):
-        _execute("S-BR-UNKNOWN", unknown["change_id"])
-    monkeypatch.setattr(ais_client, "_mock_submit", real_submit)
+    _execute("S-BR-UNKNOWN", unknown["change_id"])
+    ais_estate.add_fault("vdb", "JDV920", operation="orchestration", target="ORCH_SO", mode="timeout_after_apply")
+    r = client.post("/changes/S-BR-UNKNOWN/delivery/run-test", headers=headers("vdb"))
+    assert r.status_code == 409 and "outcome is unknown" in r.json()["detail"], r.text
     _approved_story("S-BR-PENDING")
     pending = _propose("S-BR-PENDING")
     assert client.put(
@@ -87,6 +110,7 @@ def _backup(tmp_path) -> tuple[str, dict]:
 
 
 def test_restore_brings_back_sqlite_and_json_state_together(client, monkeypatch, tmp_path):
+    from jde_api_service.delivery import functional
     from jde_api_service.main import app
     from jde_api_service.services import backup_restore
     from jde_api_service.services.registry import get_jira_credentials_service
@@ -99,9 +123,12 @@ def test_restore_brings_back_sqlite_and_json_state_together(client, monkeypatch,
     assert summary["changes"][ids["approved"]["change_id"]]["status"] == "approved"
     assert summary["changes"][ids["approved"]["change_id"]]["approver_user_id"] == "u-hendro"
     assert summary["changes"][ids["applied"]["change_id"]]["write_state"] == "applied"
-    assert summary["changes"][ids["unknown"]["change_id"]]["write_state"] == "unknown"
+    assert summary["changes"][ids["applied"]["change_id"]]["test_state"] == "ready"
+    assert summary["changes"][ids["unknown"]["change_id"]]["write_state"] == "applied"
+    assert summary["changes"][ids["unknown"]["change_id"]]["test_state"] == "unknown"
     assert summary["changes"][ids["pending"]["change_id"]]["status"] == "pending"
-    assert summary["evidence_chains"]["S-BR-APPLIED"] == {"valid": True, "entries": 1}
+    # the recorded "applied in DEV" step plus the test note
+    assert summary["evidence_chains"]["S-BR-APPLIED"] == {"valid": True, "entries": 2}
     assert manifest["credential_key_id_at_backup"] in summary["credential_key_ids_needed"]
     assert os.environ["JDE_CREDENTIAL_KEY"] not in json.dumps(manifest)  # the key is never in the archive
 
@@ -123,14 +150,15 @@ def test_restore_brings_back_sqlite_and_json_state_together(client, monkeypatch,
     # Approval and execution state are exactly as at backup time.
     assert approval._load(ids["pending"]["change_id"])["status"] == "pending"
     assert _state(ids["approved"]["change_id"]) == "ready"
-    assert _state(ids["unknown"]["change_id"]) == "unknown"
+    assert _state(ids["applied"]["change_id"]) == "applied"
+    assert _state(ids["unknown"]["change_id"], "test") == "unknown"
     with pytest.raises(ExecutionBlocked):
         _execute("S-BR-APPLIED", ids["applied"]["change_id"])
-    with pytest.raises(ExecutionBlocked):
-        _execute("S-BR-UNKNOWN", ids["unknown"]["change_id"])
+    with pytest.raises(ExecutionBlocked):  # an unknown test outcome must be reconciled, not re-run
+        functional.run_test(ids["unknown"]["change_id"], actor_user_id="u-hendro", actor_name="Hendro")
     # The restored approval is usable: its approver is re-checked against the
     # restored membership database.
-    assert _execute("S-BR-APPROVED", ids["approved"]["change_id"])["mock"] is True
+    assert _execute("S-BR-APPROVED", ids["approved"]["change_id"])["outcome"] == "applied"
     # Memberships, with their revisions, are as at backup time.
     assert _membership("vdb", "u-ellen")["roles"] == ["product_manager"]
     assert _membership("vdb", "u-ellen")["revision"] == summary["memberships"][_membership("vdb", "u-ellen")["membership_id"]]["revision"]
@@ -199,7 +227,7 @@ def test_writes_are_refused_while_the_backup_is_taken(client, monkeypatch, tmp_p
     assert seen["put"] == 503 and seen["get"] == 200
     assert "paused" in seen["gate"]
     # The pause is lifted afterwards.
-    assert _execute("S-BR-PAUSE", change["change_id"])["mock"] is True
+    assert _execute("S-BR-PAUSE", change["change_id"])["outcome"] == "applied"
 
 
 def test_no_backup_while_a_jde_attempt_is_in_flight(client, tmp_path):

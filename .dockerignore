@@ -1,0 +1,17 @@
+.git
+**/__pycache__
+**/*.egg-info
+.venv
+.preview-data
+.jade-data
+api_data
+api_service/api_data
+api_service/tests
+backlog
+changes
+evidence
+docs
+fixtures
+scripts
+*.env
+.env*

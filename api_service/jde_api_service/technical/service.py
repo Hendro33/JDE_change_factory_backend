@@ -1,6 +1,6 @@
 """
-The Technical workflow, from an approved Architect design to verified
-simulated application.
+The Technical workflow, from an approved Architect design to a verified,
+recorded delivery in the customer's DEV environment.
 
   1. A person approves the Architect's design revision for technical
      implementation (design approval).
@@ -9,9 +9,10 @@ simulated application.
      its exact diff and proposes it as an exact change (pending).
   3. A person approves THAT package revision (exact implementation approval).
      The agent cannot approve anything.
-  4. The governed executor (jde_mcp_server.technical_gate) applies, builds,
-     records the human CNC activation and runs the verification tests --
-     each milestone separately, each re-checked before dispatch.
+  4. People deliver it -- a developer checks it in through OMW, it is built,
+     a CNC activates it and the test plan is run in DEV -- and record each
+     milestone in Jade (jde_mcp_server.technical_gate), which re-checks
+     everything before recording it.
 
 Everything is resolved from backend records -- company, domain, design
 revision, evidence baseline, change id -- never from what an agent says.
@@ -27,7 +28,7 @@ from ..discovery import baseline
 from . import store
 
 from jde_mcp_server import (  # noqa: E402
-    approval, authority, binding, capability_catalog, execution, sim_estate, technical_gate, technical_sim,
+    approval, authority, binding, capability_catalog, execution, technical_gate,
 )
 from jde_mcp_server.backlog import require_approved  # noqa: E402
 from jde_mcp_server.scope import company_for_story, load_company_scope, require_approval_policy  # noqa: E402
@@ -138,32 +139,25 @@ def classify(company_id: str, artifact: dict, environment: str) -> dict[str, Any
                        "were extracted -- a partial export never represents the complete object")
     if artifact["extraction_status"] != "supported":
         reasons.append(artifact.get("extraction_note") or "not extractable as text")
-    key = technical_sim.object_key(meta.get("object_name", ""), meta.get("object_type", ""))
-    runtime: dict[str, Any] = {"object_key": key}
-    if technical_gate.mode() == "simulation" and environment:
-        obj = technical_sim.get_object(company_id, environment, key)
-        if obj is None:
-            runtime.update({"state": "not_in_estate", "detail": "the object is not in the simulated DEV estate"})
-        elif obj["active"]["sha256"] == artifact["sha256"]:
-            runtime.update({"state": "verified_active_runtime", "detail": "matches the ACTIVE simulated DEV runtime "
-                            "(simulation-only check: no live mechanism reads a runtime specification)"})
-        else:
-            runtime.update({"state": "stale", "detail": "differs from the ACTIVE simulated DEV runtime -- this export is "
-                            "not what runs in DEV; preparing from it would be stale"})
-    else:
-        runtime.update({"state": "unverifiable", "detail": "no qualified mechanism reads the active runtime"})
+    key = technical_gate.object_key(meta.get("object_name", ""), meta.get("object_type", ""))
+    runtime: dict[str, Any] = {"object_key": key, "state": "attested" if meta.get("runtime_correspondence") ==
+                               "matches_dev_runtime" else "unverifiable",
+                               "detail": "the customer states this export is what runs in DEV" if
+                               meta.get("runtime_correspondence") == "matches_dev_runtime" else
+                               "Jade cannot read an object's active DEV runtime; only the customer can attest it"}
+    latest = artifact_store.latest_revision(company_id, artifact["artifact_id"]) if artifact.get("artifact_id") else None
+    if latest and latest != artifact["revision"]:
+        runtime.update({"state": "stale", "detail": f"a newer export (revision {latest}) of this object was uploaded"})
     correspondence = meta.get("runtime_correspondence", "unknown")
-    classification = ("verified_active_runtime" if runtime.get("state") == "verified_active_runtime"
-                      else "runtime_export_attested" if correspondence == "matches_dev_runtime"
-                      else "development_export")
+    classification = ("runtime_export_attested" if correspondence == "matches_dev_runtime" else "development_export")
     if runtime.get("state") == "stale":
-        reasons.append("stale source: it is not the active DEV runtime")
+        reasons.append("stale source: a newer export of this object was uploaded")
     return {"evidence_id": artifact_store.evidence_ref(artifact), "artifact_id": artifact["artifact_id"],
             "revision": artifact["revision"], "sha256": artifact["sha256"], "format": fmt,
             "object_key": key, "object_name": meta.get("object_name"), "object_type": meta.get("object_type"),
             "classification": classification, "customer_statement": correspondence,
             "runtime_check": runtime, "can_prepare": not reasons, "reasons": reasons,
-            "can_apply": {m: bool((support.get("apply") or {}).get(m)) for m in ("simulation", "live")},
+            "can_apply": {m: bool((support.get("apply") or {}).get(m)) for m in (technical_gate.mode(),)},
             "coverage": coverage, "provenance": {k: meta.get(k) for k in (
                 "repository", "commit_ref", "source_location", "exported_at", "customer_environment", "path_code",
                 "runtime_statement", "runtime_stated_by")}}
@@ -183,7 +177,7 @@ def build_content(*, a: dict, run: dict, revision: int, workspace, objects: list
         text = workspace.text(file_id)
         candidates.append({"object_key": entry["object_key"], "file_name": entry["file_name"],
                            "source_ref": entry["evidence_id"], "format": entry["format"],
-                           "before_sha256": entry["original_sha256"], "after_sha256": technical_sim.sha256_text(text),
+                           "before_sha256": entry["original_sha256"], "after_sha256": technical_gate.sha256_text(text),
                            "text": text, "diff": workspace.diff(file_id)})
     return {
         "schema": "jade.technical_package/1", "revision": revision,
@@ -197,16 +191,16 @@ def build_content(*, a: dict, run: dict, revision: int, workspace, objects: list
         "dependencies": dependencies,
         "toolchain": {"adapter": adapter.get("adapter"), "adapter_version": adapter.get("version"),
                       "formats": sorted({c["format"] for c in candidates}), "requires_build": enf.get("requires_build"),
-                      "requires_cnc_activation": enf.get("requires_cnc_activation"),
-                      "live_adapter": enf["adapters"]["live"]},
+                      "requires_cnc_activation": enf.get("requires_cnc_activation")},
         "explanation": explanation, "requirement_trace": requirement_trace, "test_plan": test_plan,
         "missing_evidence": missing_evidence, "unsupported": unsupported,
-        "lifecycle": ["prepared", "exact implementation approval (a person)", "apply: checked in, not active",
-                      "build", "CNC activation (a human CNC; recorded, never automated)", "verify"],
+        "lifecycle": ["prepared", "exact implementation approval (a person)",
+                      "apply: a developer checks the candidate in through OMW (not active) -- recorded",
+                      "build -- recorded", "CNC activation (a CNC; recorded)", "verify: the test plan run in DEV -- recorded"],
         "recovery": {"before": {c["object_key"]: c["before_sha256"] for c in candidates}, "plan": recovery,
                      "constraints": ["before activation: abandon the checked-in candidate",
                                      "after activation: restore the previous source as a new, approved package revision",
-                                     "in real JDE a checked-in or promoted object is a Human Implementation / CNC decision"]},
+                                     "a checked-in or promoted object is withdrawn by a developer / CNC decision"]},
         "prepared_by": {"run_id": run["run_id"], "agent": "technical-agent"},
         "repair_of": repair_of,
     }
@@ -278,7 +272,7 @@ def eligibility(package: dict) -> dict[str, Any]:
     if nxt in ("apply", "build", "verify") and state not in ("ready",):
         reasons.append(f"{nxt} is {state}")
     if nxt == "cnc_activation":
-        reasons.append("awaiting a human CNC activation -- only a CNC operator can record it")
+        reasons.append("awaiting the CNC activation -- only a CNC operator can record it")
     return {"eligible": not reasons, "next_milestone": nxt, "reasons": reasons}
 
 
@@ -293,37 +287,43 @@ def approve_package(company_id: str, story_id: str, revision: int, *, actor_name
                                    approver_user_id=actor_user_id, note=note)
 
 
-def run_milestone(company_id: str, story_id: str, revision: int, milestone: str, *, actor: str) -> dict:
+def _record_for(company_id: str, story_id: str, revision: int) -> tuple[dict, dict]:
     package = package_or_404(company_id, story_id, revision)
     record = change_for(package)
     if record is None:
         raise TechnicalRefused("no exact change proposed for this revision")
-    fn = {"apply": technical_gate.apply, "build": technical_gate.build, "verify": technical_gate.verify}[milestone]
-    return fn(record["change_id"], package, actor=actor)
+    return package, record
+
+
+def record_apply(company_id: str, story_id: str, revision: int, *, actor_user_id: str, actor_name: str,
+                 omw_project: str, evidence_reference: str, note: str) -> dict:
+    package, record = _record_for(company_id, story_id, revision)
+    return technical_gate.apply(record["change_id"], package, actor=actor_name, actor_user_id=actor_user_id,
+                                omw_project=omw_project, evidence_reference=evidence_reference, note=note)
+
+
+def record_build(company_id: str, story_id: str, revision: int, *, actor_user_id: str, actor_name: str,
+                 succeeded: bool, build_reference: str, log: str) -> dict:
+    package, record = _record_for(company_id, story_id, revision)
+    return technical_gate.build(record["change_id"], package, actor=actor_name, actor_user_id=actor_user_id,
+                                succeeded=succeeded, build_reference=build_reference, log=log)
+
+
+def record_verification(company_id: str, story_id: str, revision: int, *, actor_user_id: str, actor_name: str,
+                        results: list[dict], runtime_is_approved_artifact: bool, evidence_reference: str,
+                        note: str) -> dict:
+    package, record = _record_for(company_id, story_id, revision)
+    return technical_gate.verify(record["change_id"], package, actor=actor_name, actor_user_id=actor_user_id,
+                                 results=results, runtime_is_approved_artifact=runtime_is_approved_artifact,
+                                 evidence_reference=evidence_reference, note=note)
 
 
 def record_cnc(company_id: str, story_id: str, revision: int, *, actor_user_id: str, actor_name: str,
                package_name: str, evidence_reference: str, note: str) -> dict:
-    package = package_or_404(company_id, story_id, revision)
-    record = change_for(package)
-    if record is None:
-        raise TechnicalRefused("no exact change proposed for this revision")
+    package, record = _record_for(company_id, story_id, revision)
     return technical_gate.record_cnc_activation(record["change_id"], package, actor_user_id=actor_user_id,
                                                 actor_name=actor_name, package_name=package_name,
                                                 evidence_reference=evidence_reference, note=note)
-
-
-def reconcile(company_id: str, story_id: str, revision: int, milestone: str, *, actor_user_id: str,
-              actor_name: str, note: str) -> dict:
-    package = package_or_404(company_id, story_id, revision)
-    record = change_for(package)
-    if record is None:
-        raise TechnicalRefused("no exact change proposed for this revision")
-    kind = {"apply": technical_gate.APPLY, "build": technical_gate.BUILD}.get(milestone)
-    if kind is None:
-        raise TechnicalRefused("only apply or build is reconciled")
-    return technical_gate.reconcile(record["change_id"], package, milestone=kind, actor_user_id=actor_user_id,
-                                    actor_name=actor_name, note=note)
 
 
 # ---------------------------------------------------------------------
@@ -362,7 +362,6 @@ def work_view(company_id: str, story_id: str) -> dict[str, Any]:
              "reasons": [f"exact implementation approval: {record.get('status') if record else 'none'}"]},
         })
     env = (a or {}).get("target_environment") or ""
-    estate = sim_estate.load(company_id, env) if env and technical_gate.mode() == "simulation" else None
     human = [{"action": "design_approval", "by": d["approved_by"], "user_id": d["approver_user_id"], "at": d["approved_at"],
               "detail": f"design revision {d['design_revision']} (baseline {d['baseline_id']})"}
              for d in store.design_approvals(company_id, story_id)]
@@ -374,18 +373,25 @@ def work_view(company_id: str, story_id: str) -> dict[str, Any]:
         if ap.get("cnc_activation"):
             c = ap["cnc_activation"]
             human.append({"action": "cnc_activation", "by": c["by"], "user_id": c["user_id"], "at": c["at"],
-                          "detail": f"package {c['package_name']} ({c['evidence_reference']})", "simulated": c["simulated"]})
+                          "detail": f"package {c['package_name']} ({c['evidence_reference']})"})
     return {
         "story_id": story_id, "mode": technical_gate.mode(),
-        "simulation_label": sim_estate.SIMULATION_LABEL if technical_gate.mode() == "simulation" else None,
-        "format_label": technical_sim.FORMAT_LABEL,
         "assignment": a, "assignment_problem": problem,
         "capability": {"capability_id": technical_gate.CAPABILITY_ID, "status": (cap.get("validation") or {}).get("status"),
                        "technical_validation": (cap.get("validation") or {}).get("technical_validation"),
                        "enforcement": cap.get("technical_enforcement")},
         "runs": store.runs_for(company_id, story_id), "packages": packages, "human_actions": human,
-        "estate": {"environment": env, "revision": estate.get("revision"), "objects": {
-            k: {"active_sha256": o["active"]["sha256"], "active_package": o["active"].get("package"),
-                "checked_in_sha256": (o.get("checked_in") or {}).get("sha256"), "build": o.get("build")}
-            for k, o in (estate.get("objects") or {}).items()}} if estate else None,
+        "environment": env,
     }
+
+
+def system_code_of(meta: dict) -> str:
+    """The object's JDE system code: as stated with the uploaded source, or
+    read from a custom object's name (P55..., B5542..., R59...)."""
+    import re
+
+    stated = str(meta.get("system_code") or "").strip()
+    if stated:
+        return stated
+    m = re.match(r"^[A-Z]{1,2}(\d{2})", str(meta.get("object_name") or "").strip().upper())
+    return m.group(1) if m else ""

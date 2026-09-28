@@ -37,21 +37,13 @@ class Customer:
     short_name: str
     tools_release: str
     environment: str
-    is_demo: bool = False
 
 
 def _row_to_customer(row) -> Customer:
     return Customer(
         id=row["id"], name=row["name"], short_name=row["short_name"],
         tools_release=row["tools_release"], environment=row["environment"],
-        is_demo=bool(row["is_demo"]) if "is_demo" in row.keys() else False,
     )
-
-
-def is_demo_company(company_id: str) -> bool:
-    """Demo customers are the only place simulated JDE exists."""
-    c = get_registry().get_customer(company_id)
-    return bool(c and c.is_demo)
 
 
 def _clean(value: str, field: str, max_len: int, *, required: bool = False) -> str:
@@ -65,7 +57,7 @@ def _clean(value: str, field: str, max_len: int, *, required: bool = False) -> s
 
 def update_customer(company_id: str, *, name: str, short_name: str, tools_release: str, environment: str,
                     actor_user_id: str) -> Customer:
-    """Edit a customer's own information. The demo flag is not editable."""
+    """Edit a customer's own information."""
     from .membership_service import _require_active_admin, log_access_change
 
     name = _clean(name, "Name", 120, required=True)
@@ -90,7 +82,7 @@ def update_customer(company_id: str, *, name: str, short_name: str, tools_releas
 
 def create_customer(*, name: str, short_name: str, tools_release: str, environment: str,
                     creator_user_id: str, creator_company_id: str) -> Customer:
-    """A new, real (non-demo) customer. Only an active Admin of a customer
+    """A new customer. Only an active Admin of a customer
     they already belong to may create one; they become its first Admin."""
     from .membership_service import _require_active_admin, create_membership, log_access_change
 

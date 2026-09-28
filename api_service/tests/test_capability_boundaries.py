@@ -1,26 +1,31 @@
 """
-Enforced capability boundaries for the first JDE experiments.
+Enforced capability boundaries for delivering an approved change.
 
-The executable capabilities are enumerated: only a capability whose
+The deliverable capabilities are enumerated: only a capability whose
 catalogue entry carries a complete, machine-readable enforcement contract
 (tool, mechanism, target, option categories with a protected flag, test
-mechanism and permitted test side effects) can execute. Today that is
+mechanism and permitted test side effects) can be delivered. Today that is
 processing_option_update alone.
 
-For it, the gate enforces -- against closed values in the company's saved
-scope, never against free text:
+For it, the delivery gate (approval.authorise_functional_delivery, run
+before a person's "applied in DEV" is recorded) enforces -- against closed
+values in the company's saved scope, never against free text:
 
   * target:    the approved entry must be approved FOR this capability;
-  * mechanism: the company must allow the capability's mechanism;
   * category:  the option's category must be declared, known, not
                protected by the capability and not never-touch for the
-               company;
-  * test:      the test must be an approved test whose declared side
-               effects the capability permits, run through an allowed
-               mechanism.
+               company.
+
+The company's mechanism allow-list governs what Jade itself runs in JDE:
+a person applying the change is not an AIS mechanism, so it does not gate
+recording the write, but the live test orchestration (scope.
+check_test_boundary) needs:
+
+  * test:      an approved test whose declared side effects the capability
+               permits, run through an allowed mechanism.
 
 A restriction that exists only as documentation or as a displayed label
-blocks execution instead of being assumed.
+blocks delivery instead of being assumed.
 """
 
 from __future__ import annotations
@@ -30,6 +35,7 @@ import os
 
 import pytest
 
+from ._discovery import ready_company
 from .conftest import headers
 from .test_stage1_execution_safeguards import (
     OPERATION,
@@ -39,6 +45,9 @@ from .test_stage1_execution_safeguards import (
     _full_scope,
     _save_scope,
 )
+
+
+TEST_OP = {**OPERATION, "test_orchestration": "ORCH_SO"}
 
 
 def _scope(**overrides) -> dict:
@@ -56,8 +65,13 @@ def _scope(**overrides) -> dict:
 
 
 def _approved_change(client, story: str, scope: dict, operation: dict | None = None) -> dict:
+    """An approved change. One that names a test orchestration is proposed
+    with the company's JDE connection ready: a live test needs it, and the
+    target's before-state is then read live at approval."""
     from jde_mcp_server import approval
 
+    if operation is not None and operation.get("test_orchestration"):
+        ready_company(client, "vdb")
     _save_scope(client, "vdb", scope)
     _approved_story(story)
     op = {**(operation or OPERATION), "story_id": story}
@@ -66,10 +80,11 @@ def _approved_change(client, story: str, scope: dict, operation: dict | None = N
     return change
 
 
-def _run_test(story: str, change_id: str, name: str = "ORCH_SO") -> dict:
-    from jde_mcp_server.ais_client import client as ais
+def _run_test(change_id: str) -> dict:
+    """Run the change's approved test orchestration live (delivery/functional.run_test)."""
+    from jde_api_service.delivery import functional
 
-    return ais.run_orchestration(story, change_id, name, {})
+    return functional.run_test(change_id, actor_user_id="u-hendro", actor_name="Hendro")
 
 
 # ---------------------------------------------------------------------
@@ -118,20 +133,23 @@ def test_removing_the_contract_blocks_an_already_approved_change(client, tmp_pat
 # ---------------------------------------------------------------------
 # Target and mechanism
 # ---------------------------------------------------------------------
-def test_a_mechanism_the_company_has_not_allowed_blocks_the_write(client):
-    from jde_mcp_server.scope import ScopeViolation
+def test_the_mechanism_allow_list_does_not_gate_a_person_applying_the_change(client):
+    """A person applying the value in DEV is not an AIS mechanism: the write
+    is recorded even though the company allows no form-service writes."""
+    from jde_mcp_server import approval, execution
 
     change = _approved_change(client, "S-CB-MECH", _scope(mechanismsAllowed=["ais_orchestration"]))
-    with pytest.raises(ScopeViolation, match="has not allowed the 'ais_form_service_request' mechanism"):
-        _execute("S-CB-MECH", change["change_id"])
+    assert _execute("S-CB-MECH", change["change_id"])["outcome"] == "applied"
+    assert execution.effective_state(approval._load(change["change_id"]), execution.WRITE) == "applied"
 
 
-def test_no_mechanisms_saved_means_nothing_executes(client):
+def test_no_mechanisms_saved_means_jade_runs_nothing_in_jde(client):
     from jde_mcp_server.scope import ScopeViolation
 
-    change = _approved_change(client, "S-CB-NOMECH", _scope(mechanismsAllowed=[]))
+    change = _approved_change(client, "S-CB-NOMECH", _scope(mechanismsAllowed=[]), TEST_OP)
+    _execute("S-CB-NOMECH", change["change_id"])
     with pytest.raises(ScopeViolation, match="allowed: none"):
-        _execute("S-CB-NOMECH", change["change_id"])
+        _run_test(change["change_id"])
 
 
 def test_a_target_approved_for_another_capability_is_refused(client, isolated_dirs):
@@ -184,7 +202,7 @@ def test_free_text_labels_are_kept_as_notes_and_never_enforced(client):
     # The note mentions order types, but a note is not enforcement:
     # the write is governed by the enforced category list only.
     change = _approved_change(client, "S-CB-NOTE", _scope(neverTouchNotes=["Order types -- please ask Finance"]))
-    assert _execute("S-CB-NOTE", change["change_id"])["mock"] is True
+    assert _execute("S-CB-NOTE", change["change_id"])["outcome"] == "applied"
 
 
 def test_the_api_refuses_unknown_categories_and_side_effects(client):
@@ -202,13 +220,14 @@ def test_the_api_refuses_unknown_categories_and_side_effects(client):
 # ---------------------------------------------------------------------
 # Test boundaries
 # ---------------------------------------------------------------------
-TEST_OP = {**OPERATION, "test_orchestration": "ORCH_SO"}
 
 
-def test_an_approved_test_with_permitted_side_effects_runs(client):
+def test_an_approved_test_with_permitted_side_effects_runs(client, ais):
     change = _approved_change(client, "S-CB-T-OK", _full_scope(), TEST_OP)
     _execute("S-CB-T-OK", change["change_id"])
-    assert _run_test("S-CB-T-OK", change["change_id"])["mock"] is True
+    result = _run_test(change["change_id"])
+    assert result["outcome"] == "completed" and result["orchestration"] == "ORCH_SO"
+    assert any(p == "/jderest/v3/orchestrator/ORCH_SO" for _, p, _c in ais.calls)
 
 
 def test_a_test_not_in_the_approved_tests_is_refused(client):
@@ -217,7 +236,7 @@ def test_a_test_not_in_the_approved_tests_is_refused(client):
     change = _approved_change(client, "S-CB-T-UNAPPROVED", _scope(testScope={"approvedTests": []}), TEST_OP)
     _execute("S-CB-T-UNAPPROVED", change["change_id"])
     with pytest.raises(ScopeViolation, match="not one of this company's approved tests"):
-        _run_test("S-CB-T-UNAPPROVED", change["change_id"])
+        _run_test(change["change_id"])
 
 
 @pytest.mark.parametrize("effect", ["posting", "payment", "outbound_integration", "batch_run"])
@@ -228,7 +247,7 @@ def test_a_test_with_a_forbidden_side_effect_is_refused(client, effect):
     change = _approved_change(client, f"S-CB-T-{effect}", scope, TEST_OP)
     _execute(f"S-CB-T-{effect}", change["change_id"])
     with pytest.raises(ScopeViolation, match=f"does not permit in a test: {effect}"):
-        _run_test(f"S-CB-T-{effect}", change["change_id"])
+        _run_test(change["change_id"])
 
 
 def test_a_test_needs_the_orchestration_mechanism_allowed(client):
@@ -237,7 +256,7 @@ def test_a_test_needs_the_orchestration_mechanism_allowed(client):
     change = _approved_change(client, "S-CB-T-MECH", _scope(mechanismsAllowed=["ais_form_service_request"]), TEST_OP)
     _execute("S-CB-T-MECH", change["change_id"])
     with pytest.raises(ScopeViolation, match="'ais_orchestration' mechanism"):
-        _run_test("S-CB-T-MECH", change["change_id"])
+        _run_test(change["change_id"])
 
 
 def test_preflight_lists_every_boundary_and_blocks_on_a_protected_category(client):
@@ -247,7 +266,8 @@ def test_preflight_lists_every_boundary_and_blocks_on_a_protected_category(clien
     result = approval.preflight(change["change_id"])
     names = {c["check"]: c for c in result["checks"]}
     assert names["Capability has a complete enforcement contract"]["ok"] is True
-    assert names["Mechanism allowed by the company"]["ok"] is True
+    # The allow-list governs the live test, not a person's write.
+    assert not any("Mechanism allowed" in name for name in names)
     assert names["Option category declared, not protected, not never-touch"]["ok"] is False
     assert "Test is approved, its mechanism allowed, its side effects permitted" in names
     assert result["executable"] is False

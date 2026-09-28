@@ -7,9 +7,11 @@ moment Gate 1 clears, the same way /changes/{id}/enhance already
 starts Receive/Improve/Check. The manual trigger below exists only for
 retry after a failed run; a human should not normally need it.
 
-Gate 2 -- "Jade may execute this specific proposed change" -- calls
+Gate 2 -- "this specific proposed change may be delivered" -- calls
 approval.py's approve_change()/reject_change(), passing the approver's
-company and roles from the authenticated session.
+company and roles from the authenticated session. Delivery itself is the
+recorded route (delivery/functional.py): a person applies the approved
+change in DEV and records it, and Jade verifies it live.
 This router does not create a second approval system: it resolves
 which pending change record belongs to this story (via
 approval.list_pending_changes(), the same read-only function
@@ -20,14 +22,22 @@ from __future__ import annotations
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 
-from jde_mcp_server import approval, execution
-from jde_mcp_server.ais_client import LiveReadUnavailable, client as ais
+from jde_mcp_server import approval, authority, execution
+from jde_mcp_server.binding import BindingInvalid
+from jde_mcp_server.capability_catalog import CapabilityError
 from jde_mcp_server.scope import ScopeViolation, load_company_scope, require_approval_policy
 
 from ..config import settings
 from ..dependencies import AuthContext, require_customer_access, require_write_access
 from ..models.architecture_review import ArchitectureReviewRun, AskAboutSolutionInput
-from ..models.change import PreflightResult, ReconcileTestInput, ReconcileWriteInput
+from ..delivery import functional as delivery
+from ..models.change import (
+    PreflightResult,
+    ReconcileTestInput,
+    ReconcileWriteInput,
+    RecordAppliedInput,
+    RecordTestResultInput,
+)
 from ..models.domain_review import GovernanceDecisionInput
 from ..services.architecture_driver import run_architecture_review
 from ..services.conversation_driver import ConversationError, ask_about_solution
@@ -252,38 +262,99 @@ def _require_policy_approver(ctx: AuthContext) -> None:
 
 @router.get("/changes/{change_id}/execution/preflight", response_model=PreflightResult)
 def execution_preflight(change_id: str, ctx: AuthContext = Depends(require_customer_access)) -> PreflightResult:
-    """What the execution gate would decide right now, check by check.
-    Read-only: nothing is sent to JDE and no attempt is recorded."""
+    """What the delivery gate would decide right now, check by check.
+    Read-only: nothing is sent to JDE and nothing is recorded."""
     _require_queued_change(change_id, ctx.customer_id)
     return PreflightResult.model_validate(approval.preflight(_change_record_for(change_id)["change_id"]))
+
+
+_DELIVERY_REFUSALS = (delivery.DeliveryRefused, approval.ChangeApprovalError, BindingInvalid, ScopeViolation,
+                      CapabilityError, authority.AuthorityRevoked, authority.AuthorityUnverifiable)
+
+
+def _delivery_error(exc: Exception) -> HTTPException:
+    if isinstance(exc, (approval.ApproverNotAuthorised, authority.AuthorityRevoked)):
+        return HTTPException(status_code=403, detail=str(exc))
+    return HTTPException(status_code=409, detail=str(exc))
+
+
+def _own_change_record(change_id: str, ctx: AuthContext) -> dict:
+    _require_queued_change(change_id, ctx.customer_id)
+    record = _change_record_for(change_id)
+    if record.get("company_id") != ctx.customer_id:
+        raise HTTPException(status_code=404, detail=f"no such change: {change_id}")
+    return record
+
+
+@router.post("/changes/{change_id}/delivery/applied")
+def record_applied(change_id: str, payload: RecordAppliedInput,
+                   ctx: AuthContext = Depends(require_write_access)) -> dict:
+    """The Application Manager applied the approved change in DEV. Jade
+    re-checks the approval, scope and authority, reads the value back live
+    and records it only if it is the approved value."""
+    record = _own_change_record(change_id, ctx)
+    try:
+        return delivery.record_applied(record["change_id"], actor_user_id=ctx.identity.id,
+                                       actor_name=ctx.identity.display_name,
+                                       evidence_reference=payload.evidence_reference, note=payload.note,
+                                       stated_value=payload.stated_value)
+    except _DELIVERY_REFUSALS as exc:
+        raise _delivery_error(exc)
+
+
+@router.post("/changes/{change_id}/delivery/run-test")
+def run_test(change_id: str, ctx: AuthContext = Depends(require_write_access)) -> dict:
+    """Run the approved test orchestration live on the customer's AIS."""
+    record = _own_change_record(change_id, ctx)
+    try:
+        return delivery.run_test(record["change_id"], actor_user_id=ctx.identity.id,
+                                 actor_name=ctx.identity.display_name)
+    except _DELIVERY_REFUSALS as exc:
+        raise _delivery_error(exc)
+
+
+@router.post("/changes/{change_id}/delivery/test-result")
+def record_test_result(change_id: str, payload: RecordTestResultInput,
+                       ctx: AuthContext = Depends(require_write_access)) -> dict:
+    """Record the test result against the acceptance criteria (no
+    orchestration, or instead of running it)."""
+    record = _own_change_record(change_id, ctx)
+    try:
+        return delivery.record_test_result(record["change_id"], actor_user_id=ctx.identity.id,
+                                           actor_name=ctx.identity.display_name, passed=payload.passed,
+                                           evidence_reference=payload.evidence_reference, note=payload.note)
+    except _DELIVERY_REFUSALS as exc:
+        raise _delivery_error(exc)
 
 
 @router.post("/changes/{change_id}/execution/reconcile")
 def reconcile_write(
     change_id: str, payload: ReconcileWriteInput, ctx: AuthContext = Depends(require_write_access)
 ) -> dict:
-    """Settle an unknown write outcome by checking the ACTUAL target value.
-    Where Jade can read it (mock mode today), it reads it itself and any
-    typed value is ignored; otherwise the person states the value they
-    read in JDE, with a note, and that is recorded as human-verified."""
+    """Settle a write of unknown outcome (a record from before the recorded
+    delivery route) by the ACTUAL target value: read live where the
+    connection can, otherwise the value a person read in JDE, with a note
+    and an evidence reference."""
     _require_queued_change(change_id, ctx.customer_id)
     _require_policy_approver(ctx)
     record = _change_record_for(change_id)
     if record.get("company_id") != ctx.customer_id:
         raise HTTPException(status_code=404, detail=f"no such change: {change_id}")
     op = record["operation"]
+    from ..delivery import live
+
     try:
-        observed = ais.read_processing_option_value(record["company_id"], op["application"], op["version"], op["option"])
-        source = "automated read (simulated DEV estate)"
-        evidence_reference = (
-            f"automated read of {op['application']}/{op['version']}/{op['option']} = {observed!r} "
-            f"(SIMULATION: shared simulated DEV estate)"
-        )
-    except LiveReadUnavailable as exc:
+        read = live.read_processing_option(record["company_id"], record["story_id"], ctx.identity.id,
+                                           op["application"], op["version"], op["option"])
+        if not read.found:
+            raise live.LiveUnavailable(read.detail)
+        observed, source = read.value, f"live AIS read ({read.observation_id})"
+        evidence_reference = f"live read {read.observation_id} of {op['application']}/{op['version']}/{op['option']}"
+    except live.LiveUnavailable as exc:
         if payload.observed_value is None or not payload.note.strip() or not payload.evidence_reference.strip():
             raise HTTPException(
-                status_code=422, detail=f"{exc} Provide observedValue, a note and an evidenceReference."
-            )
+                status_code=422, detail=f"Jade cannot read the value live ({exc}). Provide observedValue, a note and "
+                                        "an evidenceReference.")
         observed, source, evidence_reference = payload.observed_value, "human-verified in JDE", payload.evidence_reference
     try:
         entry = execution.reconcile_write(

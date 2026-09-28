@@ -40,10 +40,12 @@ _RESET_QUERY_KEY = "resetToken"
 
 
 def _frontend_origin() -> str:
-    # Best-effort only, for building a human-followable link in the
-    # dev-preview response -- never used for anything security-relevant
-    # (CORS/cookie decisions use settings.allowed_origins/cookie_* directly).
-    return settings.allowed_origins[0] if settings.allowed_origins else ""
+    # The base of links in e-mails (JDE_PUBLIC_URL, else the first allowed
+    # origin) -- never used for anything security-relevant (CORS/cookie
+    # decisions use settings.allowed_origins/cookie_* directly).
+    from ..services.email_service import public_url
+
+    return public_url(settings.allowed_origins[0] if settings.allowed_origins else "")
 
 
 def _cookie_kwargs() -> dict:
@@ -162,18 +164,22 @@ def forgot_password(payload: ForgotPasswordInput) -> ForgotPasswordResult:
     returned the link here in dev-preview mode, which let any anonymous
     caller reset any account's password. Without an email provider, a
     company Admin issues the link from Admin > Users instead."""
+    email_service = get_email_service()
+    if not email_service.configured:
+        # Nothing can be e-mailed: no token is created, and the page says to
+        # ask an Administrator. Says nothing about whether the address exists.
+        return ForgotPasswordResult(ok=True, preview_url=None, email_delivery=False)
     user = auth_service.get_user_by_email(payload.email)
     if user is None or not user.is_active:
-        return ForgotPasswordResult(ok=True, preview_url=None)
-
+        return ForgotPasswordResult(ok=True, preview_url=None, email_delivery=True)
     raw_token = auth_service.create_password_reset_token(user.id)
-    email_service = get_email_service()
     link = f"{_frontend_origin()}?{_RESET_QUERY_KEY}={raw_token}"
     email_service.send(OutgoingEmail(
         to=user.email, subject="Reset your Jade password",
-        body=f"Reset your password: {link}", action_url=link,
+        body=(f"Someone asked to reset the password of your Jade account.\n\nChoose a new password here:\n{link}\n\n"
+              "The link is personal and expires. If you did not ask for this, ignore this e-mail."), action_url=link,
     ))
-    return ForgotPasswordResult(ok=True, preview_url=None)
+    return ForgotPasswordResult(ok=True, preview_url=None, email_delivery=True)
 
 
 @router.post("/reset-password")

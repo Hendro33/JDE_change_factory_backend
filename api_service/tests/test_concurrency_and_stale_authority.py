@@ -13,10 +13,11 @@ authority usable.
     refused.
   * Exact-change approve and reject run under the change's lock; racing
     decisions: exactly one lands. The approver's roles are re-read from
-    the database at approval AND immediately before dispatch, inside the
-    attempt lock. A role revoked, membership deactivated or user disabled
-    after approval leaves the approval unusable -- even when it happens
-    between the tool's own checks and the dispatch.
+    the database at approval AND when a delivery step is recorded, again
+    inside the change's lock. A role revoked, membership deactivated or
+    user disabled after approval leaves the approval unusable -- even when
+    it happens between the gate's own checks and storing the step. Without
+    the membership database (JDE_AUTH_DB_PATH) nothing is recorded.
 """
 
 from __future__ import annotations
@@ -214,7 +215,7 @@ def test_a_product_manager_demoted_mid_request_cannot_authorise_delivery(client,
 
 
 # ---------------------------------------------------------------------
-# Exact-change approval and dispatch
+# Exact-change approval and delivery
 # ---------------------------------------------------------------------
 def _approved_change(client, story: str) -> dict:
     _save_scope(client, "vdb", _full_scope())
@@ -252,7 +253,7 @@ def test_approval_rereads_roles_so_a_stale_session_cannot_approve(client):
 
 
 @pytest.mark.parametrize("revoke", ["role", "membership", "user"])
-def test_authority_lost_after_approval_blocks_execution(client, revoke):
+def test_authority_lost_after_approval_blocks_delivery(client, revoke):
     from jde_api_service.persistence.db import connection
     from jde_mcp_server import approval, execution
 
@@ -271,26 +272,26 @@ def test_authority_lost_after_approval_blocks_execution(client, revoke):
     assert execution.effective_state(approval._load(change["change_id"])) == "ready"
 
 
-def test_authority_lost_between_the_tools_checks_and_dispatch_is_caught_inside_the_lock(client, monkeypatch):
-    """The role is revoked after set_processing_option's own checks passed
-    but before the attempt is recorded: the revalidation inside the
-    attempt lock refuses, no attempt is recorded and JDE is untouched."""
-    from jde_mcp_server import ais_client, approval, execution
+def test_authority_lost_between_the_gates_checks_and_the_record_is_caught_inside_the_lock(client, monkeypatch):
+    """The role is revoked after record_applied's own checks passed (while
+    Jade reads the value back) but before the step is stored: the
+    revalidation inside the change's lock refuses and nothing is recorded."""
+    from jde_api_service.delivery import live
+    from jde_mcp_server import approval, execution
 
     change = _approved_change(client, "S-CC-WINDOW")
-    real_read = ais_client._mock_read
+    real_read = live.read_processing_option
 
-    def revoke_then_read(*args):
+    def revoke_then_read(*args, **kwargs):
         _set_roles("vdb", "u-hendro", ["admin"])
-        return real_read(*args)
+        return real_read(*args, **kwargs)
 
-    monkeypatch.setattr(ais_client, "_mock_read", revoke_then_read)
+    monkeypatch.setattr(live, "read_processing_option", revoke_then_read)
     with pytest.raises(approval.ChangeApprovalError, match="no longer holds"):
         _execute("S-CC-WINDOW", change["change_id"])
     record = approval._load(change["change_id"])
-    assert execution.effective_state(record) == "ready"
+    assert execution.effective_state(record, execution.WRITE) == "ready"
     assert not (record.get("execution") or {}).get("write", {}).get("attempts")
-    assert real_read(ais_client.sim_target("vdb", "P4210", "CIQ0001", "PDOCTYPE")) != "SO"
 
 
 @pytest.mark.skipif(bool(os.environ.get("JDE_TEST_DATABASE_URL")),

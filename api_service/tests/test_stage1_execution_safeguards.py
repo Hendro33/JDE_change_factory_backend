@@ -1,10 +1,12 @@
 """
-Stage 1 increment S1-2: execution safeguards.
+Stage 1 increment S1-2: delivery safeguards.
 
-Each test states one way execution must be refused. The gate is
-exercised directly (mcp_server's approval/ais_client, in mock mode --
-no JDE call is ever made) with the company records written through the
-real Admin API, so what an Admin saves is exactly what is enforced.
+Each test states one way delivering an approved change must be refused.
+An approved functional change is delivered by the recorded route: a person
+applies the approved value in DEV and records it (delivery/functional.py),
+and Jade first runs the delivery gate (approval.authorise_functional_delivery).
+The gate is exercised directly, with the company records written through
+the real Admin API, so what an Admin saves is exactly what is enforced.
 
   * Company scope: a story's company comes from its intake link; that
     company's own saved scope is the only one consulted. No link, no
@@ -13,9 +15,13 @@ real Admin API, so what an Admin saves is exactly what is enforced.
     may approve. No policy, a policy the gate does not understand, or an
     approver without an allowed role all refuse -- at approval AND again
     at execution (a policy tightened after approval also refuses).
-  * Expiring windows: an approval past its policy-set validity, or a
-    spike experiment past (or without) its expiry, allows nothing; this
-    includes test runs, not just writes.
+  * Expiring approvals: an approval past its policy-set validity (or
+    without an expiry) allows nothing; this includes recording a test
+    result, not just the write.
+  * Capability status: a person may deliver a Needs spike capability (no
+    spike experiment is needed any more); a Restricted or Suspended one,
+    or one whose catalogue revision changed since the proposal, is not
+    delivered.
   * Run recovery: runs a restart interrupted are marked failed on
     startup instead of appearing to run forever.
 """
@@ -39,7 +45,7 @@ POLICY = {"policyVersion": 1, "exactChangeApproverRoles": ["product_manager"], "
 
 
 def _full_scope(spike_expires_at: str | None = "2099-01-01T00:00:00+00:00", policy: dict | None = POLICY) -> dict:
-    """Everything the gate needs for OPERATION to execute in mock mode."""
+    """Everything the delivery gate needs for OPERATION to be delivered."""
     spikes = []
     if spike_expires_at is not None:
         spikes.append({
@@ -102,10 +108,26 @@ def _approve(change_id: str, company: str = "vdb", roles=("product_manager",)) -
     )
 
 
-def _execute(story_id: str, change_id: str, value: str = "SO") -> dict:
-    from jde_mcp_server.ais_client import client as ais
+def _execute(story_id: str, change_id: str, value: str = "SO", company: str = "vdb") -> dict:
+    """The recorded delivery route: a person applies `value` in DEV (on the
+    fake AIS server), then records it; Jade re-checks everything and reads
+    the value back live where the connection permits -- otherwise the
+    person's stated value is recorded, with its evidence reference."""
+    from jde_api_service.delivery import functional
 
-    return ais.set_processing_option(story_id, change_id, "P4210", "CIQ0001", "PDOCTYPE", value)
+    from .fixtures.fake_ais import apply_in_dev
+
+    apply_in_dev(company, "P4210", "CIQ0001", "PDOCTYPE", value)
+    return functional.record_applied(change_id, actor_user_id="u-hendro", actor_name="Hendro",
+                                     evidence_reference="screenshot TEST-1 of P4210|CIQ0001", stated_value=value)
+
+
+def _record_test(change_id: str, passed: bool = True) -> dict:
+    from jde_api_service.delivery import functional
+
+    return functional.record_test_result(change_id, actor_user_id="u-hendro", actor_name="Hendro", passed=passed,
+                                         evidence_reference="test evidence TEST-2",
+                                         note="entered a sales order in DEV: order type SO defaulted")
 
 
 def _edit_change_record(change_id: str, **fields) -> None:
@@ -119,7 +141,9 @@ def _edit_change_record(change_id: str, **fields) -> None:
 # ---------------------------------------------------------------------
 # The happy path, so every refusal below is a refusal of one thing only.
 # ---------------------------------------------------------------------
-def test_a_fully_configured_company_can_execute_in_mock_mode(client):
+def test_a_fully_configured_company_can_deliver_the_approved_change(client):
+    from jde_mcp_server import approval, execution
+
     _save_scope(client, "vdb", _full_scope())
     _approved_story("S12-OK")
     change = _propose("S12-OK")
@@ -128,7 +152,52 @@ def test_a_fully_configured_company_can_execute_in_mock_mode(client):
     assert approved["approver_authority"]["roles"] == ["product_manager"]
     assert approved["expires_at"] - approved["approved_at"] == pytest.approx(24 * 3600)
     result = _execute("S12-OK", change["change_id"])
-    assert result["mock"] is True
+    # No JDE connection is set up here, so the person's stated value is recorded, with its evidence.
+    assert result["outcome"] == "applied" and result["observedValue"] == "SO"
+    assert result["source"].startswith("stated by Hendro")
+    assert result["evidenceReference"] == "screenshot TEST-1 of P4210|CIQ0001" and result["evidenceEntryHash"]
+    assert execution.effective_state(approval._load(change["change_id"]), execution.WRITE) == "applied"
+
+
+def test_a_test_result_can_be_recorded_after_a_stated_value_delivery(client):
+    """Without a JDE connection the person states the value (recorded
+    above); the delivery must then be completable by recording the test
+    result against the acceptance criteria -- nothing in that step reads JDE."""
+    _save_scope(client, "vdb", _full_scope())
+    _approved_story("S12-OK-TEST")
+    change = _propose("S12-OK-TEST")
+    _approve(change["change_id"])
+    _execute("S12-OK-TEST", change["change_id"])
+    assert _record_test(change["change_id"])["passed"] is True
+
+
+def test_only_the_approved_value_is_ever_recorded(client):
+    from jde_api_service.delivery.functional import DeliveryRefused
+    from jde_mcp_server import approval, execution
+
+    _save_scope(client, "vdb", _full_scope())
+    _approved_story("S12-VALUE")
+    change = _propose("S12-VALUE")
+    _approve(change["change_id"])
+    with pytest.raises(DeliveryRefused, match="not the approved value"):
+        _execute("S12-VALUE", change["change_id"], value="SQ")
+    assert execution.effective_state(approval._load(change["change_id"]), execution.WRITE) == "ready"
+
+
+def test_recording_needs_a_person_who_holds_the_approver_role_now(client):
+    from jde_api_service.delivery import functional
+    from jde_mcp_server import approval
+    from jde_api_service.services import auth_service, membership_service
+
+    _save_scope(client, "vdb", _full_scope())
+    _approved_story("S12-RECORDER")
+    change = _propose("S12-RECORDER")
+    _approve(change["change_id"])
+    auth_service.create_user("owner2@test.local", TEST_PASSWORD, "Olga Owner", user_id="u-owner2")
+    membership_service.create_membership("u-owner2", "vdb", ["domain_owner"], created_by="u-hendro")
+    with pytest.raises(approval.ApproverNotAuthorised):
+        functional.record_applied(change["change_id"], actor_user_id="u-owner2", actor_name="Olga Owner",
+                                  evidence_reference="screenshot", stated_value="SO")
 
 
 # ---------------------------------------------------------------------
@@ -284,21 +353,24 @@ def test_the_api_refuses_an_approval_policy_it_cannot_enforce(client):
 
 
 # ---------------------------------------------------------------------
-# Expiring windows
+# Expiring approvals
 # ---------------------------------------------------------------------
-def test_an_expired_approval_blocks_execution_and_test_runs(client):
-    from jde_mcp_server.ais_client import client as ais
+def test_an_expired_approval_blocks_delivery_and_test_results(client):
     from jde_mcp_server.approval import ChangeApprovalError
 
     _save_scope(client, "vdb", _full_scope())
     _approved_story("S12-EXPIRED")
     change = _propose("S12-EXPIRED")
-    _approve(change["change_id"])
+    approved = _approve(change["change_id"])
     _edit_change_record(change["change_id"], expires_at=time.time() - 1)
     with pytest.raises(ChangeApprovalError, match="expired"):
         _execute("S12-EXPIRED", change["change_id"])
+    # Applied while the approval was live; it then expires before the test is recorded.
+    _edit_change_record(change["change_id"], expires_at=approved["expires_at"])
+    _execute("S12-EXPIRED", change["change_id"])
+    _edit_change_record(change["change_id"], expires_at=time.time() - 1)
     with pytest.raises(ChangeApprovalError, match="expired"):
-        ais.run_orchestration("S12-EXPIRED", change["change_id"], "", {})
+        _record_test(change["change_id"])
 
 
 def test_an_approval_without_an_expiry_blocks_execution(client):
@@ -313,17 +385,6 @@ def test_an_approval_without_an_expiry_blocks_execution(client):
         _execute("S12-NOEXPIRY", change["change_id"])
 
 
-def test_an_expired_spike_experiment_allows_nothing(client):
-    from jde_mcp_server.capability_catalog import CapabilityError
-
-    _save_scope(client, "vdb", _full_scope(spike_expires_at="2020-01-01T00:00:00+00:00"))
-    _approved_story("S12-SPIKE-OLD")
-    change = _propose("S12-SPIKE-OLD")
-    _approve(change["change_id"])
-    with pytest.raises(CapabilityError):
-        _execute("S12-SPIKE-OLD", change["change_id"])
-
-
 def test_an_undated_spike_experiment_is_refused_on_save(client):
     body = _full_scope()
     del body["functionalAgent"]["spikeExperiments"][0]["expiresAt"]
@@ -332,24 +393,73 @@ def test_an_undated_spike_experiment_is_refused_on_save(client):
     assert client.put("/admin/engagement-scope", headers=headers("vdb"), json=body).status_code == 422
 
 
-def test_a_spike_for_a_different_capability_revision_allows_nothing(client, isolated_dirs):
-    from jde_mcp_server.capability_catalog import CapabilityError
-
-    body = _full_scope()
-    body["functionalAgent"]["spikeExperiments"][0]["capabilityRevision"] = "r0"
-    _save_scope(client, "vdb", body)
-    _approved_story("S12-SPIKE-REV")
-    change = _propose("S12-SPIKE-REV")
-    _approve(change["change_id"])
-    with pytest.raises(CapabilityError):
-        _execute("S12-SPIKE-REV", change["change_id"])
-
-
 def test_spike_approval_is_stamped_by_the_server(client):
     body = _full_scope()
     body["functionalAgent"]["spikeExperiments"][0]["approvedBy"] = "Somebody Else"
     saved = _save_scope(client, "vdb", body)
     assert saved["functionalAgent"]["spikeExperiments"][0]["approvedBy"] == "Hendro"
+
+
+# ---------------------------------------------------------------------
+# Capability status (capability_catalog.require_deliverable_by_person)
+# ---------------------------------------------------------------------
+def _catalogue_with(tmp_path, monkeypatch, **fields) -> None:
+    """Point the gate at a copy of the catalogue whose
+    processing_option_update entry has `status` and/or `revision` changed."""
+    from jde_mcp_server import capability_catalog
+
+    catalog = json.load(open(capability_catalog.CATALOG_FILE))
+    for cap in catalog["capabilities"]:
+        if cap["capability_id"] == "processing_option_update":
+            if "status" in fields:
+                cap["validation"]["status"] = fields["status"]
+            if "revision" in fields:
+                cap["revision"] = fields["revision"]
+    path = tmp_path / "catalog.json"
+    path.write_text(json.dumps(catalog))
+    monkeypatch.setattr(capability_catalog, "CATALOG_FILE", str(path))
+
+
+@pytest.mark.parametrize("spike_expires_at", [None, "2020-01-01T00:00:00+00:00"])
+def test_a_needs_spike_capability_is_delivered_by_a_person_without_a_spike_window(client, spike_expires_at):
+    from jde_mcp_server import capability_catalog
+
+    assert capability_catalog.get_capability("processing_option_update")["validation"]["status"] == "needs_spike"
+    story = f"S12-SPIKE-{'NONE' if spike_expires_at is None else 'OLD'}"
+    _save_scope(client, "vdb", _full_scope(spike_expires_at=spike_expires_at))
+    _approved_story(story)
+    change = _propose(story)
+    _approve(change["change_id"])
+    assert _execute(story, change["change_id"])["outcome"] == "applied"
+
+
+@pytest.mark.parametrize("status", ["restricted", "suspended"])
+def test_a_restricted_or_suspended_capability_is_not_delivered(client, tmp_path, monkeypatch, status):
+    from jde_mcp_server import approval, execution
+    from jde_mcp_server.approval import ChangeApprovalError
+
+    _save_scope(client, "vdb", _full_scope())
+    _approved_story(f"S12-{status.upper()}")
+    change = _propose(f"S12-{status.upper()}")
+    _approve(change["change_id"])
+    _catalogue_with(tmp_path, monkeypatch, status=status)
+    with pytest.raises(ChangeApprovalError, match=f"is {status}"):
+        _execute(f"S12-{status.upper()}", change["change_id"])
+    assert execution.effective_state(approval._load(change["change_id"]), execution.WRITE) == "ready"
+    checks = {c["check"]: c for c in approval.preflight(change["change_id"])["checks"]}
+    assert checks["Capability may be delivered (not Restricted or Suspended; current catalogue revision)"]["ok"] is False
+
+
+def test_a_capability_revised_after_the_proposal_is_not_delivered(client, tmp_path, monkeypatch):
+    from jde_mcp_server.approval import ChangeApprovalError
+
+    _save_scope(client, "vdb", _full_scope())
+    _approved_story("S12-CAPREV")
+    change = _propose("S12-CAPREV")
+    _approve(change["change_id"])
+    _catalogue_with(tmp_path, monkeypatch, revision="r2")
+    with pytest.raises(ChangeApprovalError, match="revision mismatch"):
+        _execute("S12-CAPREV", change["change_id"])
 
 
 # ---------------------------------------------------------------------

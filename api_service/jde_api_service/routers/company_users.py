@@ -38,7 +38,9 @@ _INVITE_QUERY_KEY = "acceptInvitation"
 
 
 def _frontend_origin() -> str:
-    return settings.allowed_origins[0] if settings.allowed_origins else ""
+    from ..services.email_service import public_url
+
+    return public_url(settings.allowed_origins[0] if settings.allowed_origins else "")
 
 
 def _membership_out(m: dict) -> MembershipOut:
@@ -49,12 +51,24 @@ def _membership_out(m: dict) -> MembershipOut:
     )
 
 
-def _invitation_out(inv: dict, *, invited_by_display_name: str, preview_url: str | None = None) -> InvitationOut:
+def _invitation_out(inv: dict, *, invited_by_display_name: str, preview_url: str | None = None,
+                    delivery=None) -> InvitationOut:
     return InvitationOut(
         id=inv["id"], email=inv["email"], roles=inv["roles"], domain_ids=inv["domain_ids"],
         status=inv["status"], created_at=inv["created_at"], expires_at=inv["expires_at"],
-        invited_by_display_name=invited_by_display_name, preview_url=preview_url,
+        invited_by_display_name=invited_by_display_name,
+        preview_url=preview_url if delivery is not None and not delivery.sent else None,
+        email_sent=bool(delivery and delivery.sent), email_detail=delivery.detail if delivery else "",
     )
+
+
+def _invitation_email(to: str, link: str) -> OutgoingEmail:
+    return OutgoingEmail(
+        to=to, subject="You have been invited to Jade",
+        body=("You have been invited to Jade, ConsultIQ's JD Edwards change platform.\n\n"
+              f"Accept the invitation and choose your password here:\n{link}\n\n"
+              "The link is personal and expires. If you did not expect this, ignore this e-mail."),
+        action_url=link)
 
 
 def _display_name_for(user_id: str) -> str:
@@ -90,15 +104,9 @@ def invite_user(payload: InviteInput, ctx: AuthContext = Depends(require_role("a
         ctx.customer_id, payload.email, list(payload.roles), list(payload.domain_ids), invited_by=ctx.identity.id
     )
     link = f"{_frontend_origin()}?{_INVITE_QUERY_KEY}={raw_token}"
-    email_service = get_email_service()
-    email_service.send(OutgoingEmail(
-        to=payload.email, subject="You've been invited to Jade",
-        body=f"You've been invited to join a company on Jade: {link}", action_url=link,
-    ))
-    return _invitation_out(
-        inv, invited_by_display_name=ctx.identity.display_name,
-        preview_url=link if email_service.is_dev_preview else None,
-    )
+    delivery = get_email_service().send(_invitation_email(payload.email, link))
+    return _invitation_out(inv, invited_by_display_name=ctx.identity.display_name, preview_url=link,
+                           delivery=delivery)
 
 
 @router.post("/invitations/{invitation_id}/resend", response_model=InvitationOut)
@@ -108,15 +116,9 @@ def resend_invitation(invitation_id: str, ctx: AuthContext = Depends(require_rol
         raise HTTPException(status_code=404, detail="no such invitation")
     inv, raw_token = invitation_service.resend_invitation(invitation_id, actor_user_id=ctx.identity.id)
     link = f"{_frontend_origin()}?{_INVITE_QUERY_KEY}={raw_token}"
-    email_service = get_email_service()
-    email_service.send(OutgoingEmail(
-        to=inv["email"], subject="You've been invited to Jade",
-        body=f"You've been invited to join a company on Jade: {link}", action_url=link,
-    ))
-    return _invitation_out(
-        inv, invited_by_display_name=ctx.identity.display_name,
-        preview_url=link if email_service.is_dev_preview else None,
-    )
+    delivery = get_email_service().send(_invitation_email(inv["email"], link))
+    return _invitation_out(inv, invited_by_display_name=ctx.identity.display_name, preview_url=link,
+                           delivery=delivery)
 
 
 @router.post("/invitations/{invitation_id}/revoke", response_model=InvitationOut)
@@ -151,13 +153,13 @@ def issue_password_reset_link(
         raise HTTPException(status_code=404, detail="no such active user")
     raw_token = auth_service.create_password_reset_token(user.id)
     link = f"{_frontend_origin()}?resetToken={raw_token}"
-    email_service = get_email_service()
-    email_service.send(OutgoingEmail(
-        to=user.email, subject="Reset your Jade password", body=f"Reset your password: {link}", action_url=link,
+    delivery = get_email_service().send(OutgoingEmail(
+        to=user.email, subject="Reset your Jade password",
+        body=(f"Your Jade administrator started a password reset for you.\n\nChoose a new password here:\n{link}\n\n"
+              "The link is personal and expires."), action_url=link,
     ))
-    return PasswordResetLinkOut(
-        sent=not email_service.is_dev_preview, preview_url=link if email_service.is_dev_preview else None,
-    )
+    return PasswordResetLinkOut(sent=delivery.sent, preview_url=None if delivery.sent else link,
+                                detail=delivery.detail)
 
 
 def _membership_in_company_or_404(membership_id: str, company_id: str) -> dict:

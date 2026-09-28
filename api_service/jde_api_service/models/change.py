@@ -150,6 +150,12 @@ class ExecutionStatus(ApiModel):
     # value is in JDE; a test reconciliation settles whether the test ran.
     write_reconciliations: list[Reconciliation] = []
     test_reconciliations: list[Reconciliation] = []
+    # The recorded delivery: who recorded the change as applied, the value
+    # observed (live read or stated), the source and evidence reference.
+    applied: dict = {}
+    # The test outcome: passed, source (live orchestration / recorded by a
+    # person), evidence.
+    verification: dict = {}
 
 
 class ExactChange(ApiModel):
@@ -187,6 +193,22 @@ class ReconcileTestInput(ApiModel):
     ran: bool
     note: str
     evidence_reference: str = ""
+
+
+class RecordAppliedInput(ApiModel):
+    """A person applied the approved change in DEV. Jade reads the value back
+    live; stated_value (the value they read in JDE) is used only when the
+    connection cannot read it, and then needs an evidence reference."""
+
+    evidence_reference: str = ""
+    note: str = ""
+    stated_value: Optional[str] = None
+
+
+class RecordTestResultInput(ApiModel):
+    passed: bool
+    note: str
+    evidence_reference: str
 
 
 class PreflightCheck(ApiModel):

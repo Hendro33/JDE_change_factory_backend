@@ -50,8 +50,7 @@ class ArchitectDiscoveryTools:
                 "path_code": config.path_code, "application_release": config.expected_application_release,
                 "tools_release": config.expected_tools_release,
                 "mode": config.connection_mode,
-                "mode_label": "SIMULATION -- not the customer's JDE" if config.connection_mode == "simulation"
-                else "LIVE customer DEV environment (read-only discovery)",
+                "mode_label": "LIVE customer DEV environment (read-only discovery)",
                 "record_limit_per_query": config.limits.max_records,
                 "data_sharing_policy": config.data_sharing_policy,
                 "data_sharing_note": {
@@ -156,7 +155,7 @@ class ArchitectDiscoveryTools:
             return {"content": [{"type": "text", "text": json.dumps(payload, default=str)}]}
 
         @sdk.tool("list_discovery_capabilities",
-                  "What JDE discovery is available for this story: environment, mode (simulation or live), the "
+                  "What JDE discovery is available for this story: environment, mode (live), the "
                   "approved reads with their exact targets/fields/filters, and which capabilities are supported, "
                   "unverified or unavailable. Never returns credentials.", {})
         async def _caps(args):

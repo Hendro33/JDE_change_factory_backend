@@ -20,7 +20,6 @@ from dataclasses import dataclass, field, asdict
 from typing import Optional
 
 from . import docstore
-from .config import settings
 
 # Where stories lived as files before they moved into Jade's database;
 # read once at start-up by the legacy import (main.py), never written.

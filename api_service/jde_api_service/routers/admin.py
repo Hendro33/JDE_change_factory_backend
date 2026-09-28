@@ -51,7 +51,6 @@ import httpx
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from jde_mcp_server import config as mcp_config
 
 from ..dependencies import AuthContext, require_customer_access, require_role, require_write_access
 from ..models.base import ApiModel
@@ -130,7 +129,6 @@ def get_customer_profile(ctx: AuthContext = Depends(require_customer_access)) ->
             short_name=customer.short_name,
             tools_release=customer.tools_release,
             environment=customer.environment,
-            is_demo=customer.is_demo,
         ),
         identities=identities,
         updated_at=row["updated_at"] if row else None,
@@ -156,7 +154,7 @@ def update_customer_profile(payload: CustomerInput, ctx: AuthContext = Depends(r
 
 @router.post("/customers", response_model=CustomerOut, status_code=201)
 def create_customer(payload: CustomerInput, ctx: AuthContext = Depends(require_role("admin"))) -> CustomerOut:
-    """Create a new real (non-demo) customer; the creator becomes its first Admin."""
+    """Create a new customer; the creator becomes its first Admin."""
     try:
         c = customer_service.create_customer(name=payload.name, short_name=payload.short_name,
                                              tools_release=payload.tools_release, environment=payload.environment,
@@ -166,7 +164,7 @@ def create_customer(payload: CustomerInput, ctx: AuthContext = Depends(require_r
     except ActorNoLongerAuthorised as exc:
         raise HTTPException(status_code=403, detail=str(exc))
     return CustomerOut(id=c.id, name=c.name, short_name=c.short_name, tools_release=c.tools_release,
-                       environment=c.environment, is_demo=c.is_demo, roles=["admin", "dashboard_viewer", "product_manager"])
+                       environment=c.environment, roles=["admin", "dashboard_viewer", "product_manager"])
 
 
 # ---------------------------------------------------------------------
@@ -186,7 +184,6 @@ def get_erp_landscape(ctx: AuthContext = Depends(require_customer_access)) -> Er
     customer = registry.get_customer(ctx.customer_id)
     if customer is None:
         raise HTTPException(status_code=404, detail=f"no such customer: {ctx.customer_id}")
-    ais = mcp_config.settings
     scope = get_engagement_scope_service().get_for_customer(ctx.customer_id)
     configured = bool(
         scope
@@ -199,12 +196,7 @@ def get_erp_landscape(ctx: AuthContext = Depends(require_customer_access)) -> Er
         customer_id=ctx.customer_id,
         tools_release=customer.tools_release,
         environment=customer.environment,
-        ais=AisConnectionStatus(
-            mock_mode=ais.mock_mode,
-            base_url_configured=bool(ais.ais_base_url),
-            environment=ais.ais_environment or None,
-            role=ais.ais_role or None,
-        ),
+        ais=_delivery_connection(ctx.customer_id),
         discovery_profile=_discovery_summary(ctx.customer_id),
         engagement_scope_configured=configured,
         scope_globally_shared_note=_SCOPE_SHARED_NOTE,
@@ -218,12 +210,39 @@ def _jde_discovery_row(company_id: str) -> IntegrationStatus:
     if not v.configured or v.config is None:
         return IntegrationStatus(name="JD Edwards discovery (Architect)", connected=False,
                                  detail="Not configured -- see the JDE section below")
-    mode = "SIMULATION" if v.config.connection_mode == "simulation" else "live"
-    state = "enabled" if v.discovery_enabled else ("disabled" if v.disabled else "off until verified and enabled")
+    state = "enabled" if v.discovery_enabled else ("disabled" if v.disabled else "off until tested and enabled")
     return IntegrationStatus(
         name="JD Edwards discovery (Architect)",
-        connected=v.discovery_enabled and v.config.connection_mode == "live",
-        detail=f"{mode}, {v.config.environment}, profile revision {v.revision}: discovery {state}",
+        connected=v.discovery_enabled,
+        detail=f"{v.config.environment} at {v.config.ais_base_url}, settings revision {v.revision}: {state}",
+    )
+
+
+def _delivery_connection(company_id: str) -> AisConnectionStatus:
+    """How approved changes reach this customer's JDE: applied by a person,
+    verified live through the customer's own JD Edwards connection."""
+    from ..discovery import profile_service
+
+    v = profile_service.view(company_id)
+    configured = bool(v.configured and v.config is not None)
+    return AisConnectionStatus(
+        delivery_mode="recorded",
+        base_url_configured=configured,
+        live_verification=bool(configured and v.discovery_enabled),
+        environment=v.config.environment if configured else None,
+        role=v.config.role if configured else None,
+    )
+
+
+def _delivery_row(company_id: str) -> IntegrationStatus:
+    d = _delivery_connection(company_id)
+    return IntegrationStatus(
+        name="JD Edwards delivery verification",
+        connected=d.live_verification,
+        detail=("Approved changes are applied in DEV by a person and read back live through the JD Edwards connection"
+                if d.live_verification else
+                "Approved changes are applied in DEV by a person and recorded; live read-back starts once the JD "
+                "Edwards connection is tested and enabled"),
     )
 
 
@@ -449,8 +468,6 @@ def update_business_domain_status(
 # ---------------------------------------------------------------------
 @router.get("/integrations", response_model=list[IntegrationStatus])
 def list_integrations(ctx: AuthContext = Depends(require_customer_access)) -> list[IntegrationStatus]:
-    ais = mcp_config.settings
-    ais_live = (not ais.mock_mode) and bool(ais.ais_base_url)
 
     jira_config = get_jira_integration_service().get_for_customer(ctx.customer_id)
     mode, reason = jira_mode(ctx.customer_id)
@@ -462,16 +479,7 @@ def list_integrations(ctx: AuthContext = Depends(require_customer_access)) -> li
 
     return [
         _jde_discovery_row(ctx.customer_id),
-        IntegrationStatus(
-            name="JD Edwards execution gate",
-            connected=ais_live,
-            detail=(
-                "Live AIS connection configured (separate from discovery)" if ais_live
-                else "Simulated JDE writes, for this demo customer only" if customer_service.is_demo_company(ctx.customer_id)
-                else "Not available: live JDE writes are not enabled in this deployment, and nothing is simulated for a "
-                     "real customer"
-            ),
-        ),
+        _delivery_row(ctx.customer_id),
         IntegrationStatus(name="Jira Service Management", connected=jira_live, detail=jira_detail),
     ]
 

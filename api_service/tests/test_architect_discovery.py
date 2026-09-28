@@ -12,7 +12,9 @@ the same in-process discovery tools the Architect gets.
   7. Changed evidence creates a new baseline and flags the design for reassessment.
   8. Downstream agents receive the design's evidence manifest.
   9. No discovery action can invoke a write capability (test_discovery_policy.py).
- 10. Everything here runs against the simulated endpoint, labelled as simulation.
+ 10. Everything here runs against the customer's live AIS connection (the
+     fake AIS server at the HTTP boundary, installed by conftest), and the
+     evidence is labelled as a live observation.
 """
 
 from __future__ import annotations
@@ -118,8 +120,9 @@ def test_acceptance_1_to_4_a_grounded_design_with_citations_provenance_and_gaps(
 
     # 1. The correct company's profile: vdb's environment, vdb's revision, the story's link.
     assert tools.grant.company_id == "vdb" and seen["caps"]["environment"] == "JDV920"
-    assert seen["obs"]["environment"] == "JDV920" and seen["obs"]["mode"] == "simulation"
-    assert "SIMULATION" in seen["caps"]["mode_label"]
+    assert seen["obs"]["environment"] == "JDV920" and seen["obs"]["mode"] == "live"
+    assert seen["obs"]["evidence_type"] == "live_observation" and "LIVE" in seen["obs"]["mode_label"]
+    assert "LIVE" in seen["caps"]["mode_label"] and "SIMULATION" not in json.dumps(seen).upper()
     assert "password" not in json.dumps(seen["caps"]).lower() or "s3cret" not in json.dumps(seen["caps"])
 
     current = _baselines(client)[0]
@@ -152,7 +155,10 @@ def test_acceptance_1_to_4_a_grounded_design_with_citations_provenance_and_gaps(
     assert all(g["question"] or g["blocked_step"] for g in manifest["gaps"])
     invented = by_claim["Pricing is untouched"]
     assert invented["validated"] is False and invented["basis"] == "assumption"
-    assert any("SIMULATED" in lim for lim in manifest["confidence_limitations"])
+    # Live evidence carries its limitation: the AIS response shapes are not yet confirmed.
+    assert any("response shapes are unverified" in lim for lim in manifest["confidence_limitations"])
+    assert not any("SIMULATED" in lim for lim in manifest["confidence_limitations"])
+    assert seen["obs"]["response_shape"] == "unverified" and obs_entry["mode"] == "live"
     assert "not a scan of the whole customer installation" in manifest["scope_statement"]
 
     # The activity log links the reads to the user, story and agent run.
@@ -328,8 +334,9 @@ def test_the_baseline_grants_nothing_to_execution(client, monkeypatch):
 
     ready_company(client, "vdb")
     root = pathlib.Path(jde_mcp_server.__file__).parent
-    for name in ("ais_client.py", "approval.py", "execution.py", "scope.py"):
+    for name in ("approval.py", "execution.py", "scope.py", "technical_gate.py"):
         assert "design_baseline" not in (root / name).read_text()
+    assert not (root / "ais_client.py").exists()  # and there is no execution AIS client at all
 
 
 def test_artifacts_are_immutable_revisions_and_unsupported_formats_stay_unavailable(client, monkeypatch):
@@ -382,3 +389,27 @@ def test_metadata_only_withholds_artifact_content_from_the_model(client, monkeyp
     _run(monkeypatch, script)
     assert seen["artifact"]["available"] is False and "content" not in seen["artifact"]
     assert "redacted" in seen["caps"]["data_sharing_note"]
+
+
+def test_two_customers_may_upload_the_same_object_and_each_sees_only_its_own(client):
+    """Artifacts are keyed per customer: the same object name at two
+    customers is two separate artifacts, never a collision or a leak."""
+    from jde_api_service.discovery.architect_tools import ArchitectDiscoveryTools
+
+    save_profile(client, "vdb")
+    save_profile(client, "bwm")
+    vdb = upload_artifact(client, "vdb", content="/* vdb credit check */")
+    bwm = upload_artifact(client, "bwm", content="/* bwm credit check */")
+    # The same id at each customer, but separate artifacts with separate content.
+    assert vdb["artifactId"] == bwm["artifactId"] and vdb["sha256"] != bwm["sha256"]
+    assert (vdb["revision"], bwm["revision"]) == (1, 1)  # not a second revision of the other's artifact
+    for company, mine, other in (("vdb", vdb, "bwm"), ("bwm", bwm, "vdb")):
+        listing = client.get("/admin/jde/artifacts", headers=headers(company)).json()
+        assert {(a["artifactId"], a["revision"], a["sha256"]) for a in listing} == {
+            (mine["artifactId"], 1, mine["sha256"])}
+        tools = ArchitectDiscoveryTools(company_id=company, story_id="S-X", domain_id=None, grant=None)
+        read = tools.read_artifact(mine["artifactId"])
+        assert read["content"].startswith(f"/* {company} ") and read["metadata"]["sha256"] == mine["sha256"]
+        assert other not in read["content"]
+        text = client.get(f"/admin/jde/artifacts/{mine['artifactId']}/1/text", headers=headers(company)).text
+        assert f"{company} credit check" in text and f"{other} credit check" not in text

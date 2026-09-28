@@ -1,7 +1,9 @@
 """
 Customer administration from the frontend: edit the customer, create a new
-(real, non-demo) customer, switch agents on or off per customer -- and the
-rule that simulated JDE only exists inside demo customers.
+customer (an ordinary customer -- there is no demo or simulated JDE any
+more), switch agents on or off per customer -- and, for a new customer
+with no JD Edwards connection yet, nothing is recorded as delivered on a
+person's word without the value they read and its evidence.
 """
 
 from __future__ import annotations
@@ -17,24 +19,22 @@ def test_admin_edits_the_customer_and_it_persists(client, viewer_client):
     assert r.status_code == 200, r.text
     got = client.get("/admin/customer-profile", headers=headers("vdb")).json()
     assert got["customer"]["name"] == "Van den Berg Logistiek BV" and got["customer"]["environment"] == "JPS920"
-    assert got["customer"]["isDemo"] is True and got["updatedBy"]
+    assert got["updatedBy"] and "isDemo" not in got["customer"]
     assert client.put("/admin/customer-profile", headers=headers("vdb"), json={"name": " "}).status_code == 422
     assert viewer_client.put("/admin/customer-profile", headers=headers("vdb"), json={"name": "X"}).status_code == 403
 
 
-def test_a_new_customer_is_real_and_its_creator_is_its_admin(client):
+def test_a_new_customer_is_ordinary_and_its_creator_is_its_admin(client):
     r = client.post("/admin/customers", headers=headers("vdb"),
                     json={"name": "Acme Foods", "toolsRelease": "9.2.26.2", "environment": "JPS920"})
     assert r.status_code == 201, r.text
     new = r.json()
-    assert new["isDemo"] is False and new["id"].startswith("acme-foods-")
+    assert new["id"].startswith("acme-foods-") and "isDemo" not in new
     session = client.get("/session").json()
     mine = next(c for c in session["customers"] if c["id"] == new["id"])
-    assert "admin" in mine["roles"] and mine["isDemo"] is False
-    # Simulation is refused for a real customer: live connections only.
-    r = client.put("/admin/jde/profile", headers=headers(new["id"]), json={**profile_body(new["id"]), "expectedRevision": None})
-    assert r.status_code == 422 and "demo customers" in r.json()["detail"]
-    live = {**profile_body(new["id"]), "connectionMode": "live", "expectedRevision": None}
+    assert "admin" in mine["roles"] and "isDemo" not in mine
+    # Its JDE connection is a live one, like every customer's.
+    live = {**profile_body(new["id"]), "expectedRevision": None}
     assert client.put("/admin/jde/profile", headers=headers(new["id"]), json=live).status_code == 200
 
 
@@ -58,18 +58,24 @@ def test_switched_off_agents_never_start(client):
     agent_settings.require_enabled("nhd", "architect")  # other customers unaffected
 
 
-def test_simulated_execution_is_refused_for_a_real_customer(client, monkeypatch):
-    import os
+def test_without_a_jde_connection_nothing_is_recorded_on_a_bare_claim(client):
+    """A new customer has no JD Edwards connection, so Jade cannot read the
+    value back: recording "applied" without the value the person read and an
+    evidence reference records nothing."""
+    import pytest
 
-    from jde_api_service.persistence.db import db_path
-    from jde_mcp_server import authority
+    from jde_api_service.delivery import functional
+    from jde_mcp_server import approval, execution
+
+    from .test_stage1_execution_safeguards import _approve, _approved_story, _full_scope, _propose, _save_scope
 
     new = client.post("/admin/customers", headers=headers("vdb"), json={"name": "Real Co"}).json()
-    monkeypatch.setenv(authority.AUTH_DB_ENV, str(db_path()))
-    assert os.path.exists(db_path())
-    authority.require_simulation_allowed("vdb")  # demo customer: allowed
-    try:
-        authority.require_simulation_allowed(new["id"])
-        raise AssertionError("simulation must be refused for a real customer")
-    except authority.SimulationNotAllowed as exc:
-        assert "nothing was executed" in str(exc)
+    _save_scope(client, new["id"], _full_scope())
+    _approved_story("S-CA-NOCONN", company=new["id"])
+    change = _propose("S-CA-NOCONN")
+    _approve(change["change_id"], company=new["id"])
+    for stated, evidence in ((None, "screenshot 1"), ("SO", ""), (None, "")):
+        with pytest.raises(functional.DeliveryRefused, match="cannot read the value back live"):
+            functional.record_applied(change["change_id"], actor_user_id="u-hendro", actor_name="Hendro",
+                                      evidence_reference=evidence, stated_value=stated)
+    assert execution.effective_state(approval._load(change["change_id"]), execution.WRITE) == "ready"

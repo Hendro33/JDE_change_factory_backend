@@ -1,11 +1,16 @@
 """
-Regression tests for the Technical workflow's controls (deterministic,
-scripted stand-ins for the model; synthetic approver identities):
+Regression tests for the Technical workflow's controls on the RECORDED
+delivery route (deterministic, scripted stand-ins for the model; synthetic
+approver identities). People do the work in JD Edwards and record each
+milestone in Jade; Jade re-checks everything before recording:
 
-  build failure and repair, stale source and changed baselines,
-  company/domain isolation, unsupported or incomplete artifacts,
-  concurrent and delayed updates, interrupted application and blind
-  retry, approval expiry, unauthorised CNC completion, and unresolved
+  the agent cannot approve or deliver its own package; only the exact,
+  latest approved revision can be recorded; a failed build needs a new
+  revision and a fresh approval; new design revisions, new source exports,
+  drift after approval and changed object-librarian evidence block the
+  recording; company/domain isolation; unsupported or partial sources are
+  never prepared; concurrent and delayed agent runs; approval expiry;
+  only a current CNC operator records the activation; and unresolved
   (clarification-required) outcomes.
 """
 
@@ -17,7 +22,8 @@ import pytest
 
 from ._discovery import sim_edit
 from ._technical import (
-    ENV, OBJECT_KEY, OLD_LINE, SOURCE, approve_package, cnc, milestone, prepare, ready_story, upload_source,
+    OBJECT_NAME, OLD_LINE, SOURCE, TESTS, approve_package, cnc, prepare, ready_story, record_apply, record_build,
+    record_verify, upload_source,
 )
 from .conftest import TEST_PASSWORD, _apply_csrf_header, headers
 
@@ -34,6 +40,12 @@ def _package(story: str, revision: int, company: str = "vdb") -> dict:
     return store.get_package(company, story, revision)
 
 
+def _save_change(record: dict) -> None:
+    from jde_mcp_server import approval
+
+    approval._save(record["change_id"], record)
+
+
 def _user(user_id: str, roles: list[str], company: str = "vdb"):
     from fastapi.testclient import TestClient
 
@@ -48,21 +60,49 @@ def _user(user_id: str, roles: list[str], company: str = "vdb"):
     return c
 
 
+def _refused(r, *fragments: str, status: int = 409) -> None:
+    assert r.status_code == status, (r.status_code, r.text)
+    detail = r.json()["detail"]
+    assert all(f in detail for f in fragments), detail
+
+
 # ---------------------------------------------------------------------
-# Build failure, repair, and approval of the exact revision only
+# The agent never approves or delivers; only the exact approved revision
 # ---------------------------------------------------------------------
-def test_a_build_failure_is_surfaced_and_a_changed_repair_needs_fresh_approval(client, monkeypatch):
+def test_the_agent_cannot_approve_or_deliver_its_own_package(client, monkeypatch):
+    from jde_api_service.technical import service, tools as tech_tools
+    from jde_api_service.technical.tools import TechnicalAgentTools
+
+    ready_story(client, monkeypatch, "S-TC-SELF")
+    prepare("vdb", "S-TC-SELF")
+    run = service.start_run("vdb", "S-TC-SELF", purpose="repair", initiated_by="u-hendro")
+    tools = TechnicalAgentTools(company_id="vdb", story_id="S-TC-SELF", run_id=run["run_id"])
+    # No approval and no delivery capability on the agent's tools or its MCP surface.
+    forbidden = ("approve", "apply", "build", "verify", "milestone", "cnc", "reconcile")
+    assert not [n for n in dir(tools) if any(n.startswith(f) for f in forbidden)]
+    assert not [n for n in tech_tools.TOOL_NAMES if any(f in n for f in forbidden)]
+    status = tools.status(None)
+    assert status["eligibility"]["eligible"] is False
+    assert any("not approved" in r for r in status["eligibility"]["reasons"]), status["eligibility"]
+    assert _change("S-TC-SELF", 1)["status"] == "pending"
+    # Nor can anything be recorded against the unapproved package.
+    _refused(record_apply(client, "S-TC-SELF", 1), "not approved")
+
+
+def test_a_build_failure_needs_a_new_revision_and_a_fresh_approval(client, monkeypatch):
     from jde_mcp_server import approval, technical_gate
 
     ready_story(client, monkeypatch, "S-TC-BUILD")
-    prepare("vdb", "S-TC-BUILD", marker=False)  # misses the customer's modification-marker rule
+    prepare("vdb", "S-TC-BUILD", marker=False)
     approve_package(client, "S-TC-BUILD", 1)
-    assert milestone(client, "S-TC-BUILD", 1, "apply").status_code == 200
-    r = milestone(client, "S-TC-BUILD", 1, "build").json()
-    assert r["milestone"] == "build_failed" and any("SIM-BLD-1" in line for line in r["log"])
-    # The failed revision never builds or runs again.
-    again = milestone(client, "S-TC-BUILD", 1, "build")
-    assert again.status_code == 409 and "failed" in again.json()["detail"]
+    assert record_apply(client, "S-TC-BUILD", 1).status_code == 200
+    r = record_build(client, "S-TC-BUILD", 1, succeeded=False, log="B5542001.c(7): error C2065: 'cCreditExempt'")
+    assert r.status_code == 200 and r.json()["milestone"] == "build_failed", r.text
+    assert any("C2065" in line for line in r.json()["log"])
+    # The failed revision never builds again and never moves on.
+    _refused(record_build(client, "S-TC-BUILD", 1), "failed")
+    assert cnc(client, "S-TC-BUILD", 1).status_code == 409
+    assert record_verify(client, "S-TC-BUILD", 1).status_code == 409
     # The repair is a new revision; revision 1 is superseded and its approval stays as history.
     out = prepare("vdb", "S-TC-BUILD", marker=True)
     assert out["revision"] == 2
@@ -70,59 +110,53 @@ def test_a_build_failure_is_surfaced_and_a_changed_repair_needs_fresh_approval(c
     assert rev1["superseded_by"] == 2 and rev2["content"]["repair_of"]["revision"] == 1
     assert rev2["content_sha256"] != rev1["content_sha256"]
     assert approval._load(rev1["change_id"])["status"] == "approved"  # history kept
-    # The changed repair cannot run under the previous approval...
+    # The superseded revision can no longer be approved or recorded.
+    _refused(client.post("/changes/S-TC-BUILD/technical/packages/1/approve", headers=headers("vdb"),
+                         json={"note": "x"}), "superseded")
+    _refused(record_build(client, "S-TC-BUILD", 1), "superseded")
+    # The changed repair cannot be recorded under the previous approval...
     with pytest.raises(approval.ChangeApprovalError, match="not the exact package approved"):
-        technical_gate.apply(rev1["change_id"], rev2, actor="test")
+        technical_gate.apply(rev1["change_id"], rev2, actor="Synthetic", actor_user_id="u-hendro",
+                             omw_project="PRJ-JADE-1", evidence_reference="x")
     # ...nor without its own approval.
-    r = milestone(client, "S-TC-BUILD", 2, "apply")
-    assert r.status_code == 409 and "not approved" in r.json()["detail"]
+    _refused(record_apply(client, "S-TC-BUILD", 2), "not approved")
     approve_package(client, "S-TC-BUILD", 2)
-    assert milestone(client, "S-TC-BUILD", 2, "apply").status_code == 200
-    assert milestone(client, "S-TC-BUILD", 2, "build").json()["milestone"] == "built"
+    assert record_apply(client, "S-TC-BUILD", 2).status_code == 200
+    assert record_build(client, "S-TC-BUILD", 2).json()["milestone"] == "built"
 
 
-def test_the_agent_cannot_approve_its_own_package(client, monkeypatch):
-    from jde_api_service.technical import service
-    from jde_api_service.technical.tools import TechnicalAgentTools
+def test_a_package_changed_after_approval_cannot_be_recorded(client, monkeypatch):
+    from jde_api_service.persistence.db import connection
 
-    ready_story(client, monkeypatch, "S-TC-SELF")
-    prepare("vdb", "S-TC-SELF")
-    run = service.start_run("vdb", "S-TC-SELF", purpose="execute", initiated_by="u-hendro")
-    tools = TechnicalAgentTools(company_id="vdb", story_id="S-TC-SELF", run_id=run["run_id"])
-    assert not any(n for n in dir(tools) if n.startswith("approve"))
-    result = tools.milestone("apply", None)
-    assert result["blocked"] and "not approved" in result["reason"]
-    assert _change("S-TC-SELF", 1)["status"] == "pending"
+    ready_story(client, monkeypatch, "S-TC-TAMPER")
+    prepare("vdb", "S-TC-TAMPER")
+    approve_package(client, "S-TC-TAMPER", 1)
+    pkg = _package("S-TC-TAMPER", 1)
+    with connection(immediate=True) as conn:  # the stored checksum no longer matches what was approved
+        conn.execute("UPDATE technical_packages SET content_sha256 = ? WHERE package_id = ? AND revision = 1",
+                     ("0" * 64, pkg["package_id"]))
+    _refused(record_apply(client, "S-TC-TAMPER", 1), "not the exact package approved")
 
 
 # ---------------------------------------------------------------------
 # Stale source, drift and changed baselines
 # ---------------------------------------------------------------------
-def test_a_source_that_is_not_the_active_runtime_cannot_be_prepared(client, monkeypatch):
+def test_a_superseded_source_export_cannot_be_prepared(client, monkeypatch):
     from jde_api_service.technical import service
     from jde_api_service.technical.tools import TechnicalAgentTools
 
-    ready_story(client, monkeypatch, "S-TC-STALE")
-    with sim_edit("vdb", "drift: the active DEV object changed after the export") as est:
-        est["objects"][OBJECT_KEY]["active"]["sha256"] = "0" * 64
+    art = ready_story(client, monkeypatch, "S-TC-STALE")
     run = service.start_run("vdb", "S-TC-STALE", purpose="prepare", initiated_by="u-hendro")
     tools = TechnicalAgentTools(company_id="vdb", story_id="S-TC-STALE", run_id=run["run_id"])
-    listing = tools.list_source_artifacts()["artifacts"]
-    assert listing[0]["runtime_check"]["state"] == "stale" and not listing[0]["can_prepare"]
-    opened = tools.open_in_workspace(listing[0]["evidence_id"])
-    assert opened["opened"] is False and "stale" in opened["reason"]
-
-
-def test_drift_after_approval_blocks_application(client, monkeypatch):
-    ready_story(client, monkeypatch, "S-TC-DRIFT")
-    prepare("vdb", "S-TC-DRIFT")
-    approve_package(client, "S-TC-DRIFT", 1)
-    with sim_edit("vdb", "drift: someone changes the active object in DEV after approval") as est:
-        est["objects"][OBJECT_KEY]["active"]["source"] += "\n// hotfix\n"
-        est["objects"][OBJECT_KEY]["active"]["sha256"] = "f" * 64
-    r = milestone(client, "S-TC-DRIFT", 1, "apply")
-    assert r.status_code == 409 and "changed since approval" in r.json()["detail"]
-    assert _change("S-TC-DRIFT", 1)["status"] == "approved"  # history, not eligibility
+    # While the run works, the customer uploads a newer export of the same object.
+    newer = upload_source(client, content=SOURCE + "\n/* re-exported after a DEV change */\n")
+    assert newer["artifactId"] == art["artifactId"] and newer["revision"] > art["revision"]
+    ref = f"{art['artifactId']}@r{art['revision']}"
+    opened = tools.open_in_workspace(ref)
+    assert opened["opened"] is False and "stale" in opened["reason"], opened
+    # And the design that consulted the older export is flagged: no new run starts from it.
+    with pytest.raises(service.TechnicalRefused, match="reassessment"):
+        service.start_run("vdb", "S-TC-STALE", purpose="prepare", initiated_by="u-hendro")
 
 
 def test_a_new_source_revision_invalidates_the_approved_package(client, monkeypatch):
@@ -132,25 +166,42 @@ def test_a_new_source_revision_invalidates_the_approved_package(client, monkeypa
     upload_source(client, content=SOURCE + "\n// re-exported\n")
     record = _change("S-TC-ART", 1)
     assert record["invalidations"][0]["kind"] == "artifact_revised"
-    assert record["approved_at"] == approved["approved_at"]
-    r = milestone(client, "S-TC-ART", 1, "apply")
-    assert r.status_code == 409 and "invalidated" in r.json()["detail"]
+    assert record["approved_at"] == approved["approved_at"]  # history, not eligibility
+    _refused(record_apply(client, "S-TC-ART", 1), "invalidated")
+
+
+def test_drift_after_approval_blocks_recording_the_apply_even_without_an_invalidation(client, monkeypatch):
+    """The binding re-reads the target itself: even if no invalidation had
+    been recorded, the object's current source is no longer the one the
+    approved package was prepared from."""
+    ready_story(client, monkeypatch, "S-TC-DRIFT")
+    prepare("vdb", "S-TC-DRIFT")
+    approve_package(client, "S-TC-DRIFT", 1)
+    upload_source(client, content=SOURCE + "\n// hotfix made directly in DEV\n")
+    record = _change("S-TC-DRIFT", 1)
+    record["invalidations"] = []  # take away the invalidation: the binding alone must refuse
+    _save_change(record)
+    r = record_apply(client, "S-TC-DRIFT", 1)
+    assert r.status_code == 409, r.text
+    assert "stale source" in r.json()["detail"] or "changed since approval" in r.json()["detail"], r.text
+    assert _change("S-TC-DRIFT", 1)["status"] == "approved"  # history, not eligibility
+    assert "applied" not in [m["milestone"] for m in _change("S-TC-DRIFT", 1).get("milestones") or []]
 
 
 def test_refresh_evidence_that_changes_the_objects_librarian_row_invalidates_the_package(client, monkeypatch):
     ready_story(client, monkeypatch, "S-TC-REFRESH")
     prepare("vdb", "S-TC-REFRESH")
     approve_package(client, "S-TC-REFRESH", 1)
-    with sim_edit("vdb", "drift: P554210 re-described in the object librarian") as est:
+    with sim_edit("vdb", f"drift: {OBJECT_NAME} re-described in the object librarian") as est:
         for row in est["tables"]["F9860"]:
-            if row["SIOBNM"] == "P554210":
-                row["SIMD"] = "Custom Sales Order Review v2"
+            if row["SIOBNM"] == OBJECT_NAME:
+                row["SIMD"] = "Custom Credit Check v2"
     r = client.post("/changes/S-TC-REFRESH/architecture-review/refresh-evidence", headers=headers("vdb")).json()
     assert [w["change_id"] for w in r["manifest"]["affected_work"]] == [_change("S-TC-REFRESH", 1)["change_id"]]
-    assert milestone(client, "S-TC-REFRESH", 1, "apply").status_code == 409
+    assert record_apply(client, "S-TC-REFRESH", 1).status_code == 409
     # And the flagged design no longer starts Technical Agent runs.
     run = client.post("/changes/S-TC-REFRESH/technical/runs", headers=headers("vdb"), json={"purpose": "prepare"})
-    assert run.status_code == 409 and "reassessment" in run.json()["detail"]
+    _refused(run, "reassessment")
 
 
 def test_a_new_design_revision_is_not_substituted_into_approved_work(client, monkeypatch):
@@ -160,17 +211,17 @@ def test_a_new_design_revision_is_not_substituted_into_approved_work(client, mon
     prepare("vdb", "S-TC-DESIGN")
     approve_package(client, "S-TC-DESIGN", 1)
     technical_design(client, monkeypatch, "S-TC-DESIGN")  # the Architect runs again: design revision 2
-    r = milestone(client, "S-TC-DESIGN", 1, "apply")
-    assert r.status_code == 409 and "design revision 1" in r.json()["detail"]
+    _refused(record_apply(client, "S-TC-DESIGN", 1), "design revision 1")
     # Revision 2 has no design approval yet: the Technical Agent cannot start.
     run = client.post("/changes/S-TC-DESIGN/technical/runs", headers=headers("vdb"), json={"purpose": "prepare"})
-    assert run.status_code == 409 and "not been approved" in run.json()["detail"]
+    _refused(run, "not been approved")
 
 
 # ---------------------------------------------------------------------
 # Isolation
 # ---------------------------------------------------------------------
 def test_another_company_sees_nothing_and_cannot_act(client, monkeypatch):
+    from jde_api_service.technical import store
     from jde_api_service.technical.tools import TechnicalAgentTools
 
     ready_story(client, monkeypatch, "S-TC-ISO")
@@ -178,22 +229,25 @@ def test_another_company_sees_nothing_and_cannot_act(client, monkeypatch):
     assert client.get("/changes/S-TC-ISO/technical", headers=headers("bwm")).status_code == 404
     assert client.post("/changes/S-TC-ISO/technical/packages/1/approve", headers=headers("bwm"),
                        json={"note": "x"}).status_code == 404
-    from jde_api_service.technical import store
-
+    approve_package(client, "S-TC-ISO", 1)
+    assert record_apply(client, "S-TC-ISO", 1, company="bwm").status_code == 404
+    assert record_build(client, "S-TC-ISO", 1, company="bwm").status_code == 404
+    assert cnc(client, "S-TC-ISO", 1, company="bwm").status_code == 404
+    assert record_verify(client, "S-TC-ISO", 1, company="bwm").status_code == 404
+    assert not _change("S-TC-ISO", 1).get("milestones")
     run_id = store.runs_for("vdb", "S-TC-ISO")[0]["run_id"]
     with pytest.raises(ValueError, match="no such Technical Agent run"):
         TechnicalAgentTools(company_id="bwm", story_id="S-TC-ISO", run_id=run_id)
 
 
 def test_a_source_of_another_company_or_domain_is_not_visible(client, monkeypatch):
+    from jde_api_service.persistence.db import connection
     from jde_api_service.technical import service
     from jde_api_service.technical.tools import TechnicalAgentTools
 
     ready_story(client, monkeypatch, "S-TC-DOM")
-    other_company = upload_source(client, "bwm", object_name="P554211")
-    other_domain = upload_source(client, "vdb", object_name="P554212")
-    from jde_api_service.persistence.db import connection
-
+    other_company = upload_source(client, "bwm", object_name="B5542011")
+    other_domain = upload_source(client, "vdb", object_name="B5542012")
     with connection(immediate=True) as conn:  # scope that export to a domain this story is not in
         conn.execute("UPDATE technical_artifacts SET domain_id = 'DOM-ELSEWHERE' WHERE artifact_id = ?",
                      (other_domain["artifactId"],))
@@ -209,44 +263,36 @@ def test_a_source_of_another_company_or_domain_is_not_visible(client, monkeypatc
 
 
 # ---------------------------------------------------------------------
-# Unsupported and incomplete artifacts
+# Unsupported and incomplete sources
 # ---------------------------------------------------------------------
-@pytest.mark.parametrize("fmt,content,why", [
-    ("er_text", "ER print export of P554210\nIF BC OrderTotal > BC CreditLimit\n", "editing it as text changes nothing"),
-    ("pdf", "%PDF-1.4 not really", "no safe way to edit"),
-    ("jade_sim_er", SOURCE + "// padding\n" * 7000, "partial export"),
+@pytest.mark.parametrize("fmt,object_type,content,why", [
+    ("er_text", "ER", "ER print export of P554299\nIF BC OrderTotal > BC CreditLimit\n", "changes nothing in JDE"),
+    ("pdf", "BSFN", "%PDF-1.4 not really", "no safe way to edit"),
+    ("c_source", "BSFN", SOURCE + "// padding\n" * 7000, "partial export"),
 ])
-def test_unsupported_or_partial_sources_are_never_patched(client, monkeypatch, fmt, content, why):
+def test_unsupported_or_partial_sources_are_never_prepared(client, monkeypatch, fmt, object_type, content, why):
     from jde_api_service.technical import service
     from jde_api_service.technical.tools import TechnicalAgentTools
 
-    ready_story(client, monkeypatch, f"S-TC-FMT-{fmt}")
-    art = upload_source(client, content=content, fmt=fmt, object_name="P554299")
-    run = service.start_run("vdb", f"S-TC-FMT-{fmt}", purpose="prepare", initiated_by="u-hendro")
-    tools = TechnicalAgentTools(company_id="vdb", story_id=f"S-TC-FMT-{fmt}", run_id=run["run_id"])
+    story = f"S-TC-FMT-{fmt}"
+    ready_story(client, monkeypatch, story)
+    art = upload_source(client, content=content, fmt=fmt, object_name="B5542099", object_type=object_type)
+    run = service.start_run("vdb", story, purpose="prepare", initiated_by="u-hendro")
+    tools = TechnicalAgentTools(company_id="vdb", story_id=story, run_id=run["run_id"])
     info = next(a for a in tools.list_source_artifacts()["artifacts"] if a["artifact_id"] == art["artifactId"])
     assert info["can_prepare"] is False and any(why in r for r in info["reasons"]), info["reasons"]
     assert tools.open_in_workspace(info["evidence_id"])["opened"] is False
 
 
-def test_business_function_source_can_be_prepared_but_never_applied(client, monkeypatch):
+def test_only_business_function_source_can_be_applied_through_the_recorded_route():
     from jde_mcp_server import technical_gate
 
-    support = technical_gate.format_support("c_source")
-    assert support["prepare"] is True and support["apply"] == {"simulation": False, "live": False}
-
-
-def test_live_application_is_explicitly_unavailable(client, monkeypatch):
-    import dataclasses
-
-    from jde_mcp_server import technical_gate
-
-    ready_story(client, monkeypatch, "S-TC-LIVE")
-    prepare("vdb", "S-TC-LIVE")
-    approve_package(client, "S-TC-LIVE", 1)
-    monkeypatch.setattr(technical_gate, "settings", dataclasses.replace(technical_gate.settings, mock_mode=False))
-    with pytest.raises(technical_gate.ChangeApprovalError, match="simulation application only|no qualified live"):
-        technical_gate.apply(_change("S-TC-LIVE", 1)["change_id"], _package("S-TC-LIVE", 1), actor="test")
+    assert technical_gate.format_support("c_source")["prepare"] is True
+    assert technical_gate.format_support("c_source")["apply"] == {"recorded": True}
+    assert technical_gate.format_support("er_text")["prepare"] is False
+    assert not technical_gate.format_support("er_text")["apply"].get("recorded")
+    assert technical_gate.format_support("pdf") == {"prepare": False, "apply": {}}
+    assert technical_gate.format_support("jade_sim_er") == {"prepare": False, "apply": {}}
 
 
 # ---------------------------------------------------------------------
@@ -258,7 +304,7 @@ def test_two_runs_cannot_work_on_one_story_at_once(client, monkeypatch):
     ready_story(client, monkeypatch, "S-TC-CONC")
     service.start_run("vdb", "S-TC-CONC", purpose="prepare", initiated_by="u-hendro")
     with pytest.raises(store.StaleSubmission, match="still running"):
-        service.start_run("vdb", "S-TC-CONC", purpose="prepare", initiated_by="u-hendro")
+        service.start_run("vdb", "S-TC-CONC", purpose="repair", initiated_by="u-hendro")
 
 
 def test_a_delayed_response_never_overwrites_a_newer_revision(client, monkeypatch):
@@ -273,12 +319,11 @@ def test_a_delayed_response_never_overwrites_a_newer_revision(client, monkeypatc
     prepare("vdb", "S-TC-LATE")
     # The slow run's response arrives late: nothing is stored.
     listing = slow_tools.list_source_artifacts()["artifacts"]
-    opened = slow_tools.open_in_workspace(listing[0]["evidence_id"])
-    slow_tools.replace(opened["file_id"], OLD_LINE, OLD_LINE + " // MOD late")
-    out = slow_tools.submit({"explanation": "late", "test_plan": [
-        {"name": n, "kind": k, "event": "OK_Button_Clicked", "inputs": {}, "expected": {}}
-        for n, k in (("a", "positive"), ("b", "negative"), ("c", "neighbouring"))]})
-    assert out["submitted"] is False and "no longer active" in out["problems"][0]
+    source = next(a for a in listing if a["format"] == "c_source")
+    opened = slow_tools.open_in_workspace(source["evidence_id"])
+    slow_tools.replace(opened["file_id"], OLD_LINE, OLD_LINE + " /* MOD late */")
+    out = slow_tools.submit({"explanation": "late", "test_plan": TESTS})
+    assert out["submitted"] is False and "no longer active" in out["problems"][0], out
     assert [p["revision"] for p in store.packages_for("vdb", "S-TC-LATE")] == [1]
 
 
@@ -288,89 +333,74 @@ def test_a_run_that_missed_a_newer_revision_is_discarded(client, monkeypatch):
 
     ready_story(client, monkeypatch, "S-TC-CAS")
     prepare("vdb", "S-TC-CAS")
-    run = service.start_run("vdb", "S-TC-CAS", purpose="prepare", initiated_by="u-hendro")
+    run = service.start_run("vdb", "S-TC-CAS", purpose="repair", initiated_by="u-hendro")
     with connection(immediate=True) as conn:  # the run's view is older than what is stored
         conn.execute("UPDATE technical_runs SET expected_package_revision = 0 WHERE run_id = ?", (run["run_id"],))
     with pytest.raises(store.StaleSubmission, match="delayed result is discarded"):
         store.store_package(run_id=run["run_id"], company_id="vdb", story_id="S-TC-CAS",
                             content={"revision": 1}, content_sha256="x")
-
-
-# ---------------------------------------------------------------------
-# Interrupted application and blind retry
-# ---------------------------------------------------------------------
-def test_an_interrupted_apply_blocks_retry_until_reconciled_against_the_estate(client, monkeypatch):
-    from jde_mcp_server import sim_estate
-
-    ready_story(client, monkeypatch, "S-TC-UNK")
-    prepare("vdb", "S-TC-UNK")
-    approve_package(client, "S-TC-UNK", 1)
-    sim_estate.add_fault("vdb", ENV, operation="apply", target=OBJECT_KEY, mode="timeout_after_apply")
-    r = milestone(client, "S-TC-UNK", 1, "apply")
-    assert r.status_code == 409 and "TEST CONDITION" in r.json()["detail"]
-    retry = milestone(client, "S-TC-UNK", 1, "apply")
-    assert retry.status_code == 409 and "unknown" in retry.json()["detail"]
-    rec = client.post("/changes/S-TC-UNK/technical/packages/1/reconcile", headers=headers("vdb"),
-                      json={"milestone": "apply", "note": "read the estate"}).json()
-    assert rec["outcome"] == "applied" and rec["evidence_entry_hash"]
-    assert milestone(client, "S-TC-UNK", 1, "apply").status_code == 409  # applied: never twice
-    assert milestone(client, "S-TC-UNK", 1, "build").json()["milestone"] == "built"
-
-
-def test_an_apply_lost_before_reaching_dev_may_run_again_after_every_check(client, monkeypatch):
-    from jde_mcp_server import sim_estate
-
-    ready_story(client, monkeypatch, "S-TC-LOST")
-    prepare("vdb", "S-TC-LOST")
-    approve_package(client, "S-TC-LOST", 1)
-    sim_estate.add_fault("vdb", ENV, operation="apply", target=OBJECT_KEY, mode="timeout_before_apply")
-    assert milestone(client, "S-TC-LOST", 1, "apply").status_code == 409
-    rec = client.post("/changes/S-TC-LOST/technical/packages/1/reconcile", headers=headers("vdb"),
-                      json={"milestone": "apply"}).json()
-    assert rec["outcome"] == "not_applied"
-    assert milestone(client, "S-TC-LOST", 1, "apply").status_code == 200
+    assert [p["revision"] for p in store.packages_for("vdb", "S-TC-CAS")] == [1]
 
 
 # ---------------------------------------------------------------------
 # Approval expiry and the CNC checkpoint
 # ---------------------------------------------------------------------
 def test_an_expired_implementation_approval_blocks_every_milestone(client, monkeypatch):
-    from jde_mcp_server import approval
+    def set_expiry(at: float) -> None:
+        record = _change("S-TC-EXP", 1)
+        record["expires_at"] = at
+        _save_change(record)
 
     ready_story(client, monkeypatch, "S-TC-EXP")
     prepare("vdb", "S-TC-EXP")
     approve_package(client, "S-TC-EXP", 1)
-    record = _change("S-TC-EXP", 1)
-    record["expires_at"] = time.time() - 1
-    approval._save(record["change_id"], record)
-    r = milestone(client, "S-TC-EXP", 1, "apply")
-    assert r.status_code == 409 and "expired" in r.json()["detail"]
+    set_expiry(time.time() - 1)
+    _refused(record_apply(client, "S-TC-EXP", 1), "expired")
+    # Within the approval's life each step is recorded; once it expires, the next is refused.
+    set_expiry(time.time() + 3600)
+    assert record_apply(client, "S-TC-EXP", 1).status_code == 200
+    set_expiry(time.time() - 1)
+    _refused(record_build(client, "S-TC-EXP", 1), "expired")
+    set_expiry(time.time() + 3600)
+    assert record_build(client, "S-TC-EXP", 1).status_code == 200
+    set_expiry(time.time() - 1)
+    _refused(cnc(client, "S-TC-EXP", 1), "expired")
+    set_expiry(time.time() + 3600)
+    assert cnc(client, "S-TC-EXP", 1).status_code == 200
+    set_expiry(time.time() - 1)
+    _refused(record_verify(client, "S-TC-EXP", 1), "expired")
+    assert _change("S-TC-EXP", 1).get("verification") is None
 
 
 def test_only_a_current_cnc_operator_can_record_the_activation(client, monkeypatch):
+    from jde_mcp_server import approval, technical_gate
+
+    from .test_concurrency_and_stale_authority import _set_roles
+
     ready_story(client, monkeypatch, "S-TC-CNC")
     prepare("vdb", "S-TC-CNC")
     approve_package(client, "S-TC-CNC", 1)
-    milestone(client, "S-TC-CNC", 1, "apply")
+    record_apply(client, "S-TC-CNC", 1)
     # Before a successful build there is nothing to activate.
-    assert cnc(client, "S-TC-CNC", 1).status_code == 409
-    milestone(client, "S-TC-CNC", 1, "build")
+    _refused(cnc(client, "S-TC-CNC", 1), "not known to be built")
+    record_build(client, "S-TC-CNC", 1)
     pm = _user("u-syn-pm", ["product_manager"])
     assert cnc(pm, "S-TC-CNC", 1).status_code == 403  # not a CNC operator
     operator = _user("u-syn-cnc", ["cnc_operator"])
-    from .test_concurrency_and_stale_authority import _set_roles
-
     # Authority is re-read at the moment of recording: a revoked role cannot record it.
     _set_roles("vdb", "u-syn-cnc", ["dashboard_viewer"])
     assert cnc(operator, "S-TC-CNC", 1).status_code == 403
     # The gate itself refuses too, independent of the route's role check.
-    from jde_mcp_server import approval, technical_gate
-
     with pytest.raises(approval.ApproverNotAuthorised):
         technical_gate.record_cnc_activation(_change("S-TC-CNC", 1)["change_id"], _package("S-TC-CNC", 1),
                                              actor_user_id="u-syn-cnc", actor_name="Synthetic", package_name="P1",
                                              evidence_reference="x")
-    assert milestone(client, "S-TC-CNC", 1, "verify").status_code == 409  # still awaiting the CNC
+    assert _change("S-TC-CNC", 1).get("cnc_activation") is None
+    _refused(record_verify(client, "S-TC-CNC", 1), "awaiting CNC activation")
+    # A current CNC operator records it.
+    current = _user("u-syn-cnc2", ["cnc_operator"])
+    r = cnc(current, "S-TC-CNC", 1)
+    assert r.status_code == 200 and r.json()["user_id"] == "u-syn-cnc2", r.text
 
 
 def test_the_bootstrap_admin_is_not_a_cnc_operator_by_default():
@@ -398,7 +428,11 @@ def test_a_clarification_required_outcome_is_recorded_and_nothing_proceeds(clien
     assert saved["status"] == "completed" and saved["outcome"]["kind"] == "clarification_required"
     assert saved["outcome"]["questions"] == ["Should exempt customers ever be held?"]
     assert store.packages_for("vdb", "S-TC-CLAR") == []
-    assert tools.milestone("apply", None)["blocked"] is True
+    assert tools.status(None) == {"package": None}
+    # Nothing can be approved or recorded: there is no package.
+    assert client.post("/changes/S-TC-CLAR/technical/packages/1/approve", headers=headers("vdb"),
+                       json={"note": "x"}).status_code == 404
+    assert record_apply(client, "S-TC-CLAR", 1).status_code == 404
 
 
 def test_a_contradictory_story_design_is_a_safe_unresolved_outcome(client, monkeypatch):
@@ -413,7 +447,7 @@ def test_a_contradictory_story_design_is_a_safe_unresolved_outcome(client, monke
     assert view["assignment"]["route"] == "Clarification Required"
     r = client.post("/changes/S-TC-CONTRA/technical/approve-design", headers=headers("vdb"),
                     json={"designRevision": view["assignment"]["design_revision"]})
-    assert r.status_code == 409 and "not to the Technical Agent" in r.json()["detail"]
+    _refused(r, "not to the Technical Agent")
 
 
 def test_an_architect_answer_in_prose_is_kept_and_labelled_not_treated_as_a_design(client, monkeypatch):

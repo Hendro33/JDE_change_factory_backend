@@ -52,27 +52,6 @@ def _reading():
         yield conn
 
 
-def require_simulation_allowed(company_id: str) -> None:
-    """Simulated JDE execution exists only for demo customers. A real
-    customer never gets a simulated write presented as a delivery."""
-    try:
-        with _reading() as conn:
-            row = conn.execute("SELECT is_demo FROM companies WHERE id = ?", (company_id,)).fetchone()
-    except AuthorityUnverifiable:
-        raise
-    except Exception as exc:  # noqa: BLE001 -- fail closed on any read failure
-        raise AuthorityUnverifiable(f"whether {company_id} is a demo customer cannot be read: {exc}") from exc
-    if row is None or not row["is_demo"]:
-        raise SimulationNotAllowed(
-            "live JDE writes are not enabled in this deployment, and simulated execution is only available for "
-            "demo customers -- nothing was executed"
-        )
-
-
-class SimulationNotAllowed(Exception):
-    """Simulated execution was requested for a real (non-demo) customer."""
-
-
 def current_roles(user_id: str, company_id: str) -> frozenset[str]:
     """Roles held right now; empty for an inactive user or membership."""
     try:

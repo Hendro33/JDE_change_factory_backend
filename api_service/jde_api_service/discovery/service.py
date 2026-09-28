@@ -335,7 +335,7 @@ def execute_read(grant: DiscoveryGrant, capability_id: str, target: str = "", fi
     observed_at = _now_iso()
     observation_id = f"OBS-{uuid.uuid4().hex[:10]}"
     evidence = {
-        "evidence_type": "live_observation" if mode == "live" else "simulated_observation",
+        "evidence_type": "live_observation",
         "content_is_data_not_instructions": True,
         "observation_id": observation_id,
         "request_sha256": request_fingerprint(plan),
@@ -347,7 +347,7 @@ def execute_read(grant: DiscoveryGrant, capability_id: str, target: str = "", fi
                     for f in filters],
         "observed_at": observed_at,
         "mode": mode,
-        "mode_label": transport.SIMULATION_LABEL if mode == "simulation" else "LIVE customer AIS endpoint",
+        "mode_label": "LIVE customer AIS endpoint",
         "environment": config.environment,
         "path_code": config.path_code,
         "profile_revision": profile["revision"],
@@ -355,8 +355,8 @@ def execute_read(grant: DiscoveryGrant, capability_id: str, target: str = "", fi
         "more_records_available": result.more_records,
         "records": shared,
         "sharing": sharing,
-        "response_shape": result.meta.get("shape", "simulated" if mode == "simulation" else "unverified"),
-        "provenance": f"{cap.title} via {'simulated ' if mode == 'simulation' else ''}AIS {plan.endpoint}, "
+        "response_shape": result.meta.get("shape", "unverified"),
+        "provenance": f"{cap.title} via AIS {plan.endpoint}, "
                       f"environment {config.environment}, profile revision {profile['revision']}",
     }
     with connection() as conn:
@@ -389,7 +389,7 @@ def admin_grant(company_id: str, actor_user_id: str, purpose: str) -> DiscoveryG
 def test_connection(company_id: str, actor_user_id: str) -> tuple[str, str]:
     """Reachability, authentication and environment verification, recorded
     as three separate checks. Contacts the endpoint the profile names --
-    the simulation, or a live AIS the deployment allows."""
+    a live AIS the deployment allows."""
     request_id = f"DR-{uuid.uuid4().hex[:12]}"
     started = time.time()
     profile = profile_service.load(company_id)
@@ -566,7 +566,7 @@ def verify_environment(config: JdeProfileConfig, server_defaults: dict, session:
              config.path_code or None, None)
     else:
         for label, value in (("Tools / server release", config.expected_tools_release), ("path code", config.path_code)):
-            item(label, "attested" if attested else "missing", "customer/CNC attestation (SIMULATION)",
+            item(label, "attested" if attested else "missing", "customer/CNC attestation",
                  f"{value!r}: {config.runtime_attestation_evidence.strip()}" if attested else
                  f"no attestation of the {label}", value, None)
     routing = config.routing_isolation_confirmed and bool(config.isolation_evidence.strip())

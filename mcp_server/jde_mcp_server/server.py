@@ -1,6 +1,6 @@
 """
-JDE MCP server -- the six-tool MVP set from Section 7.3 of the JDE
-AI-Driven Change Factory design document.
+JDE MCP server -- the agents' governed tool set: backlog hand-off, exact-
+change proposals, capability status, design baselines and evidence.
 
 Run it directly for a quick manual check:
     python -m jde_mcp_server.server
@@ -26,7 +26,6 @@ try:
 except ImportError:  # mcp<2
     from mcp.server.fastmcp import FastMCP as _MCPServerClass
 
-from .ais_client import client
 from .capability_catalog import get_capability as _get_capability, CapabilityError
 from .evidence import capture_evidence as _capture_evidence, verify_chain as _verify_chain
 from .backlog import (
@@ -37,7 +36,6 @@ from .backlog import (
 )
 from .approval import propose_change as _propose_change, ChangeApprovalError
 from .design_baseline import get_design_baseline as _get_design_baseline
-from .approved_target import read_approved_target as _read_approved_target
 
 mcp = _MCPServerClass("jde-change-factory")
 
@@ -107,9 +105,9 @@ def propose_change(story_id: str, operation: dict, capability_id: str, environme
 # Read-only, like discovery below -- an agent checks this BEFORE
 # proposing anything, to distinguish what it can analyse/propose from
 # what it is actually authorised and technically able to execute. This
-# is advisory for the agent's own reasoning; propose_change/
-# require_exact_change enforce the real gate independently, so a stale
-# or ignored read here can never let an unauthorised write through.
+# is advisory for the agent's own reasoning; propose_change and the
+# delivery gate (approval.authorise_functional_delivery) enforce the real
+# rules independently, so a stale or ignored read here changes nothing.
 # ---------------------------------------------------------------------
 
 @mcp.tool()
@@ -117,11 +115,11 @@ def get_capability_status(capability_id: str) -> dict:
     """Look up one capability's current status (validated / needs_spike
     / restricted / human_implementation / suspended), its separate
     technical_validation and policy_restriction notes, and its current
-    revision. Call this before propose_change -- if status isn't
-    'validated', the write will not execute as an ordinary operation
-    (see capability_catalog.require_executable), and a Restricted or
-    Human Implementation capability should be routed there instead,
-    not proposed at all."""
+    revision. Call this before propose_change. An approved exact change is
+    applied in DEV by an authorised person and verified by Jade (the
+    recorded delivery route); a Restricted or Suspended capability is not
+    delivered at all, and a Human Implementation capability is routed to
+    Human Implementation instead of being proposed as an exact change."""
     cap = _get_capability(capability_id)
     if cap is None:
         raise CapabilityError(f"'{capability_id}' is not a registered capability -- see capability_catalog.json")
@@ -129,62 +127,18 @@ def get_capability_status(capability_id: str) -> dict:
 
 
 # ---------------------------------------------------------------------
-# No unrestricted JDE reads. The former get_object / get_version /
-# get_processing_options tools read any object from the execution AIS
-# connection with no company scope, so they are not exposed here at all.
-# JDE research goes through the Architect's governed discovery tools
-# (api_service discovery/, company-bound, validated before dispatch); the
-# Functional Agent reads only its own approved change's target, below.
+# No JDE access from the tool server. JDE research goes through the
+# Architect's governed discovery tools (api_service discovery/, company-
+# bound, validated before dispatch). An approved change reaches JDE only
+# through the recorded delivery route: a person applies it, and Jade
+# verifies it live through the customer's own connection (api_service
+# delivery/). No agent tool writes to JDE or runs a test there.
 # ---------------------------------------------------------------------
-
-@mcp.tool()
-def read_approved_target(story_id: str, change_id: str) -> dict:
-    """The current value of the ONE target an approved (or pending) exact
-    change names -- nothing else can be read. For the Functional Agent's
-    pre-write confirmation and rollback value. In live mode this reports
-    that a live read is not implemented yet (read the value in JDE)."""
-    return _read_approved_target(story_id, change_id)
 
 
 # ---------------------------------------------------------------------
-# Functional write (Section 7.3: the one validated write for the MVP)
+# Evidence
 # ---------------------------------------------------------------------
-
-@mcp.tool()
-def set_processing_option(story_id: str, change_id: str, application: str, version: str, option: str, value: str) -> dict:
-    """Change a single processing option value on a named version, via a
-    validated Form Service Request against the Processing Option
-    Revisions form (Section 7.3, Appendix B).
-
-    This is a WRITE and passes through several independent checks
-    before it does anything: an approved story_id (Section 3.5, Gate
-    2); an approved, exactly-matching change_id from propose_change
-    (Section 15.3) -- the operation you pass here must byte-for-byte
-    match what was approved, or this fails closed; a universal rule
-    against writing to Oracle-owned XJDE/ZJDE template versions
-    (Appendix B.4); and this engagement's specific scope file
-    confirming the combination is authorised (Appendix D.2). It is also
-    intercepted by the PreToolUse approval hook (Section 8.1) before it
-    reaches this function. Do not rely on this tool alone to enforce
-    any of these -- they are the actual controls; this function is
-    just where they're all applied together.
-    """
-    return client.set_processing_option(story_id, change_id, application, version, option, value)
-
-
-# ---------------------------------------------------------------------
-# Runtime / evidence
-# ---------------------------------------------------------------------
-
-@mcp.tool()
-def run_orchestration(story_id: str, change_id: str, name: str, payload: dict) -> dict:
-    """Execute a pre-built acceptance-test Orchestration in DEV and
-    return its structured result. Requires an approved story_id
-    (Section 3.5, Gate 2) and that 'name' is the exact test named in
-    the approved change record (Section 17.1) -- not just any test
-    against any approved story."""
-    return client.run_orchestration(story_id, change_id, name, payload)
-
 
 @mcp.tool()
 def capture_evidence(story_id: str, payload: dict) -> dict:

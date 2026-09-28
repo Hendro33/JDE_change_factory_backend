@@ -1,7 +1,8 @@
 """
 The Technical work screen's API: the approved design and baseline, the
 Technical Agent's runs and package revisions, exact implementation approval,
-the governed milestones and the human CNC hand-off.
+and the recorded delivery milestones (check-in, build, CNC activation,
+verification), each re-checked before it is recorded.
 
 Response bodies keep the backend's snake_case keys (like the evidence
 manifest). Authority comes from the session; nothing here trusts a client
@@ -19,7 +20,6 @@ from jde_mcp_server import approval, authority, execution
 from jde_mcp_server.binding import BindingInvalid
 from jde_mcp_server.capability_catalog import CapabilityError
 from jde_mcp_server.scope import ScopeViolation
-from jde_mcp_server.technical_sim import AdapterOutcome, SimObjectError
 
 from ..config import settings
 from ..dependencies import AuthContext, require_customer_access, require_role, require_write_access
@@ -36,7 +36,7 @@ class DesignApprovalInput(ApiModel):
 
 
 class RunInput(ApiModel):
-    purpose: Literal["prepare", "execute", "verify"] = "prepare"
+    purpose: Literal["prepare", "repair"] = "prepare"
     note: str = ""
 
 
@@ -50,8 +50,28 @@ class CncInput(ApiModel):
     note: str = ""
 
 
-class ReconcileInput(ApiModel):
-    milestone: Literal["apply", "build"]
+class ApplyInput(ApiModel):
+    omw_project: str
+    evidence_reference: str
+    note: str = ""
+
+
+class BuildInput(ApiModel):
+    succeeded: bool
+    build_reference: str
+    log: str = ""
+
+
+class TestResultInput(ApiModel):
+    name: str
+    passed: bool
+    note: str = ""
+
+
+class VerifyInput(ApiModel):
+    results: list[TestResultInput]
+    runtime_is_approved_artifact: bool
+    evidence_reference: str
     note: str = ""
 
 
@@ -70,7 +90,7 @@ def _refusal(exc: Exception) -> HTTPException:
 
 
 _REFUSALS = (service.TechnicalRefused, approval.ChangeApprovalError, BindingInvalid, ScopeViolation, CapabilityError,
-             store.StaleSubmission, SimObjectError, AdapterOutcome, authority.AuthorityRevoked,
+             store.StaleSubmission, authority.AuthorityRevoked,
              authority.AuthorityUnverifiable, LookupError, execution.ExecutionBlocked)
 
 
@@ -155,26 +175,41 @@ def record_cnc(story_id: str, revision: int, payload: CncInput,
         raise _refusal(exc)
 
 
-@router.post("/changes/{story_id}/technical/packages/{revision}/reconcile")
-def reconcile(story_id: str, revision: int, payload: ReconcileInput,
-              ctx: AuthContext = Depends(require_role("product_manager", "admin"))) -> dict:
+@router.post("/changes/{story_id}/technical/packages/{revision}/apply")
+def record_apply(story_id: str, revision: int, payload: ApplyInput,
+                 ctx: AuthContext = Depends(require_role("product_manager"))) -> dict:
+    """A developer checked the approved candidate in through OMW; the
+    Application Manager records it (project and evidence)."""
     _require_story(story_id, ctx.customer_id)
     try:
-        return service.reconcile(ctx.customer_id, story_id, revision, payload.milestone,
-                                 actor_user_id=ctx.identity.id, actor_name=ctx.identity.display_name,
-                                 note=payload.note)
+        return service.record_apply(ctx.customer_id, story_id, revision, actor_user_id=ctx.identity.id,
+                                    actor_name=ctx.identity.display_name, omw_project=payload.omw_project,
+                                    evidence_reference=payload.evidence_reference, note=payload.note)
     except _REFUSALS as exc:
         raise _refusal(exc)
 
 
-@router.post("/changes/{story_id}/technical/packages/{revision}/{milestone}")
-def run_milestone(story_id: str, revision: int, milestone: Literal["apply", "build", "verify"],
-                  ctx: AuthContext = Depends(require_role("product_manager", "admin"))) -> dict:
-    """An operator asks the governed executor for one milestone (the agent
-    can ask too, through its own tools; both pass the same checks)."""
+@router.post("/changes/{story_id}/technical/packages/{revision}/build")
+def record_build(story_id: str, revision: int, payload: BuildInput,
+                 ctx: AuthContext = Depends(require_role("product_manager"))) -> dict:
     _require_story(story_id, ctx.customer_id)
     try:
-        return service.run_milestone(ctx.customer_id, story_id, revision, milestone,
-                                     actor=f"{ctx.identity.display_name} ({ctx.identity.id})")
+        return service.record_build(ctx.customer_id, story_id, revision, actor_user_id=ctx.identity.id,
+                                    actor_name=ctx.identity.display_name, succeeded=payload.succeeded,
+                                    build_reference=payload.build_reference, log=payload.log)
+    except _REFUSALS as exc:
+        raise _refusal(exc)
+
+
+@router.post("/changes/{story_id}/technical/packages/{revision}/verify")
+def record_verification(story_id: str, revision: int, payload: VerifyInput,
+                        ctx: AuthContext = Depends(require_role("product_manager"))) -> dict:
+    _require_story(story_id, ctx.customer_id)
+    try:
+        return service.record_verification(
+            ctx.customer_id, story_id, revision, actor_user_id=ctx.identity.id, actor_name=ctx.identity.display_name,
+            results=[r.model_dump() for r in payload.results],
+            runtime_is_approved_artifact=payload.runtime_is_approved_artifact,
+            evidence_reference=payload.evidence_reference, note=payload.note)
     except _REFUSALS as exc:
         raise _refusal(exc)

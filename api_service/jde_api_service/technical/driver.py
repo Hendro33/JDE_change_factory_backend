@@ -35,13 +35,9 @@ PURPOSES = {
                 "read the authorised sources, open the one you change in your workspace, make the bounded change, "
                 "check it, and submit the package with its explanation, requirement trace and positive, negative and "
                 "neighbouring-behaviour tests -- or report why no package can safely be prepared."),
-    "execute": ("Carry the APPROVED package as far as the controls allow: check its status, apply it, build it. If the "
-                "build fails, read the build log, repair the change in your workspace (open the source again if needed) "
-                "and submit the repair as a new package revision with repair_reason -- it needs a fresh approval, so "
-                "stop there. If it builds, check whether the CNC activation is recorded; if it is, run the verification "
-                "tests; if not, stop and say the package awaits human CNC activation."),
-    "verify": ("The CNC activation may now be recorded. Check the package status and, if the activation is recorded, "
-               "run the verification tests and report the results against the approved package."),
+    "repair": ("The approved package's build failed and a person recorded the build log. Check the package status, read "
+               "the recorded log, repair the change in your workspace (open the source again if needed) and submit the "
+               "repair as a new package revision with repair_reason -- it needs a fresh approval, so stop there."),
 }
 
 
@@ -68,9 +64,7 @@ async def run_technical_agent(*, company_id: str, story_id: str, run_id: str, re
 
         # A verification run is the Verification activity (its own configurable model).
         async with runtime.agent_run(company_id=company_id, driver="technical_driver", roles=["technical-agent"],
-                                     story_id=story_id,
-                                     activities={"technical-agent": "verification"} if purpose == "verify" else None
-                                     ) as ai_run:
+                                     story_id=story_id) as ai_run:
             agent_run = agent_runs.start(agent_name="technical-agent", driver="technical_driver", story_id=story_id,
                                          customer_id=company_id, agent_version=ai_run.agent_version("technical-agent"))
             store.add_event(run_id, "agent_run", f"{agent_run.run_id} ({ai_run.run_id}, pack "

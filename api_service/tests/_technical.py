@@ -1,8 +1,10 @@
-"""Fixtures for the Technical workflow tests: a SYNTHETIC customer-owned
-event-rule object (jade_sim_er -- a simulation format, not a JDE export), a
-company scope that authorises it, a scripted Architect design routed to the
-Technical Agent, and a person's design approval. Approver identities here
-are synthetic test users."""
+"""Fixtures for the Technical workflow tests: a customer-owned custom
+business function (C source, B5542001), a company scope that authorises
+it, a scripted Architect design routed to the Technical Agent, and a
+person's design approval. Approver identities here are synthetic test
+users. Delivery is the recorded route: the tests record check-in, build,
+CNC activation and verification the way the Application Manager and the
+CNC do in Jade."""
 
 from __future__ import annotations
 
@@ -17,63 +19,55 @@ from .conftest import headers
 from .test_stage1_execution_safeguards import _approved_story, _full_scope, _save_scope
 
 ENV = "JDV920"
-OBJECT_KEY = "P554210|ER"
-SOURCE = """// SYNTHETIC SIMULATION SOURCE (jade_sim_er) -- not a JD Edwards export.
-OBJECT P554210 FORM W554210A SYSTEM 55
-INPUT BC OrderTotal NUMBER
-INPUT BC CreditLimit NUMBER
-INPUT BC OrderType STRING
-INPUT BC CreditExempt STRING
-OUTPUT VA HoldCode STRING
+OBJECT_NAME = "B5542001"
+OBJECT_KEY = "B5542001|BSFN"
+SOURCE = """/* B5542001 -- Custom credit check (customer-owned, system code 55) */
+#include <jde.h>
 
-EVENT OK_Button_Clicked
-IF BC OrderType = "SO" AND BC OrderTotal > BC CreditLimit
-    VA HoldCode = "C1"
-ELSE
-    VA HoldCode = ""
-END IF
-END EVENT
+JDEBFRTN (ID) JDEBFWINAPI CustomCreditCheck (LPBHVRCOM lpBhvrCom, LPVOID lpVoid, LPDSD5542001 lpDS)
+{
+   if (lpDS->cOrderType == 'S' && lpDS->mnOrderTotal > lpDS->mnCreditLimit)
+   {
+      jdeStrcpy(lpDS->szHoldCode, _J("C1"));
+   }
+   else
+   {
+      jdeStrcpy(lpDS->szHoldCode, _J(""));
+   }
+   return ER_SUCCESS;
+}
 """
-OLD_LINE = 'IF BC OrderType = "SO" AND BC OrderTotal > BC CreditLimit'
-BUILD_RULES = [{"id": "SIM-BLD-1", "kind": "modification_marker", "marker": "// MOD {story_id}",
-                "description": "customer standard: every added or changed line carries a modification marker"}]
+OLD_LINE = "if (lpDS->cOrderType == 'S' && lpDS->mnOrderTotal > lpDS->mnCreditLimit)"
 TESTS = [
-    {"name": "exempt customer over limit is not held", "kind": "positive", "event": "OK_Button_Clicked",
-     "inputs": {"OrderTotal": 1500, "CreditLimit": 1000, "OrderType": "SO", "CreditExempt": "Y"},
+    {"name": "exempt customer over limit is not held", "kind": "positive", "event": "CustomCreditCheck",
+     "inputs": {"OrderTotal": 1500, "CreditLimit": 1000, "OrderType": "S", "CreditExempt": "Y"},
      "expected": {"HoldCode": ""}},
-    {"name": "non-exempt customer over limit is still held", "kind": "negative", "event": "OK_Button_Clicked",
-     "inputs": {"OrderTotal": 1500, "CreditLimit": 1000, "OrderType": "SO", "CreditExempt": "N"},
+    {"name": "non-exempt customer over limit is still held", "kind": "negative", "event": "CustomCreditCheck",
+     "inputs": {"OrderTotal": 1500, "CreditLimit": 1000, "OrderType": "S", "CreditExempt": "N"},
      "expected": {"HoldCode": "C1"}},
-    {"name": "order within limit is released", "kind": "neighbouring", "event": "OK_Button_Clicked",
-     "inputs": {"OrderTotal": 500, "CreditLimit": 1000, "OrderType": "SO", "CreditExempt": "N"},
-     "expected": {"HoldCode": ""}},
-    {"name": "direct-ship order type is unaffected", "kind": "neighbouring", "event": "OK_Button_Clicked",
-     "inputs": {"OrderTotal": 1500, "CreditLimit": 1000, "OrderType": "S3", "CreditExempt": "N"},
+    {"name": "order within limit is released", "kind": "neighbouring", "event": "CustomCreditCheck",
+     "inputs": {"OrderTotal": 500, "CreditLimit": 1000, "OrderType": "S", "CreditExempt": "N"},
      "expected": {"HoldCode": ""}},
 ]
+ALL_PASSED = [{"name": t["name"], "passed": True, "note": "ran in DEV"} for t in TESTS]
 
 
 def technical_scope() -> dict:
     body = _full_scope()
-    body["technicalAgent"] = {"authorizedObjectTypes": ["ER"], "reservedProductCode": "55"}
+    body["technicalAgent"] = {"authorizedObjectTypes": ["BSFN"], "reservedProductCode": "55"}
     return body
 
 
-def seed_object(company: str = "vdb", source: str = SOURCE) -> str:
-    from jde_mcp_server import technical_sim
-
-    return technical_sim.seed_object(company, ENV, source=source, description="Custom Sales Order Review (synthetic)",
-                                     build_rules=BUILD_RULES, actor="test", reason="TEST FIXTURE: synthetic ER object")
-
-
-def upload_source(client, company: str = "vdb", content: str = SOURCE, fmt: str = "jade_sim_er",
-                  correspondence: str = "matches_dev_runtime", object_name: str = "P554210") -> dict:
-    body = {"kind": "technical_export", "objectName": object_name, "objectType": "ER", "exportFormat": fmt,
-            "customerEnvironment": ENV, "pathCode": "DV920", "release": "9.2", "sourceLocation": "er/P554210.jser",
-            "repository": "git@customer.example:jde/er-exports.git", "commitRef": "5e7a1c0",
+def upload_source(client, company: str = "vdb", content: str = SOURCE, fmt: str = "c_source",
+                  correspondence: str = "matches_dev_runtime", object_name: str = OBJECT_NAME,
+                  object_type: str = "BSFN") -> dict:
+    body = {"kind": "technical_export", "objectName": object_name, "objectType": object_type, "exportFormat": fmt,
+            "customerEnvironment": ENV, "pathCode": "DV920", "release": "9.2",
+            "sourceLocation": f"source/{object_name}.c",
+            "repository": "git@customer.example:jde/custom.git", "commitRef": "5e7a1c0",
             "exportedAt": "2026-09-23T08:00:00+00:00", "runtimeCorrespondence": correspondence,
-            "runtimeStatement": "CNC: exported from the active DV920 runtime", "runtimeStatedBy": "Chris CNC",
-            "fileName": "P554210.jser", "contentBase64": base64.b64encode(content.encode()).decode()}
+            "runtimeStatement": "CNC: built into the active DV920 package", "runtimeStatedBy": "Chris CNC",
+            "fileName": f"{object_name}.c", "contentBase64": base64.b64encode(content.encode()).decode()}
     r = client.post("/admin/jde/artifacts", headers=headers(company), json=body)
     assert r.status_code == 200, r.text
     return r.json()
@@ -81,8 +75,9 @@ def upload_source(client, company: str = "vdb", content: str = SOURCE, fmt: str 
 
 def technical_design(client, monkeypatch, story: str, *, company: str = "vdb", route: str = "Technical Agent",
                      artifact: dict | None = None) -> None:
-    """A scripted Architect run (stand-in for the model) that reads the object
-    librarian row, consults the source artifact and routes to the Technical Agent."""
+    """A scripted Architect run (stand-in for the model at the model boundary)
+    that reads the object librarian row, consults the source artifact and
+    routes to the Technical Agent."""
     from jde_api_service.config import settings
     from jde_api_service.services import architecture_driver
     from jde_api_service.services.registry import get_architecture_review_service
@@ -91,17 +86,17 @@ def technical_design(client, monkeypatch, story: str, *, company: str = "vdb", r
 
     def spy(*args, **kwargs):
         tools = real_build(*args, **kwargs)
-        tools.read("object_librarian", "P554210", ["SIOBNM", "SIFUNO", "SISY", "SIMD"])
+        tools.read("object_librarian", OBJECT_NAME, ["SIOBNM", "SIFUNO", "SISY", "SIMD"])
         if artifact:
             tools.read_artifact(artifact["artifactId"], artifact["revision"])
         return tools
 
     summary = {
         "architect_decision": {"recommended_route": route, "confidence": 0.8,
-                               "existing_functionality_found": "P554210 holds over-limit SO orders with C1",
-                               "alternatives_considered": [], "objects_affected": ["P554210"],
+                               "existing_functionality_found": "B5542001 holds over-limit orders with C1",
+                               "alternatives_considered": [], "objects_affected": [OBJECT_NAME],
                                "dependencies_and_conflicts": [], "rollback_strategy": "restore the previous source"},
-        "implementation_spec": {"sequence": ["exclude credit-exempt customers from the C1 hold in P554210"],
+        "implementation_spec": {"sequence": ["exclude credit-exempt customers from the C1 hold in B5542001"],
                                 "required_mcp_operations": [], "human_actions_required": ["CNC deploys the package"],
                                 "validation_approach": "positive, negative and neighbouring tests"},
         "evidence": {},
@@ -134,7 +129,6 @@ def approved_reads(company: str = "vdb") -> list[dict]:
 def ready_story(client, monkeypatch, story: str, *, company: str = "vdb", approve: bool = True) -> dict:
     ready_company(client, company, approvedReads=approved_reads(company))
     _save_scope(client, company, technical_scope())
-    seed_object(company)
     art = upload_source(client, company)
     _approved_story(story, company)
     technical_design(client, monkeypatch, story, company=company, artifact=art)
@@ -147,8 +141,8 @@ def ready_story(client, monkeypatch, story: str, *, company: str = "vdb", approv
 
 
 def prepare(company: str, story: str, *, marker: bool = True, run_id: str | None = None, extra: str = "") -> dict:
-    """A scripted Technical Agent (deterministic stand-in for the model) using
-    the SAME run-bound tools the real agent gets."""
+    """A scripted Technical Agent (deterministic stand-in for the model at the
+    model boundary) using the SAME run-bound tools the real agent gets."""
     from jde_api_service.technical import service, store
     from jde_api_service.technical.tools import TechnicalAgentTools
 
@@ -156,10 +150,10 @@ def prepare(company: str, story: str, *, marker: bool = True, run_id: str | None
         run_id = service.start_run(company, story, purpose="prepare", initiated_by="u-hendro")["run_id"]
     tools = TechnicalAgentTools(company_id=company, story_id=story, run_id=run_id)
     listing = tools.list_source_artifacts()["artifacts"]
-    source = next(a for a in listing if a["format"] == "jade_sim_er")
+    source = next(a for a in listing if a["format"] == "c_source")
     opened = tools.open_in_workspace(source["evidence_id"])
     assert opened["opened"], opened
-    new_line = OLD_LINE + ' AND BC CreditExempt != "Y"' + extra + (f" // MOD {story}" if marker else "")
+    new_line = OLD_LINE[:-1] + " && lpDS->cCreditExempt != 'Y')" + extra + (f" /* MOD {story} */" if marker else "")
     assert tools.replace(opened["file_id"], OLD_LINE, new_line)["changed"]
     out = tools.submit({"explanation": "credit-exempt customers are excluded from the C1 hold; nothing else changes",
                         "requirement_trace": [{"requirement": "exempt customers not held", "how": "extra condition"}],
@@ -178,11 +172,24 @@ def approve_package(client, story: str, revision: int, company: str = "vdb") -> 
     return r.json()
 
 
-def milestone(client, story: str, revision: int, name: str, company: str = "vdb"):
-    return client.post(f"/changes/{story}/technical/packages/{revision}/{name}", headers=headers(company))
+def record_apply(client, story: str, revision: int, company: str = "vdb", omw_project: str = "PRJ-JADE-1"):
+    return client.post(f"/changes/{story}/technical/packages/{revision}/apply", headers=headers(company),
+                       json={"omwProject": omw_project, "evidenceReference": "OMW project screenshot OMW-1"})
+
+
+def record_build(client, story: str, revision: int, company: str = "vdb", succeeded: bool = True, log: str = ""):
+    return client.post(f"/changes/{story}/technical/packages/{revision}/build", headers=headers(company),
+                       json={"succeeded": succeeded, "buildReference": "DV920 package build DV920TECH01",
+                             "log": log})
+
+
+def record_verify(client, story: str, revision: int, company: str = "vdb", results=None, runtime: bool = True):
+    return client.post(f"/changes/{story}/technical/packages/{revision}/verify", headers=headers(company),
+                       json={"results": results if results is not None else ALL_PASSED,
+                             "runtimeIsApprovedArtifact": runtime, "evidenceReference": "test run TR-7 in DV920"})
 
 
 def cnc(client, story: str, revision: int, company: str = "vdb", package_name: str = "DV920TECH01"):
     return client.post(f"/changes/{story}/technical/packages/{revision}/cnc-activation", headers=headers(company),
-                       json={"packageName": package_name, "evidenceReference": "synthetic CNC ticket CNC-99",
-                             "note": "simulated hand-off"})
+                       json={"packageName": package_name, "evidenceReference": "CNC ticket CNC-99",
+                             "note": "deployed to DV920"})

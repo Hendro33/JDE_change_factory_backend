@@ -18,8 +18,11 @@ from __future__ import annotations
 BASE_TOOLS = ["Task"]
 SCRUBBED_ENV = {name: "" for name in (
     "JDE_CREDENTIAL_KEY", "JDE_CREDENTIAL_KEY_PREVIOUS", "JDE_AIS_USERNAME", "JDE_AIS_PASSWORD",
-    "JDE_BOOTSTRAP_ADMIN_PASSWORD",
+    "JDE_BOOTSTRAP_ADMIN_PASSWORD", "JDE_SMTP_PASSWORD", "JDE_SMTP_USERNAME", "JDE_BLOB_CONNECTION_STRING",
 )}
+# JDE_DATABASE_URL is deliberately NOT scrubbed: the agents' tool server (a
+# subprocess of the runtime) reads and writes stories, exact changes and
+# evidence in Jade's database. The runtime has no shell or network tool.
 
 
 def options(**kwargs):

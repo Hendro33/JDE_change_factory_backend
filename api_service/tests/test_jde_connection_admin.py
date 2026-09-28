@@ -1,6 +1,7 @@
 """Admin > Integrations > JDE: the settings needed for a first real read-only
-connection, and the boundaries around it. Everything runs against the
-simulated endpoint or an httpx mock -- no network."""
+connection, and the boundaries around it. The connection is always live;
+everything runs against the fake AIS server at the HTTP boundary (conftest)
+or a test's own httpx mock -- no network."""
 
 from __future__ import annotations
 
@@ -9,7 +10,7 @@ import logging
 import httpx
 import pytest
 
-from ._discovery import profile_body, ready_company, save_credential, save_profile
+from ._discovery import dedicated_account, profile_body, ready_company, save_credential, save_profile
 from .conftest import TEST_PASSWORD, _apply_csrf_header, headers
 from .test_discovery_policy import _ais_ok, _live
 
@@ -73,13 +74,14 @@ def test_environment_purpose_is_stated_not_inferred_from_the_name(client):
 
 
 def test_only_material_edits_invalidate_verification_and_discovery(client):
-    ready_company(client)
+    account = dedicated_account(client, "vdb")
+    ready_company(client, dedicatedAccount=account)
     before = client.get("/admin/jde/profile", headers=headers("vdb")).json()
     assert before["discoveryEnabled"] and before["health"]["authentication"]["state"] == "ok"
-    save_profile(client, connectionName="renamed only")  # not material
+    save_profile(client, dedicatedAccount=account, connectionName="renamed only")  # not material
     after = client.get("/admin/jde/profile", headers=headers("vdb")).json()
     assert after["discoveryEnabled"] and after["health"]["authentication"]["state"] == "ok"
-    save_profile(client, connectionName="renamed only", role="JADEREAD")  # material
+    save_profile(client, dedicatedAccount=account, connectionName="renamed only", role="JADEREAD")  # material
     after = client.get("/admin/jde/profile", headers=headers("vdb")).json()
     assert not after["discoveryEnabled"]
     assert {after["health"][c]["state"] for c in ("reachability", "authentication", "environment")} == {"stale"}
@@ -94,19 +96,21 @@ def test_saving_never_connects_even_in_live_mode(client, monkeypatch):
     assert requests == []
 
 
-def test_live_and_simulation_never_switch_or_mix(client, monkeypatch):
+def test_the_operator_lock_stops_an_enabled_live_connection_with_no_substitute(client, monkeypatch, ais):
     from jde_api_service.discovery import service
 
-    ready_company(client)  # simulation, enabled
-    grant, _ = service.admin_grant("vdb", "u-hendro", "t"), None
+    ready_company(client)  # live, enabled
+    grant = service.admin_grant("vdb", "u-hendro", "t")
+    assert service.execute_read(grant, "udc_values", "00/DT", [], [], 1)["mode"] == "live"
+    sent = len(ais.calls)
     monkeypatch.setenv("JDE_DISCOVERY_LIVE_ENABLED", "false")  # the operator's lock
-    save_profile(client, connectionMode="live")
     view = client.get("/admin/jde/profile", headers=headers("vdb")).json()
-    assert not view["discoveryEnabled"] and view["modeLabel"].startswith("LIVE")
+    assert view["modeLabel"].startswith("LIVE")
     r = client.post("/admin/jde/test-connection", headers=headers("vdb")).json()
-    assert r["outcome"] == "blocked" and "locked off" in r["detail"]  # no fallback to simulation
-    with pytest.raises(service.DiscoveryBlocked):  # a grant from the simulation revision cannot read live
+    assert r["outcome"] == "blocked" and "locked off" in r["detail"]
+    with pytest.raises(service.DiscoveryBlocked):  # an already-issued grant cannot read either
         service.execute_read(grant, "udc_values", "00/DT", [], [], 1)
+    assert len(ais.calls) == sent  # nothing reached the customer's AIS, and nothing stood in for it
     server = {p["id"]: p for p in view["serverPrerequisites"]}
     # Locked by the operator; the saved address itself is the permitted destination.
     assert not server["live_enabled"]["satisfied"] and server["allowlist"]["satisfied"]

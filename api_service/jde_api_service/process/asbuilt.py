@@ -21,8 +21,6 @@ from typing import Any, Optional
 from ..persistence.db import connection
 from . import maps, story as story_process
 
-SIMULATED_NOTICE = ("SIMULATED DELIVERY -- implemented and verified in Jade's simulated DEV estate. No customer JD "
-                    "Edwards system was changed and none of the evidence below is JDE evidence.")
 TECHNICAL_ROUTES = {"Technical Agent", "Mixed"}
 
 
@@ -68,7 +66,7 @@ def _technical(company_id: str, story_id: str) -> Optional[dict]:
     p = max(view["packages"], key=progress)
     c, ap = p["content"], p["approval"] or {}
     return {
-        "mode": view["mode"], "simulation_label": view["simulation_label"], "format_label": view["format_label"],
+        "mode": view["mode"],
         "revision": p["revision"], "content_sha256": p["content_sha256"],
         "revisions_total": len(view["packages"]),
         "repairs": [{"revision": q["revision"], "repair_of": q["content"].get("repair_of")}
@@ -87,8 +85,8 @@ def _technical(company_id: str, story_id: str) -> Optional[dict]:
 
 def _functional(company_id: str, story_id: str, change) -> Optional[dict]:
     """The exact change as recorded by the gate: target, before and approved
-    values, the approval and its binding, every write and test attempt, and
-    a read-back of the target from the (simulated) DEV environment now."""
+    values, the approval and its binding, every recorded step and test, and
+    how the applied value was verified (live read-back or stated in JDE)."""
     from ..services.change_service import _latest_change_record_for
 
     if not change or not change.exact_change:
@@ -99,16 +97,15 @@ def _functional(company_id: str, story_id: str, change) -> Optional[dict]:
     attempts = {k: [{a_k: a.get(a_k) for a_k in ("attempt_id", "outcome", "detail", "before_value", "started_at",
                                                  "finished_at", "actor")} for a in (ex.get(k) or {}).get("attempts", [])]
                 for k in ("write", "test")}
+    applied = next((a.get("recorded") for a in reversed((ex.get("write") or {}).get("attempts", []))
+                    if a.get("outcome") == "applied" and a.get("recorded")), None)
     readback = None
-    if op.get("tool") == "set_processing_option":
-        try:
-            from jde_mcp_server.ais_client import client as ais
-
-            value = ais.read_processing_option_value(company_id, op["application"], op["version"], op["option"])
-            readback = {"value": value, "matches_approved": str(value) == str(op.get("value")),
-                        "source": "read-back from the simulated DEV estate (SIMULATION)"}
-        except Exception as exc:  # noqa: BLE001 -- shown as a limitation, never guessed
-            readback = {"value": None, "matches_approved": False, "source": f"read-back unavailable: {exc}"}
+    if applied:
+        readback = {"value": applied.get("observed_value"),
+                    "matches_approved": str(applied.get("observed_value")) == str(op.get("value")),
+                    "source": applied.get("source", ""), "live": str(applied.get("source", "")).startswith("live"),
+                    "evidence_reference": applied.get("evidence_reference", ""), "by": applied.get("by")}
+    verification = {k: v for k, v in (record.get("verification") or {}).items() if k != "answer"}
     binding = record.get("binding") or {}
     return {"exact_change": change.exact_change.model_dump(mode="json"),
             "change_id": record.get("change_id"), "capability_id": record.get("capability_id"),
@@ -117,19 +114,12 @@ def _functional(company_id: str, story_id: str, change) -> Optional[dict]:
             "approver_authority": record.get("approver_authority"),
             "binding": {"design": binding.get("design"), "before_state": binding.get("before_state")},
             "invalidations": record.get("invalidations") or [],
-            "attempts": attempts, "readback": readback,
+            "attempts": attempts, "readback": readback, "verification": verification,
             "test_orchestration": op.get("test_orchestration") or "",
-            "test_is_stub": _mock_mode(),
-            "test_note": ("SIMULATION STUB: the test orchestration returns a fixed PASS without running anything. It is "
-                          "not evidence that the change behaves correctly; only the read-back of the target is "
-                          "verification evidence." if _mock_mode() else
-                          "The test orchestration ran on the customer's AIS; its outcome is recorded as returned.")}
-
-
-def _mock_mode() -> bool:
-    from jde_mcp_server.config import settings as mcp_settings
-
-    return bool(mcp_settings.mock_mode)
+            "test_note": ("The approved test orchestration ran live on the customer's AIS."
+                          if verification.get("source") == "live orchestration" else
+                          f"The test was run in DEV and its result recorded by {verification.get('by')} "
+                          f"(evidence: {verification.get('evidence_reference')})." if verification else "No test recorded.")}
 
 
 def _story_revision(company_id: str, story_id: str) -> Optional[dict]:
@@ -204,8 +194,7 @@ def _checkpoints(src: dict) -> list[dict]:
             ("applied", "Applied (checked in)", st.get("apply") == "applied", st.get("apply") or "not started"),
             ("built", "Built", st.get("build") == "built", st.get("build") or "not started"),
             ("cnc_activation", "Human CNC activation recorded", bool(tech and tech["cnc_activation"]),
-             (tech["cnc_activation"]["package_name"] + (" (simulated)" if tech["cnc_activation"].get("simulated") else ""))
-             if tech and tech["cnc_activation"] else "not recorded"),
+             tech["cnc_activation"]["package_name"] if tech and tech["cnc_activation"] else "not recorded"),
             ("verified", "Verification passed against the active runtime",
              bool(v) and v.get("passed") and v.get("runtime_is_approved_artifact"),
              f"{sum(1 for r in v.get('results', []) if r['passed'])}/{len(v.get('results', []))} tests" if v else "not run"),
@@ -217,11 +206,11 @@ def _checkpoints(src: dict) -> list[dict]:
             ("implementation_approved", "Exact change approved", bool(func and func["approval"]),
              "approved" if func and func["approval"] else "no approved exact change"),
             ("applied", "Change applied", ex.get("write_state") == "applied", ex.get("write_state") or "not started"),
-            ("tested", "Approved test orchestration dispatched" + (" (SIMULATION STUB -- fixed PASS, not behavioural evidence)"
-                                                                    if (func or {}).get("test_is_stub") else ""),
-             ex.get("test_state") == "completed", ex.get("test_state") or "not run"),
-            ("verified", "Target read back with the approved value", bool(rb) and rb["matches_approved"],
-             (f"{rb['value']!r} ({rb['source']})" if rb else "no read-back")),
+            ("tested", "Test passed in DEV", ex.get("test_state") == "completed"
+             and ((func or {}).get("verification") or {}).get("passed") is True,
+             (func or {}).get("test_note") or ex.get("test_state") or "not run"),
+            ("verified", "Applied value is the approved value", bool(rb) and rb["matches_approved"],
+             (f"{rb['value']!r} ({rb['source']})" if rb else "not recorded")),
         ]
     return [{"id": i, "label": label, "complete": bool(ok), "detail": detail} for i, label, ok, detail in cps]
 
@@ -246,17 +235,16 @@ def _deviations_and_limits(src: dict) -> tuple[list[str], list[str]]:
             lim.append(f"Not supported: {x}")
         for inv in tech["invalidations"]:
             lim.append(f"Approval invalidation recorded: {inv.get('kind')} -- {inv.get('detail')}")
-        if tech["mode"] == "simulation":
-            lim.append("Delivery and verification ran in the simulated DEV estate with a synthetic source format; "
-                       "nothing was built or tested in a JD Edwards system.")
+        lim.append("Check-in, build, CNC activation and test results were recorded by people; Jade cannot read "
+                   "an object's active runtime, so that the active DEV runtime is the approved package is as stated "
+                   "by the person who verified it.")
     f = src["implementation"]["functional"]
     if f:
         for inv in f["invalidations"]:
             lim.append(f"Approval invalidation recorded: {inv.get('kind')} -- {inv.get('detail')}")
-        if f["readback"] and "SIMULATION" in f["readback"]["source"]:
-            lim.append("The configuration change was applied to and read back from the simulated DEV estate; no JD "
-                       "Edwards system was changed. The test orchestration is a SIMULATION STUB (fixed PASS): no behavioural "
-                       "test evidence exists; the read-back verifies only that the value was set.")
+        if f["readback"] and not f["readback"].get("live"):
+            lim.append("The applied value could not be read back live; it is as stated by "
+                       f"{f['readback'].get('by')} (evidence: {f['readback'].get('evidence_reference')}).")
     b = d["baseline"]
     if b and b["reassessment"]:
         for r in b["reassessment"]:
@@ -288,19 +276,11 @@ def build(company_id: str, story_id: str, change) -> dict:
     src = gather(company_id, story_id, change)
     checkpoints = _checkpoints(src)
     dev, lim = _deviations_and_limits(src)
-    tech = src["implementation"]["technical"]
-    if tech:
-        simulated = tech["mode"] == "simulation"
-    else:
-        from jde_mcp_server.config import settings as mcp_settings
-
-        simulated = bool(mcp_settings.mock_mode)
     content = {"story": src["story"], "story_revision": src["story_revision"], "process": src["process"], "design": src["design"], "route": src["route"],
                "implementation": src["implementation"], "checkpoints": checkpoints,
                "all_checkpoints_complete": all(c["complete"] for c in checkpoints),
                "deviations": dev, "limitations": lim,
-               "delivery_mode": "simulation" if simulated else "live",
-               "simulated_notice": SIMULATED_NOTICE if simulated else None}
+               "delivery_mode": "recorded"}
     return {"content": content, "inputs_sha256": _inputs_sha(src)}
 
 
@@ -316,8 +296,6 @@ def markdown(record: dict) -> str:
              f"by {record['generated_by']}" + (f" · finalised {record['finalised_at']} by {record['finalised_by']}"
                                                if record.get("finalised_at") else ""))
     L.append("")
-    if c.get("simulated_notice"):
-        L += [f"> **{c['simulated_notice']}**", ""]
     L += ["## Delivery checkpoints", ""]
     for cp in c["checkpoints"]:
         L.append(f"- [{'x' if cp['complete'] else ' '}] {cp['label']} -- {cp['detail']}")
@@ -375,7 +353,7 @@ def markdown(record: dict) -> str:
     L += ["", "## Implementation", ""]
     if t:
         L.append(f"Package revision {t['revision']} (sha256 {t['content_sha256'][:16]}...), approved by "
-                 f"{t['approval']['approved_by']}; mode **{t['mode']}**. {t['format_label']}")
+                 f"{t['approval']['approved_by']}; delivery **{t['mode']}** (each step recorded by a person).")
         L.append("")
         L.append("Objects: " + ", ".join(f"{o['object_name']} ({o['object_type']})" for o in t["objects"]))
         L += ["", "```diff", t["diff"].rstrip(), "```", ""]
@@ -383,8 +361,7 @@ def markdown(record: dict) -> str:
             L.append(f"- {ms.get('milestone')} at {ms.get('at')}" + (f" by {ms['actor']}" if ms.get("actor") else ""))
         if t["cnc_activation"]:
             ca = t["cnc_activation"]
-            L.append(f"- CNC activation of {ca['package_name']} by {ca['by']} ({ca['evidence_reference']})"
-                     + (" -- SIMULATED" if ca.get("simulated") else ""))
+            L.append(f"- CNC activation of {ca['package_name']} by {ca['by']} ({ca['evidence_reference']})")
     elif f:
         op, bs = f["operation"], (f["binding"] or {}).get("before_state") or {}
         L.append(f"Exact change {f['change_id']} ({f['capability_id']}), environment {f['environment']}: "
@@ -403,10 +380,12 @@ def markdown(record: dict) -> str:
     v = (t or {}).get("verification")
     if f and not t:
         rb = f.get("readback") or {}
-        L.append(f"Test orchestration {f['test_orchestration'] or '(none)'}: {f['exact_change']['execution']['test_state']}"
-                 + (" -- SIMULATION STUB, not behavioural evidence." if f.get("test_is_stub") else ".") + f" {f['test_note']}")
+        fv = f.get("verification") or {}
+        L.append(f"Test {f['test_orchestration'] or '(recorded manually)'}: "
+                 f"{'passed' if fv.get('passed') else 'FAILED' if fv else f['exact_change']['execution']['test_state']}. "
+                 f"{f['test_note']}")
         L.append("")
-        L.append(f"Read-back of the target: {rb.get('value')!r} -- {'matches' if rb.get('matches_approved') else 'DOES NOT match'} "
+        L.append(f"Applied value: {rb.get('value')!r} -- {'matches' if rb.get('matches_approved') else 'DOES NOT match'} "
                  f"the approved value ({rb.get('source')})")
     elif v:
         L += ["| Test | Kind | Result |", "|---|---|---|"] + [

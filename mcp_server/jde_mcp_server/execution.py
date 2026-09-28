@@ -25,9 +25,16 @@ until someone with approval authority reconciles it by checking the
 actual target state. A write that is `applied` never runs again under
 the same change: a further change needs a new proposal and approval.
 
-The record lives in the change record itself (JDE_CHANGE_DIR), so it
-survives restarts. A file lock per change serialises processes (the API
-and any MCP server process started for an agent run).
+Delivery today is the RECORDED route: an authorised person applies the
+approved change in DEV (or checks in / builds a technical package) and
+records it; Jade verifies what it can live through the customer's own
+connection. record() stores such a step as a completed attempt in one
+locked transaction, after re-running every check. An automated call that
+leaves Jade (a live test orchestration) still uses begin()/finish(), so an
+interrupted call is recorded as unknown, never guessed.
+
+The record lives in the change record itself, in Jade's database, so it
+survives restarts; the database transaction serialises processes.
 """
 
 from __future__ import annotations
@@ -45,8 +52,8 @@ STALE_AFTER_SECONDS = 15 * 60
 
 WRITE = "write"
 TEST = "test"
-# Technical packages only: the simulated (or, once qualified, real) build of
-# what was applied. Application is WRITE; verification tests are TEST.
+# Technical packages only: the build of what was checked in. Application is
+# WRITE; verification tests are TEST.
 BUILD = "build"
 
 
@@ -175,6 +182,37 @@ def finish(change_id: str, kind: str, attempt_id: str, outcome: str, detail: str
             # only a reconciliation moves it on.
             block["state"] = "unknown" if block["state"] != "diverged" else "diverged"
         approval._save(change_id, record)
+
+
+def record(change_id: str, kind: str, outcome: str, *, revalidate: Optional[Callable[[], object]] = None,
+           before_value: Optional[str] = None, detail: str = "", recorded: Optional[dict] = None) -> str:
+    """A delivery step a person performed and recorded (or Jade verified),
+    stored as one completed attempt: inside the change's lock, writes must
+    not be paused, every authorisation check re-runs (revalidate), and the
+    step must be ready -- so a step is never recorded twice or on top of an
+    unknown outcome. Returns the attempt id."""
+    if (kind, outcome) not in _OUTCOME_STATE or outcome in ("not_sent", "unknown"):
+        raise approval.ChangeApprovalError(f"{outcome!r} is not a recordable outcome for {kind}")
+    with _locked(change_id):
+        pause_file = os.environ.get("JDE_WRITE_PAUSE_FILE")
+        if pause_file and os.path.exists(pause_file):
+            raise ExecutionBlocked(f"change {change_id}: writes are paused for a backup or restore -- nothing was "
+                                   "recorded; try again shortly")
+        if revalidate is not None:
+            revalidate()
+        record_ = approval._load(change_id)
+        if record_ is None:
+            raise approval.ChangeApprovalError(f"no change record for {change_id}")
+        require_ready(record_, kind)
+        block = _block(record_, kind)
+        attempt_id = uuid.uuid4().hex[:12]
+        now = _now()
+        block["attempts"].append({"attempt_id": attempt_id, "started_at": now, "finished_at": now,
+                                  "before_value": before_value, "outcome": outcome, "detail": detail[:500],
+                                  "recorded": recorded or {}})
+        block["state"] = _OUTCOME_STATE[(kind, outcome)]
+        approval._save(change_id, record_)
+        return attempt_id
 
 
 def mark_interrupted_unknown() -> int:

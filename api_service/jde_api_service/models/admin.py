@@ -35,12 +35,14 @@ class CustomerInput(ApiModel):
 
 
 class AisConnectionStatus(ApiModel):
-    """Status only -- NEVER a credential. Reflects mcp_server's own
-    process-wide config (Section-honest note: this is one global AIS
-    connection today, shared by every customer, not yet per-customer)."""
+    """Status only -- NEVER a credential. How approved changes reach this
+    customer's JDE: applied in DEV by a person and recorded ("recorded"),
+    verified live through the customer's own JD Edwards connection once it
+    is tested and enabled."""
 
-    mock_mode: bool
+    delivery_mode: str = "recorded"
     base_url_configured: bool
+    live_verification: bool = False
     environment: Optional[str] = None
     role: Optional[str] = None
 

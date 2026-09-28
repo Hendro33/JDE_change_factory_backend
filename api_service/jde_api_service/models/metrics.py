@@ -40,8 +40,11 @@ class BusinessDomainCount(ApiModel):
 
 
 class Performance(ApiModel):
+    # Request received -> as-built record finalised, over the stories
+    # delivered in the period; deltas compare with the previous period.
     average_cycle_time_days: float = 0
     average_cycle_time_delta: float = 0
+    delivered_count: int = 0
     first_time_success_rate: int = 0
     first_time_success_delta: int = 0
     human_approvals: int = 0

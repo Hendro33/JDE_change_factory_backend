@@ -38,13 +38,32 @@ def test_erp_landscape_never_exposes_credentials(client):
     assert r.status_code == 200
     body = r.json()
     assert body["customerId"] == "vdb"
-    assert "mockMode" in body["ais"]
-    assert "baseUrlConfigured" in body["ais"]
+    # Delivery is always recorded (a person applies, Jade verifies live);
+    # there is no mock mode to report.
+    assert "mockMode" not in body["ais"]
+    assert body["ais"] == {"deliveryMode": "recorded", "baseUrlConfigured": False, "liveVerification": False,
+                           "environment": None, "role": None}
     # Never a username, password or token anywhere in the response.
     dumped = str(body).lower()
     for forbidden in ("password", "username", "token"):
         assert forbidden not in dumped
     assert "deployment-wide" in body["scopeGloballySharedNote"]
+
+
+def test_erp_landscape_reports_live_verification_once_the_connection_is_enabled(client):
+    from ._discovery import ready_company, save_profile
+
+    save_profile(client, "vdb")
+    ais = client.get("/admin/erp-landscape", headers=headers(customer="vdb")).json()["ais"]
+    # Configured but not tested and enabled: no live read-back yet.
+    assert ais["baseUrlConfigured"] is True and ais["liveVerification"] is False
+    assert ais["environment"] == "JDV920" and ais["role"] == "JADEDISC"
+    ready_company(client, "vdb")
+    body = client.get("/admin/erp-landscape", headers=headers(customer="vdb")).json()
+    assert body["ais"]["deliveryMode"] == "recorded" and body["ais"]["liveVerification"] is True
+    dumped = str(body).lower()
+    for forbidden in ("password", "s3cret", "token"):
+        assert forbidden not in dumped
 
 
 def test_engagement_scope_is_customer_scoped_and_editable(client):
@@ -133,11 +152,31 @@ def test_integrations_status_is_honest_about_what_is_not_connected(client):
     r = client.get("/admin/integrations", headers=headers())
     assert r.status_code == 200
     by_name = {i["name"]: i for i in r.json()}
-    assert by_name["JD Edwards execution gate"]["connected"] is False  # mock mode in tests
-    # Discovery is its own row, and a simulation is never reported as connected.
+    # Only integrations Jade actually has are listed -- no placeholders and
+    # no execution gate (Jade never writes to JDE).
+    assert list(by_name) == ["JD Edwards discovery (Architect)", "JD Edwards delivery verification",
+                             "Jira Service Management"]
+    # Nothing configured: nothing is reported as connected.
+    assert not any(i["connected"] for i in by_name.values())
+    assert "Not configured" in by_name["JD Edwards discovery (Architect)"]["detail"]
+    assert "applied in DEV by a person" in by_name["JD Edwards delivery verification"]["detail"]
+
+    # Configured but not yet tested/enabled: still not connected.
+    from ._discovery import ready_company, save_profile
+
+    save_profile(client, "vdb")
+    by_name = {i["name"]: i for i in client.get("/admin/integrations", headers=headers()).json()}
     assert by_name["JD Edwards discovery (Architect)"]["connected"] is False
-    # Only integrations Jade actually has are listed -- no placeholders.
-    assert "Topdesk" not in by_name and "Slack / Teams approvals" not in by_name
+    assert "off until tested and enabled" in by_name["JD Edwards discovery (Architect)"]["detail"]
+    assert by_name["JD Edwards delivery verification"]["connected"] is False
+
+    # Tested and enabled against the customer's live AIS: connected.
+    ready_company(client, "vdb")
+    by_name = {i["name"]: i for i in client.get("/admin/integrations", headers=headers()).json()}
+    assert by_name["JD Edwards discovery (Architect)"]["connected"] is True
+    assert "enabled" in by_name["JD Edwards discovery (Architect)"]["detail"]
+    assert by_name["JD Edwards delivery verification"]["connected"] is True
+    assert "read back live" in by_name["JD Edwards delivery verification"]["detail"]
 
 
 def test_domain_owner_approval_records_identity_and_feedback(client, monkeypatch):

@@ -65,8 +65,16 @@ def isolated_dirs(tmp_path, monkeypatch):
     monkeypatch.setattr(api_settings, "data_dir", str(api_data_dir))
     monkeypatch.setattr(backlog_module, "BACKLOG_DIR", str(backlog_dir))
     monkeypatch.setattr(approval_module, "CHANGE_DIR", str(change_dir))
-    # The one shared simulated DEV estate: per test, never shared between runs.
-    monkeypatch.setenv("JDE_SIM_ESTATE_DIR", str(tmp_path / "sim_estate"))
+    # The customers' AIS servers: a fake at the HTTP boundary (tests/fixtures/
+    # fake_ais.py), backed by a per-test DEV state. Jade's own transport,
+    # validation, logging and evidence code all run for real.
+    monkeypatch.setenv("JDE_SIM_ESTATE_DIR", str(tmp_path / "ais_estate"))
+    from jde_api_service.discovery import service as discovery_service
+
+    from .fixtures.fake_ais import FakeAis
+
+    ais = FakeAis()
+    monkeypatch.setattr(discovery_service, "LIVE_HTTP_TRANSPORT", ais.transport())
     # The execution gate reads each company's saved scope and the
     # story -> company links from this service's own data directory
     # (main._wire_execution_gate does the same at startup).
@@ -93,8 +101,7 @@ def isolated_dirs(tmp_path, monkeypatch):
         monkeypatch.delenv("JDE_DATABASE_SCHEMA", raising=False)
     monkeypatch.setenv("JDE_WRITE_PAUSE_FILE", str(tmp_path / "WRITE_PAUSED"))
     monkeypatch.setenv("JDE_DESIGN_BASELINE_DIR", str(api_data_dir / "design_baselines"))
-    # Discovery: a fresh simulated estate and closed circuit breakers per test;
-    # live discovery stays switched off unless a test turns it on.
+    # Discovery: closed circuit breakers per test; no operator overrides.
     from jde_api_service.discovery import transport as discovery_transport
 
     discovery_transport._breakers.clear()
@@ -144,6 +151,7 @@ def isolated_dirs(tmp_path, monkeypatch):
         "backlog_dir": backlog_dir,
         "change_dir": change_dir,
         "evidence_dir": evidence_dir,
+        "ais": ais,
     }
     if pg_schema:
         import psycopg
@@ -184,6 +192,12 @@ def _create_member(user_id: str, email: str, display_name: str, company_ids: lis
     auth_service.create_user(email, TEST_PASSWORD, display_name, user_id=user_id)
     for company_id in company_ids:
         membership_service.create_membership(user_id, company_id, ALL_ROLES, created_by=user_id)
+
+
+@pytest.fixture()
+def ais(isolated_dirs):
+    """The fake AIS server this test's customers' connections reach."""
+    return isolated_dirs["ais"]
 
 
 @pytest.fixture()

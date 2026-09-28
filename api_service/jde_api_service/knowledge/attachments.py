@@ -27,14 +27,11 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import re
-import shutil
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from ..config import settings
 from ..persistence.db import connection
 from . import extract
 
@@ -58,21 +55,34 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _root() -> str:
-    return os.path.join(settings.data_dir, "request_attachments")
+# Files live in the configured blob store (local folder or Azure Blob
+# Storage, persistence/blob_store.py) under request_attachments/<company>/<id>/.
+_ROOT = "request_attachments"
+
+
+def _blobs():
+    from ..persistence import blob_store
+
+    return blob_store.default()
 
 
 def _dir(company_id: str, attachment_id: str) -> str:
+    """The attachment's storage prefix (its storage_path is relative to _ROOT)."""
     if not re.fullmatch(r"[A-Za-z0-9_-]{1,40}", company_id) or not re.fullmatch(r"ATT-[0-9a-f]{12}", attachment_id):
         raise AttachmentRejected("invalid identifier")
-    return os.path.join(_root(), company_id, attachment_id)
+    return f"{company_id}/{attachment_id}"
 
 
-def _write(path: str, data: bytes) -> None:
-    tmp = path + ".tmp"
-    with open(tmp, "wb") as f:
-        f.write(data)
-    os.replace(tmp, path)
+def _write(key: str, data: bytes) -> None:
+    _blobs().put(f"{_ROOT}/{key}", data)
+
+
+def _read(key: str) -> bytes:
+    return _blobs().get(f"{_ROOT}/{key}")
+
+
+def _remove(prefix: str) -> None:
+    _blobs().delete_prefix(f"{_ROOT}/{prefix}")
 
 
 def _view(row) -> dict:
@@ -101,8 +111,7 @@ def upload(company_id: str, filename: str, data: bytes, *, user_id: str, user_na
         raise AttachmentRejected("too many unsubmitted uploads; submit or remove them first")
     attachment_id = f"ATT-{uuid.uuid4().hex[:12]}"
     d = _dir(company_id, attachment_id)
-    os.makedirs(d, exist_ok=True)
-    _write(os.path.join(d, "original"), data)
+    _write(f"{d}/original", data)
     with connection(immediate=True) as conn:
         conn.execute(
             "INSERT INTO request_attachments (attachment_id, company_id, request_id, status, filename, file_type, "
@@ -110,7 +119,7 @@ def upload(company_id: str, filename: str, data: bytes, *, user_id: str, user_na
             "extraction_detail) VALUES (?, ?, NULL, 'pending', ?, ?, ?, ?, 1, ?, ?, ?, ?, 'pending', "
             "'waiting to be read')",
             (attachment_id, company_id, name, file_type, len(data), hashlib.sha256(data).hexdigest(),
-             os.path.relpath(d, _root()), user_id, user_name, _now()))
+             d, user_id, user_name, _now()))
     return get(company_id, attachment_id)
 
 
@@ -132,14 +141,11 @@ def run_extraction(company_id: str, attachment_id: str) -> dict:
         result = {"status": "failed", "reason": "storage", "detail": f"The stored file could not be read: {exc}"}
     status, detail, n = extract.summary(result)
     if status == "ready":
-        _write(os.path.join(d, "extracted.json"), json.dumps(
+        _write(f"{d}/extracted.json", json.dumps(
             {"sha256": row["sha256"], "extractor_version": result.get("extractor_version"),
              "truncated": result.get("truncated", False), "sections": result["sections"]}).encode("utf-8"))
     else:
-        try:
-            os.remove(os.path.join(d, "extracted.json"))
-        except FileNotFoundError:
-            pass
+        _remove(f"{d}/extracted.json")
     with connection(immediate=True) as conn:
         conn.execute("UPDATE request_attachments SET extraction_status = ?, extraction_detail = ?, sections = ?, "
                      "extraction_version = extraction_version + 1 WHERE attachment_id = ? AND deleted_at IS NULL",
@@ -148,9 +154,7 @@ def run_extraction(company_id: str, attachment_id: str) -> dict:
 
 
 def _read_original(row) -> bytes:
-    path = os.path.join(_root(), row["storage_path"], "original")
-    with open(path, "rb") as f:
-        data = f.read()
+    data = _read(f"{row['storage_path']}/original")
     if hashlib.sha256(data).hexdigest() != row["sha256"]:
         raise AttachmentRejected("the stored file does not match its recorded checksum")
     return data
@@ -216,8 +220,7 @@ def extracted(company_id: str, attachment_id: str) -> Optional[dict]:
     if row is None or row["deleted_at"] or row["extraction_status"] != "ready":
         return None
     try:
-        with open(os.path.join(_root(), row["storage_path"], "extracted.json"), "rb") as f:
-            data = json.loads(f.read())
+        data = json.loads(_read(f"{row['storage_path']}/extracted.json"))
     except (OSError, json.JSONDecodeError):
         return None
     return data if data.get("sha256") == row["sha256"] else None
@@ -230,7 +233,7 @@ def remove_pending(company_id: str, attachment_id: str, *, user_id: str) -> None
         if row is None:
             raise NotFound("no such pending upload")
         conn.execute("DELETE FROM request_attachments WHERE attachment_id = ?", (attachment_id,))
-    shutil.rmtree(_dir(company_id, attachment_id), ignore_errors=True)
+    _remove(_dir(company_id, attachment_id))
 
 
 def remove_from_request(company_id: str, request_id: str, attachment_id: str, *, actor: str) -> list[dict]:
@@ -242,7 +245,7 @@ def remove_from_request(company_id: str, request_id: str, attachment_id: str, *,
         conn.execute("UPDATE request_attachments SET status = 'deleted', deleted_at = ?, deleted_by = ?, "
                      "extraction_status = 'deleted', extraction_detail = 'removed from the request; the file was "
                      "deleted' WHERE attachment_id = ?", (_now(), actor, attachment_id))
-    shutil.rmtree(_dir(company_id, attachment_id), ignore_errors=True)
+    _remove(_dir(company_id, attachment_id))
     return list_for_request(company_id, request_id)
 
 
@@ -253,7 +256,7 @@ def cleanup_abandoned(now: Optional[datetime] = None) -> int:
                             "uploaded_at < ?", (cutoff,)).fetchall()
         conn.execute("DELETE FROM request_attachments WHERE status = 'pending' AND uploaded_at < ?", (cutoff,))
     for r in rows:
-        shutil.rmtree(_dir(r["company_id"], r["attachment_id"]), ignore_errors=True)
+        _remove(_dir(r["company_id"], r["attachment_id"]))
     return len(rows)
 
 

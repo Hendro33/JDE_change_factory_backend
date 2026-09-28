@@ -27,15 +27,12 @@ more authoritative record.
 from __future__ import annotations
 
 import json
-import os
 import re
 from datetime import datetime, timezone
 from typing import Any, Optional
 
 from .. import config as _config  # noqa: F401  (forces the mcp_server sys.path bootstrap)
 from jde_mcp_server import backlog, approval, capability_catalog, execution
-from jde_mcp_server import config as mcp_config
-from jde_mcp_server import scope as mcp_scope
 
 from ..models.change import (
     AcceptanceCriterion,
@@ -216,6 +213,10 @@ def _execution_status(change_record: dict) -> ExecutionStatus:
         before_value=next((a.get("before_value") for a in reversed(attempts) if a.get("before_value") is not None), None),
         write_reconciliations=_reconciliations(change_record, execution.WRITE),
         test_reconciliations=_reconciliations(change_record, execution.TEST),
+        applied=next((a.get("recorded") for a in reversed(attempts) if a.get("outcome") == "applied"
+                      and a.get("recorded")), None) or {},
+        verification={k: v for k, v in (change_record.get("verification") or {}).items() if k != "answer"}
+        if change_record.get("kind") != "technical" else {},
     )
 
 
@@ -256,21 +257,9 @@ def _change_from_story(
             cap = capability_catalog.get_capability(capability_id)
             if cap is not None:
                 capability_status = cap.get("validation", {}).get("status")
-                try:
-                    spike = mcp_scope.find_spike_experiment(
-                        mcp_scope.load_company_scope(customer_id),
-                        capability_id,
-                        change_record.get("capability_revision", ""),
-                        op.get("application", ""),
-                        op.get("version", ""),
-                        op.get("option", ""),
-                        change_record.get("environment", "DEV"),
-                    )
-                except mcp_scope.ScopeViolation:
-                    spike = None  # no saved scope for this company yet -- can't be spike-approved
-                capability_executable = capability_status == "validated" or (
-                    capability_status == "needs_spike" and spike is not None
-                )
+                # Deliverable by a person (the recorded route) unless the
+                # catalogue marks it Restricted or Suspended.
+                capability_executable = capability_status not in capability_catalog.PERSON_DELIVERY_BLOCKED_STATUSES
         exact_change = ExactChange(
             tool=op.get("tool", ""),
             application=op.get("application", ""),

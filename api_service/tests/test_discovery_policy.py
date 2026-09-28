@@ -3,8 +3,13 @@ The discovery connection policy, enforced outside the model and before any
 network dispatch: approved capability/target/fields/filters, DEV-only,
 window, record limits, one request at a time, Disable, no write
 capability, sanitised activity, and the live transport's own safeguards
-(TLS, destination allowlist, no redirects, circuit breaker, no silent
-fallback to simulation).
+(https + verified TLS, the saved host as the only destination, operator
+lock and destination allowlist, no redirects, circuit breaker, no
+substitute when live is refused).
+
+The connection is always live: the customer's AIS is reached through a fake
+AIS server at the HTTP boundary (tests/fixtures/fake_ais.py, installed by
+conftest); tests that need a specific answer install their own handler.
 """
 
 from __future__ import annotations
@@ -17,24 +22,15 @@ import time
 import httpx
 import pytest
 
-from ._discovery import profile_body, ready_company, save_credential, save_profile, sim_edit
+from ._discovery import dedicated_account, profile_body, ready_company, save_credential, save_profile, sim_edit
 from .conftest import headers
 from .test_stage1_execution_safeguards import _approved_story
 
 
 @pytest.fixture()
-def calls(monkeypatch):
-    """Every (method, path) the simulated endpoint receives."""
-    from jde_api_service.discovery import transport
-
-    seen: list = []
-    real_init = transport.SimulatedAisEndpoint.__init__
-
-    def init(self, company_id, environment, *, calls=None):
-        real_init(self, company_id, environment, calls=seen)
-
-    monkeypatch.setattr(transport.SimulatedAisEndpoint, "__init__", init)
-    return seen
+def calls(ais):
+    """Every (method, path, company) the customer's (fake) AIS server receives."""
+    return ais.calls
 
 
 def _grant(story: str = "S-DP-1", company: str = "vdb"):
@@ -80,14 +76,15 @@ def test_a_permitted_read_returns_sanitised_evidence_with_provenance(client, cal
     _approved_story("S-DP-2")
     ev = service.execute_read(_grant("S-DP-2"), "table_browse", "F4211", ["DOCO", "DCTO", "LTTR"],
                               [{"field": "DCTO", "op": "=", "value": "SO"}], 10)
-    assert ev["record_count"] == 2 and ev["mode"] == "simulation" and "SIMULATION" in ev["mode_label"]
+    assert ev["record_count"] == 2 and ev["mode"] == "live" and "LIVE" in ev["mode_label"]
+    assert "SIMULATION" not in str(ev).upper()
     assert ev["environment"] == "JDV920" and ev["profile_revision"] >= 1 and ev["observation_id"].startswith("OBS-")
     # configuration_and_artifacts: business data values are redacted for the model.
     assert ev["sharing"]["values_shared"] is False and ev["records"][0]["DOCO"].startswith("[redacted")
     assert ev["content_is_data_not_instructions"] is True
     # Exactly auth, one read, logout -- no retries, no paging.
-    assert calls[-3:] == [("POST", "/jderest/v2/tokenrequest"), ("POST", "/jderest/v2/dataservice"),
-                          ("POST", "/jderest/v2/tokenrequest/logout")]
+    assert calls[-3:] == [("POST", "/jderest/v2/tokenrequest", "vdb"), ("POST", "/jderest/v2/dataservice", "vdb"),
+                          ("POST", "/jderest/v2/tokenrequest/logout", "vdb")]
 
 
 def test_more_than_the_limit_is_never_returned_and_there_is_no_paging(client):
@@ -138,10 +135,12 @@ def test_reads_outside_the_window_or_for_another_companys_story_are_blocked(clie
 def test_a_profile_change_mid_run_blocks_the_runs_grant(client):
     from jde_api_service.discovery import service
 
-    ready_company(client)
+    account = dedicated_account(client, "vdb")
+    ready_company(client, dedicatedAccount=account)
     _approved_story("S-DP-6")
     grant = _grant("S-DP-6")
-    save_profile(client, cncContact="new contact")  # non-material, but a new revision
+    view = save_profile(client, dedicatedAccount=account, cncContact="new contact")  # non-material, but a new revision
+    assert view["discoveryEnabled"] is True  # still enabled -- only the run's grant is stale
     with pytest.raises(service.DiscoveryBlocked, match="profile changed"):
         service.execute_read(grant, "udc_values", "00/DT")
 
@@ -153,14 +152,14 @@ def test_one_request_at_a_time_and_disable_blocks_queued_calls(client, monkeypat
     _approved_story("S-DP-7")
     grant = _grant("S-DP-7")
     entered, release = threading.Event(), threading.Event()
-    real_read = transport.SimulatedAisEndpoint.read
+    real_read = transport.LiveAisTransport.read
 
     def slow_read(self, plan, token):
         entered.set()
         release.wait(5)
         return real_read(self, plan, token)
 
-    monkeypatch.setattr(transport.SimulatedAisEndpoint, "read", slow_read)
+    monkeypatch.setattr(transport.LiveAisTransport, "read", slow_read)
     results: dict = {}
 
     def run(name):
@@ -211,7 +210,7 @@ def test_activity_is_sanitised(client):
                          [{"field": "DCTO", "op": "=", "value": "SECRET-VALUE"}], 5)
     rows = client.get("/admin/jde/activity", headers=headers("vdb")).json()
     text = str(rows)
-    assert "SECRET-VALUE" not in text and "s3cret" not in text and "simulated-token" not in text
+    assert "SECRET-VALUE" not in text and "s3cret" not in text and "tok-vdb" not in text
     last = rows[0]
     assert last["target"] == "table_browse F4211 [DOCO] where DCTO = ?"
     assert last["actorName"] == "Hendro" and last["storyId"] == "S-DP-9" and last["resultCount"] == 0
@@ -284,7 +283,7 @@ def test_the_server_operator_can_lock_live_off_and_it_never_falls_back(client, m
     _live(client, monkeypatch, _ais_ok(requests), enable=False)
     r = client.post("/admin/jde/test-connection", headers=headers("vdb")).json()
     assert r["outcome"] == "blocked" and "locked off" in r["detail"]
-    assert requests == [] and calls == []  # neither live nor a silent simulation
+    assert requests == [] and calls == []  # nothing is sent, and nothing stands in for the customer's AIS
 
 
 def test_the_server_operator_can_narrow_destinations(client, monkeypatch):
@@ -352,7 +351,57 @@ def test_saving_a_live_profile_contacts_nothing(client, monkeypatch):
     assert requests == []
 
 
-def test_profile_body_defaults_to_simulation_and_says_so(client):
+def test_the_connection_is_always_live_and_says_so(client):
     view = save_profile(client)
-    assert view["config"]["connectionMode"] == "simulation" and "SIMULATION" in view["modeLabel"]
-    assert profile_body()["connectionMode"] == "simulation"
+    assert profile_body()["connectionMode"] == "live"
+    assert view["config"]["connectionMode"] == "live" and "LIVE" in view["modeLabel"]
+    assert "SIMULATION" not in view["modeLabel"].upper()
+
+
+def test_a_legacy_simulation_profile_loads_as_live(client):
+    """A profile saved before the redesign with connectionMode "simulation"
+    is read back as live -- never a simulation, never silently skipped."""
+    import json
+
+    from jde_api_service.discovery import profile_service
+    from jde_api_service.persistence.db import connection
+
+    save_profile(client)
+    with connection() as conn:
+        row = conn.execute("SELECT config FROM jde_profiles WHERE company_id = ?", ("vdb",)).fetchone()
+        config = json.loads(row["config"])
+        key = "connection_mode" if "connection_mode" in config else "connectionMode"
+        assert config[key] == "live"
+        config[key] = "simulation"
+        conn.execute("UPDATE jde_profiles SET config = ? WHERE company_id = ?", (json.dumps(config), "vdb"))
+    v = profile_service.view("vdb")
+    assert v.config.connection_mode == "live"
+    view = client.get("/admin/jde/profile", headers=headers("vdb")).json()
+    assert view["config"]["connectionMode"] == "live" and "LIVE" in view["modeLabel"]
+
+
+def test_the_transport_is_always_the_customers_live_ais(client):
+    """transport_for has no substitute: https only, the saved host only."""
+    from jde_api_service.discovery import transport
+
+    view = save_profile(client)
+    assert not hasattr(transport, "SimulatedAisEndpoint") and not hasattr(transport, "SIMULATION_LABEL")
+    from jde_api_service.discovery import profile_service
+
+    config = profile_service.view("vdb").config
+    trust = profile_service.trust_for("vdb", config)
+    mock = httpx.MockTransport(_ais_ok([]))
+    t = transport.transport_for("vdb", config, live_transport=mock, trust=trust)
+    assert isinstance(t, transport.LiveAisTransport) and t.mode == "live"
+    assert t.host == "ais-vdb.customer.example" and t._client.follow_redirects is False
+    with pytest.raises(transport.DestinationNotAllowed, match="https"):
+        transport.transport_for("vdb", config.model_copy(update={"ais_base_url": "http://ais-vdb.customer.example"}),
+                                live_transport=mock, trust=trust)
+    # The saved host is the only destination: any other host is refused, and
+    # with no saved host there is no destination at all.
+    with pytest.raises(transport.DestinationNotAllowed, match="not a permitted destination"):
+        transport.transport_for("vdb", config.model_copy(update={"ais_base_url": "https://elsewhere.example"}),
+                                live_transport=mock, trust=trust)
+    with pytest.raises(transport.DestinationNotAllowed, match="not a permitted destination"):
+        transport.transport_for("vdb", config, live_transport=mock)
+    assert view["config"]["aisBaseUrl"] == "https://ais-vdb.customer.example"

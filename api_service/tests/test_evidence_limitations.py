@@ -1,6 +1,9 @@
 """
 Evidence limitations are explicit, never implied away.
 
+  * Discovery evidence is a live observation of the customer's AIS (the
+    fake AIS server at the HTTP boundary in tests), and its response shape
+    is stated as unverified.
   * A truncated artifact says how much was analysed, and a design citing it
     carries that limitation.
   * The full-result hash is a change detector: it changes when a value the
@@ -49,6 +52,9 @@ def test_the_full_result_hash_detects_change_but_retains_nothing_unseen(client, 
     _approved_story(STORY)
     grant, _ = service.grant_for_story(STORY, "vdb", agent_run_id=None, actor_user_id="u-hendro")
     first = service.execute_read(grant, "processing_option_values", "P4210|CIQ0001")
+    assert (first["evidence_type"], first["mode"], first["mode_label"]) == (
+        "live_observation", "live", "LIVE customer AIS endpoint")
+    assert first["response_shape"] == "unverified"
     with sim_edit("vdb", "set processing_options.P4210|CIQ0001.PCREDCHK") as _est:
         _est["processing_options"]["P4210|CIQ0001"]["PCREDCHK"] = "9"
     second = service.execute_read(grant, "processing_option_values", "P4210|CIQ0001")

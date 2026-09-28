@@ -1,29 +1,26 @@
 """
-The governed executor for Technical implementation packages.
+The governed delivery of Technical implementation packages.
 
 A Technical Agent prepares a package (api_service stores it, immutably, per
-revision). A person approves THAT exact package revision -- its content hash
--- as an exact change (kind "technical"). Everything that then happens to
-the customer's DEV system goes through this module, never through the agent:
+revision): the candidate source, its exact diff, the objects, the test plan
+and the recovery plan -- a developer-ready specification. A person approves
+THAT exact package revision -- its content hash -- as an exact change (kind
+"technical"). Delivery is the RECORDED route: people do the work in JD
+Edwards and record each milestone in Jade, which re-checks everything first:
 
-    apply   -> the candidate source is checked in (not active)     [WRITE]
-    build   -> the checked-in source is built                      [BUILD]
-    CNC     -> a human CNC deploys/activates the built package     [recorded, never automated]
-    verify  -> the approved test plan runs against the active DEV  [TEST]
+    apply   -> a developer checks the approved candidate in through OMW   [WRITE]
+    build   -> the checked-in objects are built (package build)           [BUILD]
+    CNC     -> a CNC deploys/activates the built package                  [recorded]
+    verify  -> the approved test plan is run in DEV, results recorded     [TEST]
 
 Each milestone is recorded separately and is never implied by another.
-Before every dispatch the executor re-derives, inside the change's lock:
-the approval (approved, unexpired, approver's CURRENT authority), that the
-package about to run is byte-for-byte the approved one and is not
-superseded, the approval's basis (design revision and design approval, no
-invalidation, the objects still in their approved before-state), the
-company's scope (DEV binding, authorised object types, customer system
-codes 55-59), and that an adapter is qualified for this mode.
-
-Only the SIMULATION adapter exists (technical_sim.py). The live adapter is
-unavailable until the customer's actual mechanism is qualified; there are
-no speculative JDE import or edit commands here. Execution credentials are
-never needed or read by this module.
+Before recording, Jade re-derives inside the change's lock: the approval
+(approved, unexpired, approver's CURRENT authority), that the package is
+byte-for-byte the approved one and not superseded, the approval's basis
+(design revision and design approval, no invalidation, each object's source
+still the one the package was prepared from), the company's scope (DEV
+binding, authorised object types, customer system codes 55-59) and the
+recorder's current role. No agent and no Jade component writes to JDE here.
 """
 
 from __future__ import annotations
@@ -33,27 +30,37 @@ import json
 import time
 from typing import Any, Optional
 
-from . import approval, authority, binding, capability_catalog, execution, technical_sim
+from . import approval, authority, binding, capability_catalog, execution
 from .approval import ChangeApprovalError
 from .backlog import require_approved
-from .config import settings
 from .scope import (
     ScopeViolation,
     check_custom_product_code,
     check_environment_binding,
     check_technical_scope,
     company_for_story,
-    load_company_scope,
     scope_revision,
 )
 
 CAPABILITY_ID = "custom_object_text_change"
 TOOL = "apply_technical_package"
 APPLY, BUILD, VERIFY = execution.WRITE, execution.BUILD, execution.TEST
+MODE = "recorded"
+# Who records the development milestones (apply, build, verify): the
+# Application Manager. The CNC activation has its own roles (catalogue).
+RECORDER_ROLES = ("product_manager",)
 
 
 class LiveAdapterUnavailable(ChangeApprovalError):
-    """No qualified live mechanism exists for this capability."""
+    """A candidate's format cannot be delivered (no safe way to apply it)."""
+
+
+def sha256_text(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def object_key(object_name: str, object_type: str) -> str:
+    return f"{object_name.strip().upper()}|{object_type.strip().upper()}"
 
 
 def package_sha256(content: dict) -> str:
@@ -61,7 +68,7 @@ def package_sha256(content: dict) -> str:
 
 
 def mode() -> str:
-    return "simulation" if settings.mock_mode else "live"
+    return MODE
 
 
 def technical_enforcement() -> dict:
@@ -77,8 +84,7 @@ def adapter_for_mode() -> dict:
     adapter = (enf.get("adapters") or {}).get(mode()) or {}
     if not adapter.get("available"):
         raise LiveAdapterUnavailable(
-            f"no qualified {mode()} adapter for {CAPABILITY_ID}: {adapter.get('reason', 'not available')} -- "
-            "application is blocked; investigation and preparation remain possible")
+            f"{CAPABILITY_ID} cannot be delivered ({mode()}): {adapter.get('reason', 'not available')}")
     return adapter
 
 
@@ -165,11 +171,18 @@ def authorise(change_id: str, package: dict, *, milestone: str) -> tuple[dict, d
         raise ChangeApprovalError(f"package revision {package['revision']} is superseded by revision "
                                   f"{package['superseded_by']}; only the latest revision may run")
     if record.get("execution_mode") != mode():
-        raise ChangeApprovalError(f"approved for {record.get('execution_mode')} application only; this is {mode()}")
+        raise ChangeApprovalError(f"approved for {record.get('execution_mode')} application, which no longer exists; "
+                                  "prepare and approve the package again")
+    try:
+        capability_catalog.require_deliverable_by_person(record["capability_id"], record["capability_revision"],
+                                                         record["environment"])
+    except capability_catalog.CapabilityError as exc:
+        raise ChangeApprovalError(str(exc)) from exc
     adapter_for_mode()
     for cand in content.get("candidates") or []:
         if not (format_support(cand.get("format", "")).get("apply") or {}).get(mode()):
-            raise LiveAdapterUnavailable(f"{cand.get('format')} cannot be applied in {mode()} mode: no qualified mechanism")
+            raise LiveAdapterUnavailable(f"{cand.get('format')} cannot be delivered: "
+                                         f"{format_support(cand.get('format', '')).get('note') or 'no safe way to apply it'}")
     check_package_scope(scope, content)
     if milestone == APPLY:
         binding.require_valid(record)
@@ -177,7 +190,7 @@ def authorise(change_id: str, package: dict, *, milestone: str) -> tuple[dict, d
         for cand in content["candidates"]:
             if before.get(cand["object_key"]) != cand["before_sha256"]:
                 raise binding.BindingInvalid(
-                    f"stale source: {cand['object_key']}'s active DEV runtime ({str(before.get(cand['object_key']))[:12]}) "
+                    f"stale source: {cand['object_key']}'s current source ({str(before.get(cand['object_key']))[:12]}) "
                     f"is not the source the package was prepared from ({cand['before_sha256'][:12]})")
     else:
         found = binding.problems(record, read_current=False)
@@ -194,10 +207,9 @@ def _evidence(record: dict, event: str, detail: str, data: dict) -> str:
     from .evidence import capture_evidence
 
     return capture_evidence(record["story_id"], {
-        "event": event, "stage": f"technical_{event}", "actor": data.get("actor", "technical executor"),
+        "event": event, "stage": f"technical_{event}", "actor": data.get("actor", "technical delivery"),
         "detail": detail, "change_id": record["change_id"], "package": record["operation"],
-        "mode": record.get("execution_mode"), "label": technical_sim.sim_estate.SIMULATION_LABEL
-        if record.get("execution_mode") == "simulation" else "live", **data,
+        "mode": record.get("execution_mode"), **data,
     })["entry_hash"]
 
 
@@ -208,69 +220,75 @@ def _milestone(change_id: str, name: str, entry: dict) -> None:
         approval._save(change_id, record)
 
 
-# ---------------------------------------------------------------------
-# Milestones
-# ---------------------------------------------------------------------
-def apply(change_id: str, package: dict, *, actor: str) -> dict:
-    record, scope = authorise(change_id, package, milestone=APPLY)
-    env = _environment(scope)
-    before = json.dumps(record["binding"]["before_state"]["value"], sort_keys=True)
-    attempt = execution.begin(change_id, APPLY, before_value=before,
-                              revalidate=lambda: authorise(change_id, package, milestone=APPLY))
+def _require_recorder(record: dict, actor_user_id: str, actor_name: str, what: str) -> None:
     try:
-        for cand in package["content"]["candidates"]:
-            technical_sim.adapter_apply(record["company_id"], env, cand["object_key"], cand["text"], change_id=change_id,
-                                        package_ref=f"{package['package_id']}@r{package['revision']}")
-    except technical_sim.AdapterOutcome as exc:
-        execution.finish(change_id, APPLY, attempt, "unknown" if exc.sent else "not_sent", str(exc))
-        raise
-    except Exception as exc:  # noqa: BLE001 -- after sending, anything unclean is unknown
-        execution.finish(change_id, APPLY, attempt, "unknown", f"{type(exc).__name__}: {exc}")
-        raise
-    execution.finish(change_id, APPLY, attempt, "applied", "checked in to the simulated DEV estate (not active)")
-    h = _evidence(record, "applied", f"package {package['package_id']}@r{package['revision']} checked in, not active",
-                  {"actor": actor, "candidates": [{"object_key": c["object_key"], "after_sha256": c["after_sha256"]}
-                                                  for c in package["content"]["candidates"]]})
-    _milestone(change_id, "applied", {"actor": actor, "evidence_entry_hash": h})
+        authority.require_current_approver(actor_user_id, record["company_id"], RECORDER_ROLES)
+    except (authority.AuthorityRevoked, authority.AuthorityUnverifiable) as exc:
+        raise approval.ApproverNotAuthorised(f"{actor_name} may not record {what}: {exc}") from exc
+
+
+def _require_text(**fields: str) -> dict:
+    missing = [k.replace("_", " ") for k, v in fields.items() if not (v or "").strip()]
+    if missing:
+        raise ChangeApprovalError("recording this needs " + ", ".join(missing))
+    return {k: v.strip() for k, v in fields.items()}
+
+
+# ---------------------------------------------------------------------
+# Milestones, each recorded by a person and re-checked first
+# ---------------------------------------------------------------------
+def apply(change_id: str, package: dict, *, actor: str, actor_user_id: str, omw_project: str,
+          evidence_reference: str, note: str = "") -> dict:
+    """A developer checked the approved candidate in through OMW (not yet
+    active). Recorded only if the package, approval, basis and scope hold."""
+    record, _scope = authorise(change_id, package, milestone=APPLY)
+    _require_recorder(record, actor_user_id, actor, "a check-in")
+    fields = _require_text(omw_project=omw_project, evidence_reference=evidence_reference)
+    before = json.dumps(record["binding"]["before_state"]["value"], sort_keys=True)
+    after = {c["object_key"]: c["after_sha256"] for c in package["content"]["candidates"]}
+    execution.record(change_id, APPLY, "applied", before_value=before,
+                     revalidate=lambda: authorise(change_id, package, milestone=APPLY),
+                     detail=f"checked in through OMW project {fields['omw_project']} (not active)",
+                     recorded={"by": actor, "user_id": actor_user_id, **fields, "note": note, "after_sha256": after})
+    h = _evidence(record, "applied", f"package {package['package_id']}@r{package['revision']} checked in through OMW "
+                  f"project {fields['omw_project']} by {actor}, not active",
+                  {"actor": actor, "omw_project": fields["omw_project"], "evidence_reference": fields["evidence_reference"],
+                   "note": note, "candidates": [{"object_key": k, "after_sha256": v} for k, v in after.items()]})
+    _milestone(change_id, "applied", {"actor": actor, "omw_project": fields["omw_project"], "evidence_entry_hash": h})
     return {"milestone": "applied", "change_id": change_id, "active": False}
 
 
-def build(change_id: str, package: dict, *, actor: str) -> dict:
-    record, scope = authorise(change_id, package, milestone=BUILD)
+def build(change_id: str, package: dict, *, actor: str, actor_user_id: str, succeeded: bool, build_reference: str,
+          log: str = "") -> dict:
+    """The checked-in objects were built (e.g. an OMW/package build). A failed
+    build is recorded as such: a repair is a new package revision."""
+    record, _scope = authorise(change_id, package, milestone=BUILD)
     if execution.effective_state(record, APPLY) != "applied":
-        raise execution.ExecutionBlocked(f"change {change_id}: nothing is known to be applied, so nothing can be built "
-                                         f"(apply: {execution.effective_state(record, APPLY)})")
-    env = _environment(scope)
-    attempt = execution.begin(change_id, BUILD, revalidate=lambda: authorise(change_id, package, milestone=BUILD))
-    results = []
-    try:
-        for cand in package["content"]["candidates"]:
-            results.append(technical_sim.adapter_build(record["company_id"], env, cand["object_key"], change_id=change_id,
-                                                       context={"story_id": record["story_id"]}))
-    except technical_sim.AdapterOutcome as exc:
-        execution.finish(change_id, BUILD, attempt, "unknown" if exc.sent else "not_sent", str(exc))
-        raise
-    except Exception as exc:  # noqa: BLE001
-        execution.finish(change_id, BUILD, attempt, "unknown", f"{type(exc).__name__}: {exc}")
-        raise
-    failed = [r for r in results if r["status"] != "built"]
-    log = [line for r in results for line in r["log"]]
-    execution.finish(change_id, BUILD, attempt, "failed" if failed else "built", "; ".join(log)[:500] or "built")
-    h = _evidence(record, "build_failed" if failed else "built", "simulated build " + ("FAILED" if failed else "succeeded"),
-                  {"actor": actor, "log": log})
-    _milestone(change_id, "build_failed" if failed else "built", {"actor": actor, "log": log, "evidence_entry_hash": h})
-    return {"milestone": "build_failed" if failed else "built", "change_id": change_id, "log": log,
-            "next": ("a repair is a new package revision with a fresh approval" if failed
-                     else "awaiting human CNC activation" if technical_enforcement().get("requires_cnc_activation")
+        raise execution.ExecutionBlocked(f"change {change_id}: nothing is known to be checked in, so nothing can be "
+                                         f"built (apply: {execution.effective_state(record, APPLY)})")
+    _require_recorder(record, actor_user_id, actor, "a build")
+    fields = _require_text(build_reference=build_reference)
+    lines = [ln for ln in (log or "").splitlines() if ln.strip()][:50]
+    outcome = "built" if succeeded else "failed"
+    execution.record(change_id, BUILD, outcome, revalidate=lambda: authorise(change_id, package, milestone=BUILD),
+                     detail=f"{outcome}: {fields['build_reference']}",
+                     recorded={"by": actor, "user_id": actor_user_id, **fields, "log": lines})
+    h = _evidence(record, "built" if succeeded else "build_failed",
+                  f"build {'succeeded' if succeeded else 'FAILED'} ({fields['build_reference']}), recorded by {actor}",
+                  {"actor": actor, "build_reference": fields["build_reference"], "log": lines})
+    _milestone(change_id, "built" if succeeded else "build_failed",
+               {"actor": actor, "build_reference": fields["build_reference"], "log": lines, "evidence_entry_hash": h})
+    return {"milestone": "built" if succeeded else "build_failed", "change_id": change_id, "log": lines,
+            "next": ("a repair is a new package revision with a fresh approval" if not succeeded
+                     else "awaiting CNC activation" if technical_enforcement().get("requires_cnc_activation")
                      else "ready to verify")}
 
 
 def record_cnc_activation(change_id: str, package: dict, *, actor_user_id: str, actor_name: str, package_name: str,
                           evidence_reference: str, note: str = "") -> dict:
-    """A human CNC deployed the built package. Jade records it; in the
-    simulation the recorded hand-off is what makes it active. Only a person
-    who holds a CNC activation role in the company right now may record it."""
-    record, scope = authorise(change_id, package, milestone="cnc")
+    """A CNC deployed/activated the built package in DEV. Only a person who
+    holds a CNC activation role in the company right now may record it."""
+    record, _scope = authorise(change_id, package, milestone="cnc")
     roles = technical_enforcement().get("cnc_activation_roles") or []
     try:
         authority.require_current_approver(actor_user_id, record["company_id"], roles)
@@ -278,6 +296,9 @@ def record_cnc_activation(change_id: str, package: dict, *, actor_user_id: str, 
         raise approval.ApproverNotAuthorised(f"{actor_name} may not record a CNC activation: {exc}") from exc
     if not (evidence_reference or "").strip() or not (package_name or "").strip():
         raise ChangeApprovalError("a CNC activation needs the package name and an evidence reference")
+    now = time.time()
+    entry = {"by": actor_name, "user_id": actor_user_id, "package_name": package_name.strip(),
+             "evidence_reference": evidence_reference.strip(), "note": note, "at": now}
     with execution._locked(change_id):
         current = approval._load(change_id)
         if execution.effective_state(current, BUILD) != "built":
@@ -285,112 +306,69 @@ def record_cnc_activation(change_id: str, package: dict, *, actor_user_id: str, 
                                              f"(build: {execution.effective_state(current, BUILD)}) -- nothing to activate")
         if current.get("cnc_activation"):
             raise execution.ExecutionBlocked(f"change {change_id}: the CNC activation is already recorded")
-    env = _environment(scope)
-    activated = [technical_sim.adapter_activate(record["company_id"], env, c["object_key"], change_id=change_id,
-                                                package_name=package_name, actor=actor_name)
-                 for c in package["content"]["candidates"]]
-    entry = {"by": actor_name, "user_id": actor_user_id, "package_name": package_name,
-             "evidence_reference": evidence_reference.strip(), "note": note, "at": time.time(),
-             "simulated": record.get("execution_mode") == "simulation", "activated": activated}
-    entry["evidence_entry_hash"] = _evidence(record, "cnc_activation_recorded",
-                                             f"CNC activation of package {package_name} recorded by {actor_name}",
-                                             {"actor": actor_name, "cnc": {k: v for k, v in entry.items() if k != "activated"}})
-    with execution._locked(change_id):
-        current = approval._load(change_id)
+        entry["evidence_entry_hash"] = _evidence(record, "cnc_activation_recorded",
+                                                 f"CNC activation of package {entry['package_name']} recorded by {actor_name}",
+                                                 {"actor": actor_name, "cnc": dict(entry)})
         current["cnc_activation"] = entry
-        current.setdefault("milestones", []).append({"milestone": "cnc_activated", "at": entry["at"], "actor": actor_name,
+        current.setdefault("milestones", []).append({"milestone": "cnc_activated", "at": now, "actor": actor_name,
                                                      "evidence_entry_hash": entry["evidence_entry_hash"]})
         approval._save(change_id, current)
     return entry
 
 
-def verify(change_id: str, package: dict, *, actor: str) -> dict:
-    record, scope = authorise(change_id, package, milestone=VERIFY)
+def verify(change_id: str, package: dict, *, actor: str, actor_user_id: str, results: list[dict],
+           runtime_is_approved_artifact: bool, evidence_reference: str, note: str = "") -> dict:
+    """The approved test plan was run in DEV against the ACTIVE runtime and
+    each result recorded. Every test in the plan must have a result; the
+    recorder states whether what runs in DEV is the approved package."""
+    record, _scope = authorise(change_id, package, milestone=VERIFY)
     if execution.effective_state(record, BUILD) != "built":
         raise execution.ExecutionBlocked(f"change {change_id}: the package is not known to be built -- nothing to verify")
     if technical_enforcement().get("requires_cnc_activation") and not record.get("cnc_activation"):
         raise execution.ExecutionBlocked(
-            f"change {change_id}: awaiting human CNC activation -- the built package is not active in DEV until a CNC "
-            "deploys it and that is recorded; Jade cannot do this step")
-    env = _environment(scope)
-    attempt = execution.begin(change_id, VERIFY, revalidate=lambda: authorise(change_id, package, milestone=VERIFY))
-    results = []
-    try:
-        for cand in package["content"]["candidates"]:
-            tests = [t for t in package["content"].get("test_plan") or [] if t.get("object_key", cand["object_key"]) == cand["object_key"]]
-            results += technical_sim.adapter_run_tests(record["company_id"], env, cand["object_key"], tests,
-                                                       change_id=change_id)
-    except technical_sim.AdapterOutcome as exc:
-        execution.finish(change_id, VERIFY, attempt, "unknown" if exc.sent else "not_sent", str(exc))
-        raise
-    passed = bool(results) and all(r["passed"] for r in results)
-    runtime = technical_sim.runtime_state(record["company_id"], env, record["operation"]["objects"])
+            f"change {change_id}: awaiting CNC activation -- the built package is not active in DEV until a CNC "
+            "deploys it and that is recorded")
+    _require_recorder(record, actor_user_id, actor, "a verification")
+    fields = _require_text(evidence_reference=evidence_reference)
+    plan = [t.get("name") for t in package["content"].get("test_plan") or []]
+    kinds = {t.get("name"): t.get("kind", "") for t in package["content"].get("test_plan") or []}
+    by_name = {}
+    for r in results or []:
+        name = str(r.get("name") or "").strip()
+        if name not in plan:
+            raise ChangeApprovalError(f"{name!r} is not a test in the approved test plan")
+        if not isinstance(r.get("passed"), bool):
+            raise ChangeApprovalError(f"test {name!r} needs a passed or failed result")
+        by_name[name] = {"name": name, "kind": kinds.get(name, ""), "passed": r["passed"],
+                         "note": str(r.get("note") or "")[:500]}
+    missing = [n for n in plan if n not in by_name]
+    if missing:
+        raise ChangeApprovalError("every test in the approved plan needs a result; missing: " + ", ".join(missing))
+    rows = [by_name[n] for n in plan]
+    passed = bool(rows) and all(r["passed"] for r in rows)
     approved_after = {c["object_key"]: c["after_sha256"] for c in package["content"]["candidates"]}
-    outcome = {"passed": passed, "results": results, "runtime_sha256": runtime,
-               "runtime_is_approved_artifact": runtime == approved_after, "at": time.time()}
-    execution.finish(change_id, VERIFY, attempt, "completed", f"{sum(r['passed'] for r in results)}/{len(results)} passed")
+    now = time.time()
+    outcome = {"passed": passed, "results": rows, "runtime_is_approved_artifact": bool(runtime_is_approved_artifact),
+               "runtime_statement": "recorded by the person who verified", "approved_after_sha256": approved_after,
+               "evidence_reference": fields["evidence_reference"], "note": note, "by": actor, "at": now}
+    execution.record(change_id, VERIFY, "completed", revalidate=lambda: authorise(change_id, package, milestone=VERIFY),
+                     detail=f"{sum(r['passed'] for r in rows)}/{len(rows)} passed",
+                     recorded={"by": actor, "user_id": actor_user_id, "evidence_reference": fields["evidence_reference"]})
+    verified = passed and outcome["runtime_is_approved_artifact"]
     outcome["evidence_entry_hash"] = _evidence(
-        record, "verified" if passed and outcome["runtime_is_approved_artifact"] else "verification_failed",
-        f"{sum(r['passed'] for r in results)}/{len(results)} tests passed; active runtime "
-        f"{'IS' if outcome['runtime_is_approved_artifact'] else 'is NOT'} the approved artifact",
-        {"actor": actor, "results": results, "runtime_sha256": runtime, "approved_after_sha256": approved_after,
-         "package_sha256": package["content_sha256"]})
+        record, "verified" if verified else "verification_failed",
+        f"{sum(r['passed'] for r in rows)}/{len(rows)} tests passed; the active DEV runtime "
+        f"{'IS' if outcome['runtime_is_approved_artifact'] else 'is NOT'} the approved package (stated by {actor})",
+        {"actor": actor, "results": rows, "approved_after_sha256": approved_after,
+         "package_sha256": package["content_sha256"], "evidence_reference": fields["evidence_reference"]})
     with execution._locked(change_id):
         current = approval._load(change_id)
         current["verification"] = outcome
         current.setdefault("milestones", []).append({
-            "milestone": "verified" if passed and outcome["runtime_is_approved_artifact"] else "verification_failed",
-            "at": outcome["at"], "actor": actor, "evidence_entry_hash": outcome["evidence_entry_hash"]})
+            "milestone": "verified" if verified else "verification_failed", "at": now, "actor": actor,
+            "evidence_entry_hash": outcome["evidence_entry_hash"]})
         approval._save(change_id, current)
     return outcome
-
-
-# ---------------------------------------------------------------------
-# Reconciliation of an unknown outcome -- by reading the simulated state
-# ---------------------------------------------------------------------
-def reconcile(change_id: str, package: dict, *, milestone: str, actor_user_id: str, actor_name: str,
-              note: str = "") -> dict:
-    """Settle an UNKNOWN apply or build by reading the object's actual state.
-    Evidence is preserved; nothing is retried here, and the next attempt
-    re-runs every check (approval, expiry, scope, before-state)."""
-    if milestone not in (APPLY, BUILD):
-        raise ChangeApprovalError("only an apply or a build of unknown outcome is reconciled here")
-    record = approval._load(change_id)
-    scope = load_company_scope(record["company_id"])
-    env = _environment(scope)
-    with execution._locked(change_id):
-        record = approval._load(change_id)
-        if execution.effective_state(record, milestone) != "unknown":
-            raise execution.ExecutionBlocked(f"change {change_id}: the {milestone} is "
-                                             f"{execution.effective_state(record, milestone)}; only an unknown outcome is reconciled")
-        block = execution._block(record, milestone)
-        observed, outcome, state = {}, "", ""
-        for cand in package["content"]["candidates"]:
-            obj = technical_sim.get_object(record["company_id"], env, cand["object_key"]) or {}
-            checked = (obj.get("checked_in") or {}).get("sha256")
-            active = (obj.get("active") or {}).get("sha256")
-            observed[cand["object_key"]] = {"checked_in_sha256": checked, "active_sha256": active,
-                                            "build": obj.get("build")}
-            if milestone == APPLY:
-                if checked == cand["after_sha256"]:
-                    outcome, state = "applied", "applied"
-                elif checked is None and active == cand["before_sha256"]:
-                    outcome, state = "not_applied", "ready"
-                else:
-                    outcome, state = "diverged", "diverged"
-            else:
-                b = obj.get("build") or {}
-                if b.get("sha256") == cand["after_sha256"] and b.get("status") in ("built", "failed"):
-                    outcome, state = b["status"], b["status"]
-                else:
-                    outcome, state = "not_built", "ready"
-        entry = execution._audit(record, milestone, block, observed=observed, outcome=outcome,
-                                 actor_user_id=actor_user_id, actor_name=actor_name,
-                                 source="automated read of the simulated DEV estate (SIMULATION)",
-                                 evidence_reference=f"simulated DEV estate {env} read at reconciliation", note=note)
-        block["state"] = state
-        approval._save(change_id, record)
-        return entry
 
 
 def status(record: Optional[dict]) -> dict[str, Any]:

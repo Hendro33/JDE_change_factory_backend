@@ -24,8 +24,6 @@ unchanged approval timestamp says nothing about it.
 
 from __future__ import annotations
 
-import json
-import os
 import time
 from datetime import datetime, timezone
 from typing import Callable, Optional
@@ -57,54 +55,29 @@ def functional_target(record: dict) -> str:
     return f"processing_option_values:{str(op.get('application', '')).upper()}|{str(op.get('version', '')).upper()}"
 
 
-def read_functional_before(record: dict) -> dict:
-    """The target's current value through the execution path's own reader
-    (the shared simulated estate in mock mode). Live reading is not
-    implemented, so the before-state is then unknown -- and fails closed."""
-    from .ais_client import AISClientError, LiveReadUnavailable, client
-
-    op = record.get("operation") or {}
-    try:
-        value = client.read_processing_option_value(record["company_id"], op.get("application", ""),
-                                                    op.get("version", ""), op.get("option", ""))
-    except LiveReadUnavailable as exc:
-        return {"known": False, "reason": str(exc)}
-    except AISClientError as exc:
-        return {"known": False, "reason": str(exc)}
-    return {"known": True, "value": value,
-            "target": f"{op.get('application')}/{op.get('version')}/{op.get('option')}",
-            "source": "simulated DEV estate read (SIMULATION)"}
+def _no_reader(kind: str) -> Callable[[dict], dict]:
+    def read(record: dict) -> dict:
+        return {"known": False, "reason": f"no {kind} state reader is available in this process"}
+    return read
 
 
 def technical_targets(record: dict) -> list[str]:
     return [f"technical_object:{k}" for k in (record.get("operation") or {}).get("objects", [])]
 
 
-def read_technical_before(record: dict) -> dict:
-    """The ACTIVE runtime checksum of every object the package changes, in
-    the company's bound DEV environment. Only the simulation can read it;
-    there is no qualified live mechanism, so live is unknown (fail closed)."""
-    from . import technical_sim
-    from .config import settings
-    from .scope import load_company_scope
-
-    if not settings.mock_mode:
-        return {"known": False, "reason": "no qualified live mechanism reads an object's active runtime specification"}
-    try:
-        env = ((load_company_scope(record["company_id"]).get("environment") or {}).get("dev_environment_id") or "")
-    except Exception as exc:  # noqa: BLE001 -- recorded as unknown, never guessed
-        return {"known": False, "reason": str(exc)}
-    keys = (record.get("operation") or {}).get("objects", [])
-    state = technical_sim.runtime_state(record["company_id"], env, keys)
-    if any(v is None for v in state.values()):
-        return {"known": False, "reason": f"object(s) missing from the simulated DEV estate: "
-                                          f"{', '.join(k for k, v in state.items() if v is None)}"}
-    return {"known": True, "value": state, "target": ", ".join(keys),
-            "source": f"simulated DEV estate {env} active runtime checksums (SIMULATION)"}
+# How the target's current state is read, per kind of change. The API
+# registers the real readers at start-up (register_before_reader):
+#   functional -- the processing-option value, read LIVE through the
+#                 customer's own JDE connection (an approved discovery read);
+#   technical  -- the checksum of each object's latest source export
+#                 uploaded for the customer (customer-attested runtime).
+# Anything that cannot be read is "unknown" -- never guessed.
+BEFORE_READERS: dict[str, Callable[[dict], dict]] = {"functional": _no_reader("functional"),
+                                                     "technical": _no_reader("technical")}
 
 
-BEFORE_READERS: dict[str, Callable[[dict], dict]] = {"functional": read_functional_before,
-                                                     "technical": read_technical_before}
+def register_before_reader(kind: str, reader: Callable[[dict], dict]) -> None:
+    BEFORE_READERS[kind] = reader
 
 
 def _kind(record: dict) -> str:
@@ -189,8 +162,11 @@ def record_invalidation(change_id: str, *, kind: str, detail: str, source: str) 
 # ---------------------------------------------------------------------
 # At dispatch
 # ---------------------------------------------------------------------
-def problems(record: dict, *, read_current: bool = True) -> list[str]:
-    """Every reason the approval's basis no longer holds (empty = holds)."""
+def problems(record: dict, *, read_current: bool = True, require_known_before: bool = True) -> list[str]:
+    """Every reason the approval's basis no longer holds (empty = holds).
+    require_known_before=False (a person applying the change and stating
+    what they saw) accepts an approval whose before-state could not be read
+    automatically; a before-state that WAS read must still hold."""
     out: list[str] = []
     binding = record.get("binding")
     if not binding:
@@ -217,19 +193,21 @@ def problems(record: dict, *, read_current: bool = True) -> list[str]:
         out.append("the story now has an Architect design this change was not approved against")
     before = binding.get("before_state") or {}
     if not before.get("known"):
-        out.append(f"the target's before-state was not established at approval: {before.get('reason', 'unknown')}")
+        if require_known_before:
+            out.append(f"the target's before-state was not established at approval: {before.get('reason', 'unknown')}")
     elif read_current:
         reader = BEFORE_READERS.get(_kind(record))
         now = reader(record) if reader else {"known": False}
         if not now.get("known"):
-            out.append(f"the target's current state cannot be read: {now.get('reason', 'unknown')}")
+            if require_known_before:
+                out.append(f"the target's current state cannot be read: {now.get('reason', 'unknown')}")
         elif now.get("value") != before.get("value"):
             out.append(f"the target changed since approval: it was {before.get('value')!r} when approved and is now "
                        f"{now.get('value')!r} -- reassess and approve again")
     return out
 
 
-def require_valid(record: dict) -> None:
-    found = problems(record)
+def require_valid(record: dict, *, require_known_before: bool = True) -> None:
+    found = problems(record, require_known_before=require_known_before)
     if found:
         raise BindingInvalid(f"change {record['change_id']} is not eligible to execute: " + "; ".join(found))

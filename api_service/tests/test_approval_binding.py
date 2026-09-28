@@ -7,6 +7,14 @@ artifact revisions and target before-state it was given against. The
 approval record is history and is never edited; execution eligibility is
 recomputed before every dispatch, and a later baseline or design is never
 silently substituted into approved work.
+
+The before-state of a functional change is read LIVE through the company's
+own JDE connection (here the fake AIS server, which holds PDOCTYPE "S3" for
+P4210|CIQ0001 in JDV920). Delivery is the recorded route: a person applies
+the approved value in DEV and records it, so the delivery gate does not
+compare the current value with the before-state (it has changed by design);
+instead recording is refused unless DEV shows exactly the approved value.
+Invalidations and design-revision checks still block delivery.
 """
 
 from __future__ import annotations
@@ -58,29 +66,54 @@ def test_the_approval_records_the_design_baseline_and_before_state_it_was_given_
     assert (design["design_revision"], design["baseline_id"], design["manifest_sha256"]) == (
         package["design_revision"], package["baseline_id"], package["manifest_sha256"])
     assert record["binding"]["before_state"] == {
-        "known": True, "value": "S3", "target": "P4210/CIQ0001/PDOCTYPE", "source": "simulated DEV estate read (SIMULATION)"}
+        "known": True, "value": "S3", "target": "P4210/CIQ0001/PDOCTYPE",
+        "source": record["binding"]["before_state"]["source"]}
+    assert record["binding"]["before_state"]["source"].startswith("live AIS read (")
     assert record["binding"]["depends_on"]["targets"] == ["processing_option_values:P4210|CIQ0001"]
     assert _preflight(client, "S-BIND-1")["executable"] is True
 
 
-def test_changing_an_approved_targets_value_blocks_dispatch(client, monkeypatch):
+def test_a_target_not_showing_exactly_the_approved_value_is_never_recorded(client, monkeypatch):
+    """After approval, DEV must show exactly the approved value (read back
+    live) before the step is recorded: still the before-state, or a value
+    someone else set, records nothing -- and the approval stays history."""
+    from jde_api_service.delivery import functional
     from jde_mcp_server import approval, execution
-    from jde_mcp_server.binding import BindingInvalid
 
     _setup(client, "S-BIND-DRIFT")
     change = _design_with_change(client, monkeypatch, "S-BIND-DRIFT")
-    _approve(change["change_id"])
+    approved = _approve(change["change_id"])
+
+    def record(stated: str = "SO"):
+        return functional.record_applied(change["change_id"], actor_user_id="u-hendro", actor_name="Hendro",
+                                         evidence_reference="screenshot", stated_value=stated)
+
+    with pytest.raises(functional.DeliveryRefused, match="still shows 'S3'.*the value before the change"):
+        record()  # nothing applied yet; a stated value does not override the live read
     with sim_edit("vdb", "drift: someone sets PDOCTYPE to SQ in DEV after approval") as est:
         est["processing_options"]["P4210|CIQ0001"]["PDOCTYPE"] = "SQ"
-    with pytest.raises(BindingInvalid, match="target changed since approval: it was 'S3' when approved and is now 'SQ'"):
-        _execute("S-BIND-DRIFT", change["change_id"])
-    record = approval._load(change["change_id"])
-    assert execution.effective_state(record) == "ready" and not (record.get("execution") or {}).get("write")
-    pre = _preflight(client, "S-BIND-DRIFT")
-    assert pre["executable"] is False
-    assert any("target changed since approval" in c["detail"] for c in pre["checks"] if not c["ok"])
+    with pytest.raises(functional.DeliveryRefused, match="shows 'SQ'.*not the approved value 'SO'"):
+        record()
+    rec = approval._load(change["change_id"])
+    assert execution.effective_state(rec) == "ready" and not (rec.get("execution") or {}).get("write", {}).get("attempts")
     # The history is intact: still approved, same time, same approver.
-    assert (record["status"], record["approved_by"]) == ("approved", "Hendro")
+    assert (rec["status"], rec["approved_by"], rec["approved_at"]) == ("approved", "Hendro", approved["approved_at"])
+
+
+def test_an_invalidated_approval_blocks_delivery(client, monkeypatch):
+    from jde_mcp_server import approval, binding
+
+    _setup(client, "S-BIND-INV")
+    change = _design_with_change(client, monkeypatch, "S-BIND-INV")
+    _approve(change["change_id"])
+    binding.record_invalidation(change["change_id"], kind="evidence_refreshed", detail="PDOCTYPE changed in DEV",
+                                source="test")
+    with pytest.raises(binding.BindingInvalid, match="invalidated .*evidence_refreshed"):
+        _execute("S-BIND-INV", change["change_id"])
+    pre = _preflight(client, "S-BIND-INV")
+    assert pre["executable"] is False
+    assert any("invalidated" in c["detail"] for c in pre["checks"] if not c["ok"])
+    assert approval._load(change["change_id"])["status"] == "approved"
 
 
 def test_a_change_the_design_did_not_propose_cannot_be_approved_against_it(client, monkeypatch):

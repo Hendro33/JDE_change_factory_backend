@@ -42,7 +42,6 @@ from jde_mcp_server import scope as mcp_scope
 from .services import write_pause
 from .services.bootstrap_service import ensure_bootstrap_admin
 from .services.run_recovery import reconcile_interrupted_runs
-from .services.registry import get_jira_credentials_service
 
 
 @asynccontextmanager
@@ -66,14 +65,16 @@ def _wire_execution_gate() -> None:
         # Each design's evidence baseline, for the Functional/Technical agents
         # (mcp_server get_design_baseline). Written by discovery/baseline.py.
         "JDE_DESIGN_BASELINE_DIR": os.path.join(settings.data_dir, "design_baselines"),
-        # The ONE simulated DEV estate discovery reads and simulated
-        # execution changes (mcp_server sim_estate.py).
-        "JDE_SIM_ESTATE_DIR": os.path.join(settings.data_dir, "sim_estate"),
     }
     for name, default in wiring.items():
         os.environ.setdefault(name, os.path.abspath(default))
     mcp_scope.COMPANY_SCOPE_DIR = os.environ["JDE_COMPANY_SCOPE_DIR"]
     mcp_scope.STORY_COMPANY_DIR = os.environ["JDE_STORY_COMPANY_DIR"]
+    # How an approval's target state is read: live through the customer's
+    # JD Edwards connection (functional), uploaded source exports (technical).
+    from .delivery import readers
+
+    readers.register()
 
 
 async def _lifespan(app: FastAPI):

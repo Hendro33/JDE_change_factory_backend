@@ -1,8 +1,11 @@
 """Process framework -> story finalisation -> process maps -> as-built record.
 
 Uses the SYNTHETIC framework fixture (fixtures/process_framework, SYN- ids,
-not APQC content) and the synthetic Technical workflow fixtures; approver
-identities are synthetic test users."""
+not APQC content) and the synthetic Technical workflow fixtures (custom
+business function B5542001); approver identities are synthetic test users.
+Delivery is the recorded route: people record check-in, build, CNC
+activation and test results (technical), or apply the approved value in DEV
+and record it, read back live through the fake AIS server (functional)."""
 
 from __future__ import annotations
 
@@ -189,7 +192,6 @@ def _design_with_process(client, monkeypatch):
 
     t.ready_company(client, "vdb", approvedReads=t.approved_reads("vdb"))
     t._save_scope(client, "vdb", t.technical_scope())
-    t.seed_object("vdb")
     art = t.upload_source(client, "vdb")
     real = architecture_driver.build_discovery_tools
     seen = {}
@@ -283,10 +285,13 @@ def test_as_built_finalises_only_after_every_checkpoint(client, monkeypatch):
 
     t.prepare("vdb", STORY)
     t.approve_package(client, STORY, 1)
-    assert t.milestone(client, STORY, 1, "apply").status_code == 200
-    assert t.milestone(client, STORY, 1, "build").status_code == 200
-    assert t.cnc(client, STORY, 1).status_code == 200
-    v = t.milestone(client, STORY, 1, "verify")
+    r = t.record_apply(client, STORY, 1)
+    assert r.status_code == 200, r.text
+    r = t.record_build(client, STORY, 1)
+    assert r.status_code == 200, r.text
+    r = t.cnc(client, STORY, 1)
+    assert r.status_code == 200, r.text
+    v = t.record_verify(client, STORY, 1)
     assert v.status_code == 200, v.text
 
     # The earlier draft is stale: its sources changed.
@@ -294,12 +299,15 @@ def test_as_built_finalises_only_after_every_checkpoint(client, monkeypatch):
     assert stale.status_code == 422
     rec = client.post(f"/changes/{STORY}/as-built", headers=headers()).json()
     assert rec["content"]["all_checkpoints_complete"], rec["content"]["checkpoints"]
-    assert rec["delivery_mode"] == "simulation" and rec["content"]["simulated_notice"].startswith("SIMULATED DELIVERY")
+    assert rec["delivery_mode"] == "recorded" and rec["content"]["delivery_mode"] == "recorded"
+    assert "simulated_notice" not in rec["content"]
     assert any("assumption" in x for x in rec["content"]["limitations"])
+    assert any("recorded by people" in x for x in rec["content"]["limitations"])
     final = client.post(f"/changes/{STORY}/as-built/{rec['version']}/finalise", headers=headers())
     assert final.status_code == 200, final.text
     md = client.get(f"/changes/{STORY}/as-built/{rec['version']}/markdown", headers=headers()).text
-    assert "status **FINAL**" in md and "SIMULATED DELIVERY" in md and "```mermaid" in md and "SYN-5.1.3" in md
+    assert "status **FINAL**" in md and "```mermaid" in md and "SYN-5.1.3" in md
+    assert "each step recorded by a person" in md and "SIMULAT" not in md
     assert client.post(f"/changes/{STORY}/as-built/{rec['version']}/finalise", headers=headers()).status_code == 422
 
 
@@ -362,11 +370,10 @@ def test_process_analysis_agent_suggestions_are_validated(client):
     assert json.dumps(done["result"]).count(fid) >= 1
 
 
-def test_functional_route_as_built_records_the_actual_change_and_refuses_incomplete_or_stale(client, monkeypatch):
-    """A bounded SIMULATED Functional delivery: processing-option change through
-    the existing gate, into a finalised as-built record."""
-    from jde_mcp_server.ais_client import client as ais
-
+def test_functional_route_as_built_records_the_actual_change_and_refuses_incomplete_or_stale(client, monkeypatch, ais):
+    """A recorded Functional delivery: the approved processing-option value is
+    applied in DEV and recorded (read back live), the approved test
+    orchestration runs live, and the as-built record says exactly that."""
     from ._discovery import ready_company
     from jde_mcp_server import approval
 
@@ -411,19 +418,25 @@ def test_functional_route_as_built_records_the_actual_change_and_refuses_incompl
     assert cps(applied_only)["applied"] and not cps(applied_only)["tested"]
     assert client.post(f"/changes/{story}/as-built/{applied_only['version']}/finalise", headers=headers()).status_code == 422
 
-    ais.run_orchestration(story, change["change_id"], "ORCH_SO", {})
+    r = client.post(f"/changes/{story}/delivery/run-test", headers=headers())
+    assert r.status_code == 200 and r.json()["passed"] is True, r.text
+    assert any(p == "/jderest/v3/orchestrator/ORCH_SO" for _, p, _c in ais.calls)
     done = record()
     assert done["content"]["all_checkpoints_complete"], done["content"]["checkpoints"]
     f = done["content"]["implementation"]["functional"]
     assert (f["operation"]["option"], f["operation"]["value"], f["binding"]["before_state"]["value"]) == ("PDOCTYPE", "SO", "S3")
-    assert f["readback"] == {"value": "SO", "matches_approved": True,
-                             "source": "read-back from the simulated DEV estate (SIMULATION)"}
+    rb = f["readback"]
+    assert (rb["value"], rb["matches_approved"], rb["live"], rb["by"]) == ("SO", True, True, "Hendro")
+    assert rb["source"].startswith("live AIS read (") and rb["evidence_reference"] == "screenshot TEST-1 of P4210|CIQ0001"
+    assert f["verification"]["source"] == "live orchestration" and f["verification"]["passed"] is True
     assert f["attempts"]["write"][0]["outcome"] == "applied" and f["attempts"]["test"][0]["outcome"] == "completed"
     assert done["content"]["process"]["mapping"]["refs"][0]["node_key"] == "SYN-3.2"
     assert done["content"]["process"]["maps"]["to_be"]["version"] == 1
     assert done["content"]["design"]["baseline"]["process_context"]["mapping_revision"] == 1
-    assert any("SIMULATION STUB" in x for x in done["content"]["limitations"])
-    assert [c["label"] for c in done["content"]["checkpoints"] if c["id"] == "tested"][0].endswith("not behavioural evidence)")
+    assert done["delivery_mode"] == "recorded" and "simulated_notice" not in done["content"]
+    assert not any("could not be read back live" in x for x in done["content"]["limitations"])
+    tested = next(c for c in done["content"]["checkpoints"] if c["id"] == "tested")
+    assert tested["complete"] and "ran live on the customer's AIS" in tested["detail"]
 
     # Stale: the to-be map changes after generation -> the draft cannot be finalised.
     changed = _to_be(fid)
@@ -437,7 +450,8 @@ def test_functional_route_as_built_records_the_actual_change_and_refuses_incompl
     assert cps(again)["design_current"] is False
     assert client.post(f"/changes/{story}/as-built/{again['version']}/finalise", headers=headers()).status_code == 422
     md = client.get(f"/changes/{story}/as-built/{again['version']}/markdown", headers=headers()).text
-    assert "SIMULATED DELIVERY" in md and "'S3' -> 'SO'" in md and "Read-back of the target: 'SO'" in md
+    assert "SIMULAT" not in md and "'S3' -> 'SO'" in md
+    assert "Applied value: 'SO' -- matches the approved value (live AIS read" in md
 
 
 def test_accepted_findings_become_a_reviewed_story_revision(client, monkeypatch, viewer_client):

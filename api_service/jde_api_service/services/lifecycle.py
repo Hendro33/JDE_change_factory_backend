@@ -198,11 +198,13 @@ def _delivery_steps(route: Optional[str], tech: dict, change, final: Optional[di
         applied = bool(ex) and ex.write_state == "applied"
         tested = bool(ex) and ex.test_state == "completed"
         approved = bool(change.change_approval) and change.change_approval.status == "approved"
+        passed = tested and (ex.verification or {}).get("passed") is not False
         add("build", "Build", applied, approved and not applied, "Change applied in DEV" if applied else "",
             failed=bool(ex) and ex.write_state in ("unknown", "diverged"))
-        add("validation", "Validation", tested, applied and not tested, "Test completed" if tested else "",
-            failed=bool(ex) and ex.test_state in ("unknown", "diverged"))
-        add("release", "Release approval", bool(final), tested and not final, "As-built record finalised" if final else "")
+        add("validation", "Validation", passed, applied and not tested,
+            "Test passed" if passed else "Test failed" if tested else "",
+            failed=(bool(ex) and ex.test_state in ("unknown", "diverged")) or (tested and not passed))
+        add("release", "Release approval", bool(final), passed and not final, "As-built record finalised" if final else "")
         add("production", "Production", False, False, "Promotion is done by CNC outside JADE")
     return steps
 
@@ -232,7 +234,7 @@ def _technical_route(change, company_id: str, story_id: str, design: dict, route
         return _mk("delivery", "waiting_decision", NextAction(
             kind="decision", summary=f"Approve the exact implementation (package revision {pkg['revision']}).",
             owner="product_manager", action="approve_package", tab="delivery",
-            effect="JADE may apply and build exactly this package in DEV -- nothing else."),
+            effect="Exactly this package may be checked in, built and activated in DEV -- nothing else."),
             delivery_steps=steps, route=route)
     if status == "rejected":
         return _mk("delivery", "blocked", NextAction(
@@ -240,19 +242,31 @@ def _technical_route(change, company_id: str, story_id: str, design: dict, route
             owner="product_manager", action="start_technical_prepare", tab="delivery",
             effect="JADE prepares a new package revision."), delivery_steps=steps, route=route)
     apply_s, build_s = st.get("apply"), st.get("build")
-    if apply_s in ("unknown", "diverged") or build_s in ("unknown", "diverged", "failed"):
+    if build_s == "failed":
+        if tech.get("running"):
+            return _mk("delivery", "in_progress", _jade("JADE is preparing a repair for the failed build.", "delivery"),
+                       delivery_steps=steps, route=route)
         return _mk("delivery", "failed", NextAction(
-            kind="task", summary="An implementation step did not complete cleanly. Check the DEV state and reconcile it.",
+            kind="task", summary="The build failed. Start a repair: JADE prepares a corrected package revision from the build log.",
+            owner="product_manager", action="start_technical_repair", tab="delivery",
+            effect="JADE prepares a repair as a new package revision for approval."), delivery_steps=steps, route=route)
+    if apply_s in ("unknown", "diverged") or build_s in ("unknown", "diverged"):
+        return _mk("delivery", "failed", NextAction(
+            kind="task", summary="An earlier implementation step has an unclear outcome. Check DEV and reconcile it.",
             owner="product_manager", action="reconcile_technical", tab="technical",
             effect="Once reconciled, delivery can continue safely."), delivery_steps=steps, route=route)
-    if apply_s != "applied" or build_s != "built":
-        if tech.get("running") or apply_s == "in_progress" or build_s == "in_progress":
-            return _mk("delivery", "in_progress", _jade("JADE is applying and building the change in DEV.", "delivery"),
-                       delivery_steps=steps, route=route)
+    if apply_s != "applied":
         return _mk("delivery", "waiting", NextAction(
-            kind="task", summary="Run the approved implementation in DEV (apply and build).",
-            owner="product_manager", action="start_technical_execute", tab="delivery",
-            effect="JADE applies and builds exactly the approved package in DEV."), delivery_steps=steps, route=route)
+            kind="task", summary="Check the approved package in through OMW in DEV, then record it (project and evidence).",
+            owner="product_manager", action="record_technical_apply", tab="delivery",
+            effect="JADE checks the package, approval and scope, and records the check-in."), delivery_steps=steps,
+            route=route)
+    if build_s != "built":
+        return _mk("delivery", "waiting", NextAction(
+            kind="task", summary="Build the checked-in objects and record the build result.",
+            owner="product_manager", action="record_technical_build", tab="delivery",
+            effect="A successful build goes to the CNC for activation; a failed one to a repair."),
+            delivery_steps=steps, route=route)
     if not (rec or {}).get("cnc_activation"):
         return _mk("delivery", "waiting", NextAction(
             kind="task", summary="Activate the built package in DEV and record it.",
@@ -260,12 +274,9 @@ def _technical_route(change, company_id: str, story_id: str, design: dict, route
             effect="Validation can then run against the active DEV runtime."), delivery_steps=steps, route=route)
     ver = (rec or {}).get("verification") or {}
     if not ver:
-        if tech.get("running") or tech.get("verify_state") == "in_progress":
-            return _mk("validation", "in_progress", _jade("JADE is validating the change against the acceptance tests.",
-                                                          "delivery"), delivery_steps=steps, route=route)
         return _mk("validation", "waiting", NextAction(
-            kind="task", summary="Run validation: JADE tests the active change against the acceptance criteria.",
-            owner="product_manager", action="start_technical_verify", tab="delivery",
+            kind="task", summary="Run the approved test plan in DEV and record each result.",
+            owner="product_manager", action="record_technical_verify", tab="delivery",
             effect="The results are recorded as validation evidence."), delivery_steps=steps, route=route)
     if not (ver.get("passed") and ver.get("runtime_is_approved_artifact")):
         return _mk("validation", "failed", NextAction(
@@ -300,7 +311,7 @@ def _functional_route(change, company_id: str, story_id: str, design: dict, rout
         return _mk("solution_review", "waiting_decision", NextAction(
             kind="decision", summary="Review JADE's proposed solution and its exact change, then approve it.",
             owner="product_manager", action="approve_exact_change", tab="solution",
-            effect="JADE may apply exactly this change in DEV -- nothing else."), route=route)
+            effect="Exactly this change may be applied in DEV -- nothing else."), route=route)
     if ap.status == "rejected":
         return _mk("solution_review", "blocked", NextAction(
             kind="task", summary="The proposed change was rejected. Re-run solutioning for a new proposal.",
@@ -314,22 +325,33 @@ def _functional_route(change, company_id: str, story_id: str, design: dict, rout
             effect="Once reconciled, delivery can continue safely."), route=route, delivery_steps=steps)
     if ec.capability_executable is False:
         return _mk("delivery", "blocked", NextAction(
-            kind="task", summary="Approved, but this kind of change is not yet cleared for automated execution in "
-                                 "this environment.",
+            kind="task", summary="Approved, but this kind of change is Restricted or Suspended in the capability "
+                                 "catalogue, so it is not delivered.",
             owner="admin", action=None, tab="technical",
-            effect="An administrator and technical validator must clear the capability first."),
+            effect="The catalogue entry itself must be changed first."),
             route=route, delivery_steps=steps,
-            open_items=["The execution capability for this change still needs validation."])
+            open_items=["The capability for this change is Restricted or Suspended."])
     if not ex or ex.write_state != "applied":
-        return _mk("delivery", "in_progress", _jade("JADE is applying the approved change in DEV.", "delivery"),
-                   route=route, delivery_steps=steps)
+        return _mk("delivery", "waiting", NextAction(
+            kind="task", summary="Apply the approved value in JDE DEV, then record it: JADE reads it back live.",
+            owner="product_manager", action="record_applied", tab="delivery",
+            effect="Only the approved value is recorded as applied."), route=route, delivery_steps=steps)
     if ex.test_state in ("unknown", "diverged"):
         return _mk("validation", "failed", NextAction(
             kind="task", summary="It is unclear whether the test ran. Confirm and reconcile the test run.",
             owner="product_manager", action="reconcile_functional", tab="technical"), route=route, delivery_steps=steps)
     if ex.test_state != "completed":
-        return _mk("validation", "in_progress", _jade("JADE is validating the change.", "delivery"),
-                   route=route, delivery_steps=steps)
+        return _mk("validation", "waiting", NextAction(
+            kind="task", summary=("Run the approved test orchestration in DEV, or record the test result."
+                                  if ec.test_orchestration else "Test the change in DEV and record the result."),
+            owner="product_manager", action="run_or_record_test", tab="delivery",
+            effect="The result is recorded as validation evidence."), route=route, delivery_steps=steps)
+    if ex.verification and ex.verification.get("passed") is False:
+        return _mk("validation", "failed", NextAction(
+            kind="task", summary="The test failed. Re-run solutioning for a corrected change (a rollback is its own "
+                                 "approved change).",
+            owner="product_manager", action="rerun_solutioning", tab="solution",
+            effect="JADE proposes a corrected solution."), route=route, delivery_steps=steps)
     if final is None:
         return _mk("release", "waiting", NextAction(
             kind="task", summary="Validation completed. Review and finalise the as-built record to complete the release.",
@@ -358,12 +380,6 @@ def derive(change, company_id: Optional[str] = None) -> Lifecycle:
         lc = _story_review(change)
     else:
         lc = _solution_onwards(change, company_id, story_id)
-    try:
-        from .customer_service import is_demo_company
-
-        lc.simulated = is_demo_company(company_id)
-    except Exception:  # noqa: BLE001
-        pass
     return lc
 
 

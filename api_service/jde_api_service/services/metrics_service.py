@@ -49,8 +49,11 @@ class MetricsService:
         change_service: ChangeService,
         business_domain_service: Optional[BusinessDomainService] = None,
         delivery_queue_service: Optional[DeliveryQueueService] = None,
+        delivered_at=None,
     ) -> None:
         self._changes = change_service
+        # story id -> delivered time, per customer (the finalised as-built records).
+        self._delivered_at = delivered_at or _delivered_at
         self._domains = business_domain_service
         self._delivery_queue = delivery_queue_service
 
@@ -93,20 +96,31 @@ class MetricsService:
     def metrics_for_customer(self, customer_id: str, period: str = "lifetime", *, now: Optional[datetime] = None) -> FactoryMetrics:
         if period not in {"week", "month", "year", "lifetime"}:
             raise ValueError("Unknown Insights period")
-        all_changes = self._changes.list_for_customer(customer_id)
-        if period != "lifetime":
-            end = now or datetime.now(timezone.utc)
-            start = end - timedelta(days={"week": 7, "month": 30, "year": 365}[period])
-            def included(change: Change) -> bool:
-                try:
-                    at = datetime.fromisoformat(change.created_at.replace("Z", "+00:00"))
-                    if at.tzinfo is None:
-                        at = at.replace(tzinfo=timezone.utc)
-                    return start <= at <= end
-                except (ValueError, TypeError):
-                    return False
-            all_changes = [c for c in all_changes if included(c)]
+        everything = self._changes.list_for_customer(customer_id)
+        delivered = self._delivered_at(customer_id)
+        if period == "lifetime":
+            return self._compute(customer_id, everything, delivered, None, None)
+        end = now or datetime.now(timezone.utc)
+        length = timedelta(days={"week": 7, "month": 30, "year": 365}[period])
+        start = end - length
+        current = self._compute(customer_id, [c for c in everything if _created_in(c, start, end, True)], delivered,
+                                start, end)
+        # The same measures over the previous period of the same length: the
+        # trend each figure shows (current minus previous).
+        previous = self._compute(customer_id, [c for c in everything if _created_in(c, start - length, start)],
+                                 delivered, start - length, start)
+        prev_totals = {t.key: t.value for t in previous.totals}
+        for t in current.totals:
+            t.delta = t.value - prev_totals.get(t.key, 0)
+        cur, prev = current.performance, previous.performance
+        cur.change_volume_delta = cur.change_volume - prev.change_volume
+        cur.first_time_success_delta = cur.first_time_success_rate - prev.first_time_success_rate
+        cur.average_cycle_time_delta = (round(cur.average_cycle_time_days - prev.average_cycle_time_days, 1)
+                                        if cur.delivered_count and prev.delivered_count else 0)
+        return current
 
+    def _compute(self, customer_id: str, all_changes: list[Change], delivered: dict[str, datetime],
+                 start: Optional[datetime], end: Optional[datetime]) -> FactoryMetrics:
         def in_state(*states: str) -> int:
             return sum(1 for c in all_changes if c.state in states)
 
@@ -161,6 +175,18 @@ class MetricsService:
 
         from .lifecycle import HEALTH_LABELS, PHASE_LABELS, PHASES
 
+        # Cycle time: from the request's arrival to its finalised as-built
+        # record (delivered), for stories delivered in this period.
+        cycles = []
+        for c in self._changes.list_for_customer(customer_id) if start is not None else all_changes:
+            done = delivered.get(c.id)
+            if done is None or (start is not None and not (start <= done <= end)):
+                continue
+            created = _parse(c.created_at)
+            if created is not None and done >= created:
+                cycles.append((done - created).total_seconds() / 86400)
+        cycle_avg = round(sum(cycles) / len(cycles), 1) if cycles else 0
+
         lifecycles = [c.lifecycle for c in all_changes if c.lifecycle is not None]
         phase_counts = [PipelineStage(stage=PHASE_LABELS[p], count=sum(1 for lc in lifecycles if lc.phase == p))
                         for p in PHASES]
@@ -194,6 +220,7 @@ class MetricsService:
             business_impact_breakdown=impact,
             business_domain_breakdown=self._domain_breakdown(all_changes, customer_id),
             performance=Performance(
+                average_cycle_time_days=cycle_avg, delivered_count=len(cycles),
                 first_time_success_rate=round((first_time_pass / with_story) * 100) if with_story else 0,
                 human_approvals=approvals,
                 human_rejections=rejections,
@@ -215,6 +242,35 @@ class MetricsService:
             )
             for c in all_changes[:limit]
         ]
+
+
+def _parse(iso: Optional[str]) -> Optional[datetime]:
+    try:
+        at = datetime.fromisoformat(str(iso).replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return None
+    return at if at.tzinfo else at.replace(tzinfo=timezone.utc)
+
+
+def _created_in(change: Change, start: datetime, end: datetime, include_end: bool = False) -> bool:
+    at = _parse(change.created_at)
+    return at is not None and start <= at and (at <= end if include_end else at < end)
+
+
+def _delivered_at(customer_id: str) -> dict[str, datetime]:
+    """story id -> when its as-built record was first finalised."""
+    from ..persistence.db import connection
+
+    with connection() as conn:
+        rows = conn.execute("SELECT story_id, MIN(finalised_at) AS at FROM as_built_records WHERE company_id = ? "
+                            "AND status = 'final' AND finalised_at IS NOT NULL GROUP BY story_id",
+                            (customer_id,)).fetchall()
+    out = {}
+    for r in rows:
+        at = _parse(r["at"])
+        if at is not None:
+            out[r["story_id"]] = at
+    return out
 
 
 def _display_time(iso_timestamp: str) -> str:

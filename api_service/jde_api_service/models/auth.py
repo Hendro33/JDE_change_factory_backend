@@ -65,16 +65,20 @@ class ForgotPasswordResult(ApiModel):
     ok: bool = True
     # Always None. This endpoint is anonymous, so returning the link here
     # would hand any caller a working reset link for any account. Without
-    # an email provider, a company Admin issues the link instead
+    # e-mail, a company Admin issues the link instead
     # (POST /admin/users/{membership_id}/password-reset-link).
     preview_url: Optional[str] = None
+    # Whether this server can e-mail reset links at all (not whether the
+    # address is registered): without it the page says "ask your Administrator".
+    email_delivery: bool = False
 
 
 class PasswordResetLinkOut(ApiModel):
-    # True once a real email provider delivers the link; False in
-    # dev-preview mode, where preview_url is the link for the Admin to hand over.
+    # True only when the link was e-mailed; otherwise preview_url is the
+    # link for the Admin to hand over personally, and detail says why.
     sent: bool
     preview_url: Optional[str] = None
+    detail: str = ""
 
 
 class ResetPasswordInput(ApiModel):
@@ -127,10 +131,13 @@ class InvitationOut(ApiModel):
     created_at: str
     expires_at: str
     invited_by_display_name: str
-    # Only present immediately after creation/resend, and only in
-    # dev-preview mode -- see email_service.py. Never stored, never
-    # returned by the list endpoint afterwards.
+    # Only present immediately after creation/resend, and only when the
+    # invitation could NOT be e-mailed: the link for the Admin to hand over
+    # personally. Never stored, never returned by the list endpoint.
     preview_url: Optional[str] = None
+    # Whether the invitation was e-mailed, and what happened.
+    email_sent: bool = False
+    email_detail: str = ""
 
 
 class InviteInput(ApiModel):
