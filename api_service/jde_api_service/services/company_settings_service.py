@@ -43,8 +43,7 @@ class CompanySettingsService:
     ) -> StoredSetting:
         """Raises RevisionConflict/RevisionRequired on a stale save."""
         now = datetime.now(timezone.utc).isoformat()
-        with connection() as conn:
-            conn.execute("BEGIN IMMEDIATE")
+        with connection(immediate=True) as conn:
             row = conn.execute(
                 "SELECT revision FROM company_settings WHERE company_id = ? AND key = ?", (company_id, key)
             ).fetchone()

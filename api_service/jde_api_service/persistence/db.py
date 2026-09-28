@@ -35,6 +35,10 @@ from typing import Iterator
 from ..config import settings
 from .migrations import MIGRATIONS
 
+from jde_mcp_server import docstore
+
+docstore.set_db_path_resolver(lambda: db_path())
+
 
 def db_path() -> str:
     """Read fresh every call (never cached at import time) so tests can
@@ -47,12 +51,9 @@ def db_path() -> str:
 
 
 def get_connection() -> sqlite3.Connection:
-    path = db_path()
-    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    conn = sqlite3.connect(path)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
-    return conn
+    """A standalone connection with Jade's standard settings (WAL, foreign
+    keys, a lock wait) -- see jde_mcp_server.docstore.connect."""
+    return docstore.connect(db_path())
 
 
 @contextmanager
@@ -61,38 +62,42 @@ def connection(*, immediate: bool = False) -> Iterator[sqlite3.Connection]:
     closes -- the pattern every service function in this module uses so
     none of them has to repeat it.
 
+    This is the same transaction as the document store's
+    (jde_mcp_server.docstore.transaction): inside an open transaction it
+    joins it, so documents and tables written together commit or roll
+    back together.
+
     immediate=True takes SQLite's write lock at the start (BEGIN
     IMMEDIATE), so a read-check-write sequence -- compare a revision,
     re-check the actor's authority, then write -- cannot interleave with
     another writer's."""
-    conn = get_connection()
-    try:
-        if immediate:
-            conn.execute("BEGIN IMMEDIATE")
+    with docstore.transaction(immediate=immediate, path=db_path()) as conn:
         yield conn
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
 
 
 def ensure_schema() -> None:
-    """Idempotent -- safe on every startup, same convention
-    seed_service.py's dataset seeding already follows. Applies any
-    migration not yet recorded in schema_migrations, in order."""
-    with connection() as conn:
+    """Idempotent -- safe on every startup. Applies any migration not yet
+    recorded in schema_migrations, in order, each one atomically: a
+    migration either applies completely and is recorded, or not at all."""
+    conn = get_connection()
+    try:
         conn.execute(
             "CREATE TABLE IF NOT EXISTS schema_migrations ("
             "version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)"
         )
+        conn.commit()
         applied = {row[0] for row in conn.execute("SELECT version FROM schema_migrations")}
         for version, sql in MIGRATIONS:
             if version in applied:
                 continue
-            conn.executescript(sql)
-            conn.execute(
-                "INSERT INTO schema_migrations (version, applied_at) VALUES (?, datetime('now'))",
-                (version,),
-            )
+            try:
+                conn.executescript(
+                    "BEGIN IMMEDIATE;\n" + sql + "\n;INSERT INTO schema_migrations (version, applied_at) "
+                    f"VALUES ({int(version)}, datetime('now'));\nCOMMIT;"
+                )
+            except Exception:
+                if conn.in_transaction:
+                    conn.rollback()
+                raise
+    finally:
+        conn.close()

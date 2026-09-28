@@ -100,7 +100,7 @@ def test_restore_brings_back_sqlite_and_json_state_together(client, monkeypatch,
     assert report["sqlite_integrity"] == "ok"
     assert report["matches_backup"] is True
     assert report["credentials_readable"] is True
-    assert set(report["moved_aside"]) == {"api_data", "backlog", "changes", "evidence"}
+    assert set(report["moved_aside"]) == {"api_data"}
     assert all(os.path.isdir(p) for p in report["moved_aside"].values())  # nothing deleted
 
     with TestClient(app):  # restart on the restored data
@@ -209,8 +209,9 @@ def test_a_damaged_or_altered_archive_is_refused_before_anything_changes(client,
     with tarfile.open(archive, "r:gz") as src, tarfile.open(altered, "w:gz") as dst:
         for member in src.getmembers():
             data = src.extractfile(member).read() if member.isfile() else None
-            if member.name == f"changes/{ids['pending']['change_id']}.json":
-                data = data.replace(b'"pending"', b'"approved"')  # someone "approves" inside the backup
+            if member.name == "api_data/jde.sqlite3":
+                # someone "approves" the pending change inside the backup's database
+                data = data.replace(b'"status": "pending"', b'"status": "approvd"', 1)
                 member.size = len(data)
             dst.addfile(member, io.BytesIO(data) if data is not None else None)
     with pytest.raises(backup_restore.RestoreRefused, match="checksum mismatch"):

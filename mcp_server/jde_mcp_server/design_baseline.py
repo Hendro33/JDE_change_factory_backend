@@ -25,20 +25,21 @@ class DesignBaselineUnavailable(RuntimeError):
     pass
 
 
-def _dir() -> str:
-    return os.environ.get("JDE_DESIGN_BASELINE_DIR", "./design_baselines")
+# The API writes each story's current design hand-off package as a
+# document of this kind (discovery/baseline.py).
+HANDOFF_KIND = "design_baselines"
 
 
 def get_design_baseline(story_id: str) -> dict:
     require_approved(story_id)
     company_id = company_for_story(story_id)
-    path = os.path.join(_dir(), f"{story_id}.json")
-    if not os.path.exists(path):
+    from . import docstore
+
+    package = docstore.get(HANDOFF_KIND, story_id)
+    if package is None:
         raise DesignBaselineUnavailable(
             f"no design baseline for {story_id}: the Architect has not recorded an evidence manifest -- "
             "do not proceed as if the environment had been investigated")
-    with open(path, encoding="utf-8") as f:
-        package = json.load(f)
     if package.get("company_id") != company_id or package.get("story_id") != story_id:
         raise DesignBaselineUnavailable("the design baseline does not belong to this story's company -- refusing")
     blob = json.dumps(package.get("evidence_manifest"), sort_keys=True)

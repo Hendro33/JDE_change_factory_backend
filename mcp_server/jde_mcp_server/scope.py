@@ -99,23 +99,18 @@ def check_custom_product_code(product_code: str) -> None:
 # ---------------------------------------------------------------------
 
 def _read_json(directory: str, doc_id: str) -> Optional[dict]:
-    path = os.path.join(directory, f"{doc_id.replace('/', '_')}.json")
-    if not os.path.exists(path):
-        return None
-    with open(path, "r", encoding="utf-8") as f:
-        return json.load(f)
+    """The API's document of this kind (the directory's last element names
+    the kind -- see jde_mcp_server.docstore); None when there is none."""
+    from . import docstore
+
+    return docstore.get(os.path.basename(os.path.normpath(directory)), doc_id)
 
 
 def company_for_story(story_id: str) -> str:
     """The company this story was recorded against at intake. Raises
     ScopeViolation if that cannot be established -- an unattributed
     story is never guessed into a company."""
-    if not STORY_COMPANY_DIR:
-        raise ScopeViolation(
-            "JDE_STORY_COMPANY_DIR is not configured, so the company a story "
-            "belongs to cannot be established. Nothing can execute until it is."
-        )
-    link = _read_json(STORY_COMPANY_DIR, story_id)
+    link = _read_json(STORY_COMPANY_DIR or "customer_links", story_id)
     company_id = (link or {}).get("customer_id")
     if not company_id:
         raise ScopeViolation(
@@ -128,12 +123,7 @@ def company_for_story(story_id: str) -> str:
 def load_company_scope(company_id: str) -> dict:
     """The company's saved engagement scope. There is no 'no restrictions
     configured' default: unset directory or no saved record blocks."""
-    if not COMPANY_SCOPE_DIR:
-        raise ScopeViolation(
-            "JDE_COMPANY_SCOPE_DIR is not configured, so no company's engagement "
-            "scope can be read. Nothing can execute until it is."
-        )
-    scope = _read_json(COMPANY_SCOPE_DIR, company_id)
+    scope = _read_json(COMPANY_SCOPE_DIR or "engagement_scope", company_id)
     if scope is None:
         raise ScopeViolation(
             f"company {company_id} has no saved engagement scope. An Admin must "

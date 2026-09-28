@@ -101,12 +101,9 @@ def test_malformed_complexity_signal_falls_back_to_unknown_instead_of_crashing(c
     import json
     import os
 
-    path = os.path.join(backlog_module.BACKLOG_DIR, "S-MALFORMED-COMPLEXITY.json")
-    with open(path, encoding="utf-8") as f:
-        record = json.load(f)
+    record = backlog_module._load("S-MALFORMED-COMPLEXITY")
     record["rough_complexity_signal"] = "Unknown. Could not confirm without further discovery."
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(record, f)
+    backlog_module._save("S-MALFORMED-COMPLEXITY", record)
 
     r = client.get("/changes/S-MALFORMED-COMPLEXITY", headers=headers())
     assert r.status_code == 200

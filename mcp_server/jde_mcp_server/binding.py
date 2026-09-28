@@ -37,18 +37,12 @@ class BindingInvalid(ChangeApprovalError):
     """The approval's basis no longer holds -- execution is not eligible."""
 
 
-def _handoff_dir() -> str:
-    return os.environ.get("JDE_DESIGN_BASELINE_DIR", "./design_baselines")
-
-
 def design_handoff(story_id: str) -> Optional[dict]:
     """The story's current design hand-off package (written by api_service),
     or None when the story has no Architect design."""
-    path = os.path.join(_handoff_dir(), f"{story_id}.json")
-    if not os.path.exists(path):
-        return None
-    with open(path, encoding="utf-8") as f:
-        return json.load(f)
+    from . import docstore
+
+    return docstore.get("design_baselines", story_id)
 
 
 def _iso(ts: float) -> str:

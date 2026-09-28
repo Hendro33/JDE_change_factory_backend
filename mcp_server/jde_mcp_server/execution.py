@@ -32,7 +32,6 @@ and any MCP server process started for an agent run).
 
 from __future__ import annotations
 
-import fcntl
 from datetime import datetime, timezone
 import os
 import time
@@ -40,7 +39,7 @@ import uuid
 from contextlib import contextmanager
 from typing import Callable, Iterator, Optional
 
-from . import approval
+from . import approval, docstore
 
 STALE_AFTER_SECONDS = 15 * 60
 
@@ -57,14 +56,10 @@ class ExecutionBlocked(approval.ChangeApprovalError):
 
 @contextmanager
 def _locked(change_id: str) -> Iterator[None]:
-    os.makedirs(approval.CHANGE_DIR, exist_ok=True)
-    path = os.path.join(approval.CHANGE_DIR, f".{change_id}.lock")
-    with open(path, "a") as handle:
-        fcntl.flock(handle, fcntl.LOCK_EX)
-        try:
-            yield
-        finally:
-            fcntl.flock(handle, fcntl.LOCK_UN)
+    """A database transaction holding the write lock: the read-check-write
+    of one change's execution state is atomic across processes."""
+    with docstore.transaction():
+        yield
 
 
 def _now() -> float:
@@ -185,13 +180,8 @@ def finish(change_id: str, kind: str, attempt_id: str, outcome: str, detail: str
 def mark_interrupted_unknown() -> int:
     """At startup nothing can still be running in this process, so every
     in-progress attempt is recorded as unknown. Returns how many."""
-    if not os.path.isdir(approval.CHANGE_DIR):
-        return 0
     count = 0
-    for fn in sorted(os.listdir(approval.CHANGE_DIR)):
-        if not fn.endswith(".json") or fn.startswith("."):
-            continue
-        change_id = fn[:-5]
+    for change_id in docstore.list_ids(approval.KIND):
         with _locked(change_id):
             record = approval._load(change_id)
             changed = False

@@ -48,10 +48,9 @@ class JiraIntegrationService:
         Raises RevisionConflict/RevisionRequired on a stale or missing
         expected_revision (see persistence/revisions.py)."""
         base_url = normalize_jira_base_url(payload.base_url)
-        with connection() as conn:
-            # IMMEDIATE takes the write lock now, so the revision check and
-            # the write below cannot interleave with another save.
-            conn.execute("BEGIN IMMEDIATE")
+        # IMMEDIATE takes the write lock now, so the revision check and
+        # the write below cannot interleave with another save.
+        with connection(immediate=True) as conn:
             row = conn.execute(
                 "SELECT revision FROM jira_integrations WHERE company_id = ?", (customer_id,)
             ).fetchone()

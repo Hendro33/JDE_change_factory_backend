@@ -138,10 +138,11 @@ def test_a_target_approved_for_another_capability_is_refused(client, isolated_di
     from jde_mcp_server.scope import ScopeViolation
 
     change = _approved_change(client, "S-CB-TARGET", _full_scope())
-    path = os.path.join(isolated_dirs["api_data_dir"], "engagement_scope", "vdb.json")
-    doc = json.load(open(path))
+    from jde_mcp_server import docstore
+
+    doc = docstore.get("engagement_scope", "vdb")
     doc["functional_agent"]["approved_versions"][0]["capability_id"] = "batch_version_data_selection"
-    json.dump(doc, open(path, "w"))
+    docstore.put("engagement_scope", "vdb", doc)
     with pytest.raises(ScopeViolation, match="approved for capability 'batch_version_data_selection'"):
         _execute("S-CB-TARGET", change["change_id"])
 

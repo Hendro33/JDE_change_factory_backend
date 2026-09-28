@@ -75,8 +75,7 @@ class JiraCredentialsService:
         if not credential_crypto.is_configured():
             return 0
         rewritten = 0
-        with connection() as conn:
-            conn.execute("BEGIN IMMEDIATE")
+        with connection(immediate=True) as conn:
             rows = conn.execute("SELECT company_id, api_token FROM jira_credentials").fetchall()
             for row in rows:
                 if not credential_crypto.needs_reencryption(row["api_token"]):
@@ -98,8 +97,7 @@ class JiraCredentialsService:
         change history is visible. Raises CredentialKeyMissing when no
         encryption key is configured -- nothing is stored in that case."""
         stored_token = credential_crypto.encrypt(payload.api_token)
-        with connection() as conn:
-            conn.execute("BEGIN IMMEDIATE")
+        with connection(immediate=True) as conn:
             row = conn.execute(
                 "SELECT revision FROM jira_credentials WHERE company_id = ?", (customer_id,)
             ).fetchone()

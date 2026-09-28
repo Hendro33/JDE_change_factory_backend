@@ -112,33 +112,17 @@ def _evidence_records(raw_entries: list[dict]) -> list[EvidenceRecord]:
 
 
 def _all_backlog_records() -> list[dict[str, Any]]:
-    if not os.path.isdir(backlog.BACKLOG_DIR):
-        return []
-    out = []
-    for fn in sorted(os.listdir(backlog.BACKLOG_DIR)):
-        if fn.endswith(".json"):
-            with open(os.path.join(backlog.BACKLOG_DIR, fn), encoding="utf-8") as f:
-                out.append(json.load(f))
-    return out
+    return backlog.all_records()
 
 
 def _all_change_records() -> list[dict[str, Any]]:
-    if not os.path.isdir(approval.CHANGE_DIR):
-        return []
-    out = []
-    for fn in sorted(os.listdir(approval.CHANGE_DIR)):
-        if fn.endswith(".json") and not fn.startswith("."):  # skip in-flight temp files
-            with open(os.path.join(approval.CHANGE_DIR, fn), encoding="utf-8") as f:
-                out.append(json.load(f))
-    return out
+    return approval.all_records()
 
 
 def _evidence_for(story_id: str) -> list[dict[str, Any]]:
-    path = os.path.join(mcp_config.settings.evidence_dir, f"{story_id}.json")
-    if not os.path.exists(path):
-        return []
-    with open(path, encoding="utf-8") as f:
-        return json.load(f)
+    from jde_mcp_server import evidence
+
+    return evidence.entries(story_id)
 
 
 def _latest_change_record_for(story_id: str) -> Optional[dict[str, Any]]:

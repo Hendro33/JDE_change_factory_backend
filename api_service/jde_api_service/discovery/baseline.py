@@ -23,6 +23,7 @@ flags the design for reassessment.
 
 from __future__ import annotations
 
+from jde_mcp_server import docstore
 import hashlib
 import json
 import os
@@ -413,18 +414,12 @@ def _flag(baseline: dict, reason: dict) -> None:
 
 def _update_handoff_status(story_id: str, baseline_id: str, status: str, reasons: list[dict]) -> None:
     """Keep the downstream agents' copy in step with the flag."""
-    path = os.path.join(handoff_dir(), f"{story_id}.json")
-    if not os.path.exists(path):
-        return
-    with open(path, encoding="utf-8") as f:
-        package = json.load(f)
-    if package.get("baseline_id") != baseline_id:
-        return
-    package["status"], package["reassessment"] = status, reasons
-    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".handoff-")
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
-        json.dump(package, f, indent=2, sort_keys=True)
-    os.replace(tmp, path)
+    with docstore.transaction():
+        package = docstore.get(HANDOFF_KIND, story_id)
+        if package is None or package.get("baseline_id") != baseline_id:
+            return
+        package["status"], package["reassessment"] = status, reasons
+        docstore.put(HANDOFF_KIND, story_id, package)
 
 
 def _current_baselines(company_id: str) -> list[dict]:
@@ -549,8 +544,19 @@ HANDOFF_NOTE = ("This evidence baseline is the Architect's snapshot for this req
                 "re-checks approval, scope and environment on its own.")
 
 
+# Each story's current design hand-off package, read by the execution
+# gate and the downstream agents (jde_mcp_server.binding/design_baseline).
+HANDOFF_KIND = "design_baselines"
+
+
 def handoff_dir() -> str:
+    """Where hand-off packages lived as files before they moved into the
+    database (legacy import source only)."""
     return os.environ.get("JDE_DESIGN_BASELINE_DIR") or os.path.join(settings.data_dir, "design_baselines")
+
+
+def read_handoff(story_id: str) -> Optional[dict]:
+    return docstore.get(HANDOFF_KIND, story_id)
 
 
 def write_handoff(company_id: str, story_id: str, baseline: dict, architect_decision: Optional[dict],
@@ -558,12 +564,9 @@ def write_handoff(company_id: str, story_id: str, baseline: dict, architect_deci
     """change_id: the exact change this design revision proposed (None for a
     design that proposed none). A refresh of the same design revision keeps
     the change it already had."""
-    directory = handoff_dir()
-    path = os.path.join(directory, f"{story_id}.json")
     design_approval = None
-    if os.path.exists(path):
-        with open(path, encoding="utf-8") as f:
-            previous = json.load(f)
+    previous = docstore.get(HANDOFF_KIND, story_id)
+    if previous is not None:
         if previous.get("design_revision") == baseline["design_revision"]:
             change_id = change_id if change_id is not None else previous.get("change_id")
             # A person's approval of THIS design revision stays with it; a
@@ -577,25 +580,19 @@ def write_handoff(company_id: str, story_id: str, baseline: dict, architect_deci
         "evidence_manifest": baseline["manifest"], "reassessment": baseline["reassessment"], "note": HANDOFF_NOTE,
         "change_id": change_id, "design_approval": design_approval,
     }
-    os.makedirs(directory, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=directory, prefix=".handoff-")
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
-        json.dump(package, f, indent=2, sort_keys=True)
-    os.replace(tmp, path)
+    docstore.put(HANDOFF_KIND, story_id, package)
     return package
 
 
 def set_design_approval(story_id: str, approval: dict) -> None:
     """Record a person's design approval on the downstream hand-off copy,
     for the design revision it names only."""
-    path = os.path.join(handoff_dir(), f"{story_id}.json")
-    with open(path, encoding="utf-8") as f:
-        package = json.load(f)
-    if package.get("design_revision") != approval["design_revision"]:
-        raise LookupError("the hand-off is for a different design revision")
-    package["design_approval"] = {k: approval[k] for k in (
-        "id", "design_revision", "baseline_id", "manifest_sha256", "approved_by", "approver_user_id", "approved_at")}
-    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".handoff-")
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
-        json.dump(package, f, indent=2, sort_keys=True)
-    os.replace(tmp, path)
+    with docstore.transaction():
+        package = docstore.get(HANDOFF_KIND, story_id)
+        if package is None:
+            raise LookupError("the story has no design hand-off")
+        if package.get("design_revision") != approval["design_revision"]:
+            raise LookupError("the hand-off is for a different design revision")
+        package["design_approval"] = {k: approval[k] for k in (
+            "id", "design_revision", "baseline_id", "manifest_sha256", "approved_by", "approver_user_id", "approved_at")}
+        docstore.put(HANDOFF_KIND, story_id, package)

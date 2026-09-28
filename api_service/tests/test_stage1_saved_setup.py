@@ -192,20 +192,20 @@ def test_engagement_scope_survives_a_backend_restart(client, isolated_dirs):
 # ---------------------------------------------------------------------
 # Atomic JSON writes
 # ---------------------------------------------------------------------
-def test_json_file_store_writes_atomically(tmp_path):
+def test_document_store_writes_and_reads_back(isolated_dirs):
     from jde_api_service.persistence.json_file_store import JsonFileStore
 
-    store = JsonFileStore(str(tmp_path))
+    store = JsonFileStore(str(isolated_dirs["api_data_dir"] / "things"))
     store.put("a", {"v": 1})
     store.put("a", {"v": 2})
     assert store.get("a") == {"v": 2}
-    assert sorted(os.listdir(tmp_path)) == ["a.json"]  # no temp files left behind
+    assert [d["v"] for d in store.list_all()] == [2]
 
 
-def test_json_file_store_keeps_the_old_record_when_a_write_fails(tmp_path):
+def test_document_store_keeps_the_old_record_when_a_write_fails(isolated_dirs):
     from jde_api_service.persistence.json_file_store import JsonFileStore
 
-    store = JsonFileStore(str(tmp_path))
+    store = JsonFileStore(str(isolated_dirs["api_data_dir"] / "things"))
     store.put("a", {"v": 1})
 
     class Unserialisable:
@@ -217,4 +217,19 @@ def test_json_file_store_keeps_the_old_record_when_a_write_fails(tmp_path):
     except RuntimeError:
         pass
     assert store.get("a") == {"v": 1}
-    assert sorted(os.listdir(tmp_path)) == ["a.json"]
+
+
+def test_a_failed_block_rolls_back_every_write_in_it(isolated_dirs):
+    """locked() is one database transaction: nothing in a failed block persists."""
+    from jde_api_service.persistence.json_file_store import JsonFileStore
+
+    store = JsonFileStore(str(isolated_dirs["api_data_dir"] / "things"))
+    store.put("a", {"v": 1})
+    try:
+        with store.locked():
+            store.put("a", {"v": 2})
+            store.put("b", {"v": 3})
+            raise RuntimeError("fails after writing")
+    except RuntimeError:
+        pass
+    assert store.get("a") == {"v": 1} and store.get("b") is None

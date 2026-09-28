@@ -277,12 +277,11 @@ def test_acceptance_8_downstream_agents_receive_the_same_manifest(client, monkey
     save_profile(client, "vdb", role="JADEDISC2")
     assert get_design_baseline(STORY)["status"] == "needs_reassessment"
     # A tampered copy is refused.
-    import os
+    from jde_mcp_server import docstore
 
-    path = os.path.join(os.environ["JDE_DESIGN_BASELINE_DIR"], f"{STORY}.json")
-    doc = json.load(open(path))
+    doc = docstore.get("design_baselines", STORY)
     doc["evidence_manifest"]["observations"] = []
-    json.dump(doc, open(path, "w"))
+    docstore.put("design_baselines", STORY, doc)
     with pytest.raises(DesignBaselineUnavailable, match="checksum"):
         get_design_baseline(STORY)
 

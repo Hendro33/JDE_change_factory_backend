@@ -19,9 +19,13 @@ import time
 from dataclasses import dataclass, field, asdict
 from typing import Optional
 
+from . import docstore
 from .config import settings
 
+# Where stories lived as files before they moved into Jade's database;
+# read once at start-up by the legacy import (main.py), never written.
 BACKLOG_DIR = os.environ.get("JDE_BACKLOG_DIR", "./backlog")
+KIND = "backlog"
 
 
 class BacklogError(RuntimeError):
@@ -58,22 +62,17 @@ def _set_state(record: dict, new_state: str) -> None:
     record["state"] = new_state
 
 
-def _path(story_id: str) -> str:
-    os.makedirs(BACKLOG_DIR, exist_ok=True)
-    return os.path.join(BACKLOG_DIR, f"{story_id}.json")
-
-
 def _load(story_id: str) -> Optional[dict]:
-    p = _path(story_id)
-    if not os.path.exists(p):
-        return None
-    with open(p, "r", encoding="utf-8") as f:
-        return json.load(f)
+    return docstore.get(KIND, story_id)
 
 
 def _save(story_id: str, record: dict) -> None:
-    with open(_path(story_id), "w", encoding="utf-8") as f:
-        json.dump(record, f, indent=2)
+    docstore.put(KIND, story_id, record)
+
+
+def all_records() -> list[dict]:
+    """Every story record, in id order."""
+    return docstore.list_all(KIND)
 
 
 # ---------------------------------------------------------------------
@@ -92,8 +91,6 @@ def propose_to_backlog(
     """Record a quality-gated story in the backlog. Sets status to
     'backlog' -- NOT 'approved'. Nothing further happens to it until a
     human runs backlog_review.py."""
-    if _load(story_id) is not None:
-        raise BacklogError(f"story {story_id} already exists in the backlog")
     record = {
         "story_id": story_id,
         "user_story": user_story,
@@ -108,7 +105,8 @@ def propose_to_backlog(
         "decided_at": None,
         "decision_note": None,
     }
-    _save(story_id, record)
+    if not docstore.insert_new(KIND, story_id, record):
+        raise BacklogError(f"story {story_id} already exists in the backlog")
     return record
 
 
@@ -118,18 +116,10 @@ def propose_to_backlog(
 # never by an agent.
 # ---------------------------------------------------------------------
 def list_pending() -> list[dict]:
-    if not os.path.isdir(BACKLOG_DIR):
-        return []
-    out = []
-    for fn in sorted(os.listdir(BACKLOG_DIR)):
-        if fn.endswith(".json"):
-            rec = _load(fn[:-5])
-            if rec and rec["status"] == "backlog":
-                out.append(rec)
-    return out
+    return [rec for rec in all_records() if rec.get("status") == "backlog"]
 
 
-def approve(story_id: str, decided_by: str, note: str = "") -> dict:
+def _approve_unlocked(story_id: str, decided_by: str, note: str = "") -> dict:
     record = _load(story_id)
     if record is None:
         raise BacklogError(f"no such story: {story_id}")
@@ -144,8 +134,13 @@ def approve(story_id: str, decided_by: str, note: str = "") -> dict:
     _save(story_id, record)
     return record
 
+def approve(story_id: str, decided_by: str, note: str = "") -> dict:
+    with docstore.transaction():
+        return _approve_unlocked(story_id, decided_by, note)
 
-def reject(story_id: str, decided_by: str, note: str) -> dict:
+
+
+def _reject_unlocked(story_id: str, decided_by: str, note: str) -> dict:
     record = _load(story_id)
     if record is None:
         raise BacklogError(f"no such story: {story_id}")
@@ -162,6 +157,11 @@ def reject(story_id: str, decided_by: str, note: str) -> dict:
     _save(story_id, record)
     return record
 
+def reject(story_id: str, decided_by: str, note: str) -> dict:
+    with docstore.transaction():
+        return _reject_unlocked(story_id, decided_by, note)
+
+
 
 # ---------------------------------------------------------------------
 # "Resolve without Change" (Section 15.6). A legitimate, evidenced
@@ -172,7 +172,7 @@ def reject(story_id: str, decided_by: str, note: str) -> dict:
 # terminal: a resolved story does not later become an executed one
 # under the same story_id.
 # ---------------------------------------------------------------------
-def resolve_without_change(story_id: str, resolution_note: str, resolved_by: str) -> dict:
+def _resolve_without_change_unlocked(story_id: str, resolution_note: str, resolved_by: str) -> dict:
     if not resolution_note:
         raise BacklogError("resolve_without_change requires a note explaining what existing capability satisfies the requirement")
     record = require_approved(story_id)
@@ -185,6 +185,11 @@ def resolve_without_change(story_id: str, resolution_note: str, resolved_by: str
     })
     _save(story_id, record)
     return record
+
+def resolve_without_change(story_id: str, resolution_note: str, resolved_by: str) -> dict:
+    with docstore.transaction():
+        return _resolve_without_change_unlocked(story_id, resolution_note, resolved_by)
+
 
 
 # ---------------------------------------------------------------------
@@ -209,7 +214,7 @@ def require_approved(story_id: str) -> dict:
     return record
 
 
-def record_story_revision(story_id: str, user_story: str, *, revision: int, revised_by: str, reason: str) -> dict:
+def _record_story_revision_unlocked(story_id: str, user_story: str, *, revision: int, revised_by: str, reason: str) -> dict:
     """A person-applied revision of an approved story's text (for example
     accepted process-analysis findings). The previous text is kept in the
     record's history; the approval decision itself is not changed -- the
@@ -221,6 +226,11 @@ def record_story_revision(story_id: str, user_story: str, *, revision: int, revi
     record["user_story"] = user_story
     _save(story_id, record)
     return record
+
+def record_story_revision(story_id: str, user_story: str, *, revision: int, revised_by: str, reason: str) -> dict:
+    with docstore.transaction():
+        return _record_story_revision_unlocked(story_id, user_story, revision=revision, revised_by=revised_by, reason=reason)
+
 
 
 def get_approved_story(story_id: str) -> dict:

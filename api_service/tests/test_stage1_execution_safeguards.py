@@ -244,16 +244,17 @@ def test_a_policy_the_gate_does_not_understand_blocks_execution(client, isolated
     _approve(change["change_id"])
 
     # A newer policy shape written by something this gate predates.
-    path = os.path.join(isolated_dirs["api_data_dir"], "engagement_scope", "vdb.json")
-    doc = json.load(open(path))
+    from jde_mcp_server import docstore
+
+    doc = docstore.get("engagement_scope", "vdb")
     doc["approval_policy"]["policy_version"] = 2
-    json.dump(doc, open(path, "w"))
+    docstore.put("engagement_scope", "vdb", doc)
     with pytest.raises(ScopeViolation, match="not one this gate understands"):
         _execute("S12-UNKNOWN", change["change_id"])
 
     doc["approval_policy"]["policy_version"] = 1
     doc["approval_policy"]["require_second_approver"] = True
-    json.dump(doc, open(path, "w"))
+    docstore.put("engagement_scope", "vdb", doc)
     with pytest.raises(ScopeViolation, match="does not understand"):
         _execute("S12-UNKNOWN", change["change_id"])
 

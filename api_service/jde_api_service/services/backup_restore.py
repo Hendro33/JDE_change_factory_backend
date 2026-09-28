@@ -1,8 +1,11 @@
 """
-Consistent backup and restore of everything Jade keeps: the SQLite
-database AND the JSON records (company scopes, story links, domain
-reviews, backlog, exact-change approvals with their execution attempts,
-evidence chains).
+Consistent backup and restore of a single-server Jade installation that
+uses the built-in SQLite database: the database (every record -- users,
+customers, settings, stories, exact-change approvals with their
+execution attempts, evidence chains) and the uploaded files under the
+data directory. A deployment on PostgreSQL uses the database service's
+own backups (on Azure: automated backups with point-in-time restore)
+plus the file store's.
 
 Consistency comes from a brief write pause (write_pause.py): while the
 archive is taken, the API refuses every mutating request and the gate
@@ -35,9 +38,7 @@ import tempfile
 from datetime import datetime, timezone
 from typing import Optional
 
-from jde_mcp_server import approval, backlog, execution
-from jde_mcp_server import config as mcp_config
-from jde_mcp_server.evidence import verify_chain
+from jde_mcp_server import approval, execution
 
 from ..config import settings
 from ..persistence.db import db_path
@@ -57,13 +58,10 @@ class RestoreRefused(RuntimeError):
 
 
 def data_locations() -> dict[str, str]:
-    """Every directory Jade writes, by a stable name used inside the archive."""
-    return {
-        "api_data": os.path.abspath(settings.data_dir),
-        "backlog": os.path.abspath(backlog.BACKLOG_DIR),
-        "changes": os.path.abspath(approval.CHANGE_DIR),
-        "evidence": os.path.abspath(mcp_config.settings.evidence_dir),
-    }
+    """Every directory Jade writes, by a stable name used inside the archive.
+    All records are in the database under the data directory; the data
+    directory also holds uploaded files (artifacts, request documents)."""
+    return {"api_data": os.path.abspath(settings.data_dir)}
 
 
 def _sha256(path: str) -> str:
@@ -101,43 +99,35 @@ def summarise(locations: dict[str, str], database: str) -> dict:
     finally:
         conn.close()
 
-    changes = {}
-    change_dir = locations["changes"]
-    if os.path.isdir(change_dir):
-        for fn in sorted(os.listdir(change_dir)):
-            if fn.endswith(".json") and not fn.startswith("."):
-                with open(os.path.join(change_dir, fn), encoding="utf-8") as f:
-                    rec = json.load(f)
-                changes[rec["change_id"]] = {
-                    "status": rec.get("status"),
-                    "approver_user_id": (rec.get("approver_authority") or {}).get("user_id"),
-                    "expires_at": rec.get("expires_at"),
-                    "write_state": execution.effective_state(rec, execution.WRITE),
-                    "test_state": execution.effective_state(rec, execution.TEST),
-                    "write_attempts": len(((rec.get("execution") or {}).get("write") or {}).get("attempts") or []),
-                }
-    scopes = {}
-    scope_dir = os.path.join(locations["api_data"], "engagement_scope")
-    if os.path.isdir(scope_dir):
-        for fn in sorted(os.listdir(scope_dir)):
-            if fn.endswith(".json") and not fn.startswith("."):
-                with open(os.path.join(scope_dir, fn), encoding="utf-8") as f:
-                    scopes[fn[:-5]] = json.load(f).get("revision")
-    evidence = {}
-    ev_dir = locations["evidence"]
-    if os.path.isdir(ev_dir):
-        saved = mcp_config.settings
-        try:
-            # verify_chain reads the configured directory; point it at the one summarised.
-            import dataclasses
-
-            mcp_config.settings = dataclasses.replace(saved, evidence_dir=ev_dir)
-            for fn in sorted(os.listdir(ev_dir)):
-                if fn.endswith(".json") and not fn.startswith("."):
-                    chain = verify_chain(fn[:-5])
-                    evidence[fn[:-5]] = {"valid": chain["valid"], "entries": chain.get("entries")}
-        finally:
-            mcp_config.settings = saved
+    changes, scopes, evidence = {}, {}, {}
+    conn = sqlite3.connect(f"file:{database}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    try:
+        has_documents = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'documents'").fetchone() is not None
+        docs = (lambda kind: [(r["doc_id"], json.loads(r["body"])) for r in conn.execute(
+            "SELECT doc_id, body FROM documents WHERE kind = ? ORDER BY doc_id", (kind,))]) if has_documents else (lambda kind: [])
+        for _id, rec in docs(approval.KIND):
+            changes[rec["change_id"]] = {
+                "status": rec.get("status"),
+                "approver_user_id": (rec.get("approver_authority") or {}).get("user_id"),
+                "expires_at": rec.get("expires_at"),
+                "write_state": execution.effective_state(rec, execution.WRITE),
+                "test_state": execution.effective_state(rec, execution.TEST),
+                "write_attempts": len(((rec.get("execution") or {}).get("write") or {}).get("attempts") or []),
+            }
+        for doc_id, scope in docs("engagement_scope"):
+            scopes[doc_id] = scope.get("revision")
+        for doc_id, entries in docs("evidence"):
+            evidence[doc_id] = {"valid": _chain_valid(entries), "entries": len(entries)}
+        for table, column in (("ai_connections", "credential_secret"), ("jde_profiles", "credential_secret")):
+            if conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)).fetchone():
+                stored_key_ids = sorted(set(stored_key_ids) | {
+                    credential_crypto.stored_key_id(r[column]) or "plaintext"
+                    for r in conn.execute(f"SELECT {column} FROM {table} WHERE {column} IS NOT NULL")  # noqa: S608
+                })
+    finally:
+        conn.close()
     return {
         "schema_version": schema_version,
         "row_counts": counts,
@@ -149,6 +139,18 @@ def summarise(locations: dict[str, str], database: str) -> dict:
     }
 
 
+def _chain_valid(entries: list[dict]) -> bool:
+    from jde_mcp_server.evidence import GENESIS_HASH, _entry_hash
+
+    prev = GENESIS_HASH
+    for entry in entries:
+        body = {k: v for k, v in entry.items() if k != "entry_hash"}
+        if entry.get("prev_hash") != prev or entry.get("entry_hash") != _entry_hash(prev, body):
+            return False
+        prev = entry["entry_hash"]
+    return True
+
+
 def _active_work(locations: dict[str, str]) -> list[str]:
     from .run_recovery import _ENHANCEMENT_IN_PROGRESS
     from .registry import get_agent_run_service, get_architecture_review_service, get_enhancement_run_service
@@ -156,15 +158,10 @@ def _active_work(locations: dict[str, str]) -> list[str]:
     active = [f"agent run {r.run_id}" for r in get_agent_run_service().list_all() if r.stage == "started"]
     active += [f"enhancement {r.request_id}" for r in get_enhancement_run_service().list_all() if r.stage in _ENHANCEMENT_IN_PROGRESS]
     active += [f"architecture review {r.story_id}" for r in get_architecture_review_service().list_all() if r.stage == "analyzing"]
-    change_dir = locations["changes"]
-    if os.path.isdir(change_dir):
-        for fn in os.listdir(change_dir):
-            if fn.endswith(".json") and not fn.startswith("."):
-                with open(os.path.join(change_dir, fn), encoding="utf-8") as f:
-                    rec = json.load(f)
-                for kind in (execution.WRITE, execution.TEST):
-                    if ((rec.get("execution") or {}).get(kind) or {}).get("state") == "in_progress":
-                        active.append(f"JDE {kind} attempt on {rec['change_id']}")
+    for rec in approval.all_records():
+        for kind in (execution.WRITE, execution.TEST):
+            if ((rec.get("execution") or {}).get(kind) or {}).get("state") == "in_progress":
+                active.append(f"JDE {kind} attempt on {rec['change_id']}")
     return active
 
 
@@ -204,6 +201,9 @@ def create_backup(out_path: str, *, by: str, settle_seconds: float = 2.0) -> dic
             src_conn, dst_conn = sqlite3.connect(source_db), sqlite3.connect(staged_db)
             try:
                 src_conn.backup(dst_conn)
+                # A self-contained single file in the archive (the live
+                # database runs in WAL mode; the copy must not).
+                dst_conn.execute("PRAGMA journal_mode = DELETE")
             finally:
                 src_conn.close()
                 dst_conn.close()
@@ -253,7 +253,8 @@ def _extract_verified(archive: str, into: str) -> dict:
             if rel != "manifest.json":
                 seen.add(rel)
     if seen != set(manifest["files"]):
-        raise RestoreRefused("the archive's files do not match its manifest (missing or extra files)")
+        raise RestoreRefused("the archive's files do not match its manifest (missing or extra files): "
+                             + ", ".join(sorted(seen ^ set(manifest["files"]))[:5]))
     for rel, meta in manifest["files"].items():
         if _sha256(os.path.join(into, rel)) != meta["sha256"]:
             raise RestoreRefused(f"checksum mismatch for {rel} -- the archive is damaged or was altered")

@@ -77,7 +77,9 @@ def test_a_write_reconciliation_records_target_observation_actor_time_and_eviden
     import json
     import os
 
-    entries = json.load(open(os.path.join(mcp_config.settings.evidence_dir, "S-AR-AUDIT.json")))
+    from jde_mcp_server import evidence as mcp_evidence
+
+    entries = mcp_evidence.entries("S-AR-AUDIT")
     assert entries[-1]["event"] == "write_reconciliation"
     assert entries[-1]["entry_hash"] == rec["evidenceEntryHash"]
     assert entries[-1]["reconciliation"]["actor"]["user_id"] == "u-hendro"

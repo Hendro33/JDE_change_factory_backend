@@ -25,7 +25,7 @@ import time
 from typing import Iterable, Optional
 
 from .backlog import require_approved, BacklogError
-from . import authority, capability_catalog
+from . import authority, capability_catalog, docstore
 from .scope import (
     check_environment_binding,
     company_for_story,
@@ -35,7 +35,10 @@ from .scope import (
     scope_revision,
 )
 
+# Where exact changes lived as files before they moved into Jade's
+# database; read once at start-up by the legacy import, never written.
 CHANGE_DIR = os.environ.get("JDE_CHANGE_DIR", "./changes")
+KIND = "changes"
 
 class ChangeApprovalError(RuntimeError):
     """Raised whenever an exact-change approval is missing, mismatched,
@@ -76,33 +79,17 @@ def _hash(operation: dict) -> str:
     return hashlib.sha256(_canonical(operation).encode("utf-8")).hexdigest()
 
 
-def _path(change_id: str) -> str:
-    os.makedirs(CHANGE_DIR, exist_ok=True)
-    return os.path.join(CHANGE_DIR, f"{change_id}.json")
-
-
 def _load(change_id: str) -> Optional[dict]:
-    p = _path(change_id)
-    if not os.path.exists(p):
-        return None
-    with open(p, "r", encoding="utf-8") as f:
-        return json.load(f)
+    return docstore.get(KIND, change_id)
 
 
 def _save(change_id: str, record: dict) -> None:
-    # Temp file + rename: an interrupted write never leaves a truncated record.
-    path = _path(change_id)
-    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".tmp-", suffix=".json")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(record, f, indent=2)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp, path)
-    except BaseException:
-        if os.path.exists(tmp):
-            os.remove(tmp)
-        raise
+    docstore.put(KIND, change_id, record)
+
+
+def all_records() -> list[dict]:
+    """Every exact-change record, in id order."""
+    return docstore.list_all(KIND)
 
 
 # ---------------------------------------------------------------------
@@ -171,7 +158,8 @@ def propose_change(story_id: str, operation: dict, capability_id: str, environme
         "catalog_revision": capability_catalog.catalog_revision(),
         "scope_revision": scope_revision(company_id),
     }
-    _save(change_id, record)
+    if not docstore.insert_new(KIND, change_id, record):
+        raise ChangeApprovalError(f"change {change_id} already exists -- propose it again")
     return record
 
 
@@ -182,15 +170,7 @@ def propose_change(story_id: str, operation: dict, capability_id: str, environme
 # operation, not an abstract request.
 # ---------------------------------------------------------------------
 def list_pending_changes() -> list[dict]:
-    if not os.path.isdir(CHANGE_DIR):
-        return []
-    out = []
-    for fn in sorted(os.listdir(CHANGE_DIR)):
-        if fn.endswith(".json") and not fn.startswith("."):  # skip in-flight temp files
-            rec = _load(fn[:-5])
-            if rec and rec["status"] == "pending":
-                out.append(rec)
-    return out
+    return [rec for rec in all_records() if rec.get("status") == "pending"]
 
 
 def _load_for_company(change_id: str, company_id: str) -> dict:

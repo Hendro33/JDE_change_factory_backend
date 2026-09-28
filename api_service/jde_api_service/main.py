@@ -68,6 +68,9 @@ def _wire_execution_gate() -> None:
         "JDE_STORY_COMPANY_DIR": os.path.join(settings.data_dir, "customer_links"),
         # Read-only: the gate re-checks the approver's CURRENT roles here
         # immediately before dispatch (mcp_server authority.py).
+        # Also Jade's database for the agents' tool server (a separate
+        # process): it reads and writes the same stories, changes and
+        # evidence (jde_mcp_server.docstore falls back to this path).
         "JDE_AUTH_DB_PATH": db_path(),
         # Present while a backup or restore holds writes (services/write_pause.py).
         "JDE_WRITE_PAUSE_FILE": write_pause.pause_file(),
@@ -90,6 +93,9 @@ async def _lifespan(app: FastAPI):
     _wire_execution_gate()
     # Schema first: recovery reads tables a fresh database only gets here.
     ensure_schema()
+    from .persistence.legacy_import import import_legacy_files
+
+    import_legacy_files()
     from .discovery import transport as _jde_transport
 
     if _jde_transport.server_lock():
@@ -102,9 +108,11 @@ async def _lifespan(app: FastAPI):
     interrupted = reconcile_interrupted_runs()
     if any(interrupted.values()):
         logger.warning("Marked runs interrupted by the restart as failed: %s", interrupted)
-    reencrypted = get_jira_credentials_service().reencrypt_stored()
+    from .services.credential_rotation import reencrypt_all
+
+    reencrypted = reencrypt_all()
     if reencrypted:
-        logger.info("Encrypted or re-keyed %d stored Jira credential(s)", reencrypted)
+        logger.info("Encrypted or re-keyed stored credentials under the current key: %s", reencrypted)
     ensure_seed_companies()
     from .ai import packs as _ai_packs, runtime as _ai_runtime
 

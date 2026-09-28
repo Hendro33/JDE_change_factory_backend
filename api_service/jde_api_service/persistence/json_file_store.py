@@ -1,93 +1,57 @@
 """
-Small generic file-backed JSON store -- one JSON document per id, one
-file per document, same "directory of JSON files" pattern backlog.py /
-approval.py / evidence.py already use in mcp_server. This is Phase 1's
-persistence for data api_service owns itself (change requests, the
-customer-link sidecar): plain files, matching the maturity of
-everything else in the pilot (Section 18 -- a real datastore is a
-product-ready step, not a pilot one). No implicit sharing with
-mcp_server's own directories.
+One kind of document in Jade's database (jde_mcp_server.docstore).
+
+The class keeps the name and interface it had when each kind was a
+directory of JSON files, so every service built on it is unchanged: a
+service still says ``JsonFileStore(<data_dir>/delivery_queue)``. The
+directory's last path element is now the document kind; nothing is
+written to the directory itself. Existing files from an earlier
+installation are imported once at start-up (main.py).
+
+``locked()`` is a real database transaction holding the write lock, so
+a read-check-write inside it is safe across threads AND processes, and
+anything else written in the same block (another document, a table row)
+commits or rolls back with it.
 """
 
 from __future__ import annotations
 
-import json
 import os
-import tempfile
-import threading
 from contextlib import contextmanager
 from typing import Any, Iterator, Optional
 
-# One lock per store directory, shared by every JsonFileStore instance
-# pointing at it (services are constructed per request). This makes a
-# read-check-write sequence safe within ONE process only -- the pilot's
-# deployment shape. Multiple processes or hosts need a real database.
-_DIR_LOCKS: dict[str, threading.RLock] = {}
-_DIR_LOCKS_GUARD = threading.Lock()
-
-
-def _lock_for(directory: str) -> threading.RLock:
-    key = os.path.abspath(directory)
-    with _DIR_LOCKS_GUARD:
-        if key not in _DIR_LOCKS:
-            _DIR_LOCKS[key] = threading.RLock()
-        return _DIR_LOCKS[key]
+from jde_mcp_server import docstore
 
 
 class JsonFileStore:
     def __init__(self, directory: str) -> None:
         self._dir = directory
+        self.kind = os.path.basename(os.path.normpath(directory))
 
-    def _path(self, doc_id: str) -> str:
-        os.makedirs(self._dir, exist_ok=True)
-        safe_id = doc_id.replace("/", "_")
-        return os.path.join(self._dir, f"{safe_id}.json")
+    @property
+    def directory(self) -> str:
+        """Where this kind's documents lived as files (legacy import source)."""
+        return self._dir
 
     @contextmanager
     def locked(self) -> Iterator[None]:
         """Hold this while reading, checking a revision and writing, so
         two concurrent saves cannot both pass the check."""
-        with _lock_for(self._dir):
+        with docstore.transaction():
             yield
 
     def get(self, doc_id: str) -> Optional[dict[str, Any]]:
-        path = self._path(doc_id)
-        if not os.path.exists(path):
-            return None
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
+        return docstore.get(self.kind, doc_id)
 
     def put(self, doc_id: str, document: dict[str, Any]) -> None:
-        # Write to a temp file in the same directory, then atomically
-        # replace -- a crash mid-write leaves the previous version intact
-        # instead of a truncated file.
-        path = self._path(doc_id)
-        fd, tmp = tempfile.mkstemp(dir=self._dir, prefix=".tmp-", suffix=".json")
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                json.dump(document, f, indent=2, default=str)
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(tmp, path)
-        except BaseException:
-            if os.path.exists(tmp):
-                os.remove(tmp)
-            raise
+        docstore.put(self.kind, doc_id, document)
+
+    def insert_new(self, doc_id: str, document: dict[str, Any]) -> bool:
+        return docstore.insert_new(self.kind, doc_id, document)
 
     def delete(self, doc_id: str) -> None:
-        """Idempotent -- deleting a document that isn't there is not an
-        error, same as every other store in this system treats a
-        missing record."""
-        path = self._path(doc_id)
-        if os.path.exists(path):
-            os.remove(path)
+        """Idempotent -- deleting a document that isn't there is not an error."""
+        docstore.delete(self.kind, doc_id)
 
-    def list_all(self) -> list[dict[str, Any]]:
-        if not os.path.isdir(self._dir):
-            return []
-        out = []
-        for fn in sorted(os.listdir(self._dir)):
-            if fn.endswith(".json"):
-                with open(os.path.join(self._dir, fn), "r", encoding="utf-8") as f:
-                    out.append(json.load(f))
-        return out
+    def list_all(self, *, company_id: Optional[str] = None) -> list[dict[str, Any]]:
+        return docstore.list_all(self.kind, company_id=company_id)
