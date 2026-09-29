@@ -3,6 +3,13 @@ Delivering an approved functional change -- a configuration change set, or
 a single processing-option update -- on the customer's real JD Edwards
 system.
 
+The agents apply every item of a change set marked "agent"
+(executors/runner.py). A person applies and records only the items marked
+"person" -- JD Edwards cannot accommodate them through AIS or the web
+client -- and an agent item only while no agent can apply it (agent
+execution switched off or not set up, or the agent stopped before anything
+was saved); that hand-over is recorded with its reason.
+
   1. record_applied  -- a person applied EXACTLY the approved value in DEV.
      Jade re-runs the whole delivery gate, then reads the value back LIVE
      through the customer's connection. Only the approved value is ever
@@ -116,13 +123,42 @@ def _same(a, b) -> bool:
     return str("" if a is None else a).strip() == str("" if b is None else b).strip()
 
 
-def _matches_approved(item: dict, value) -> bool:
+def _spec(text) -> str:
+    return " ".join(str(text or "").split()).lower()
+
+
+def matches_approved(item: dict, value) -> bool:
+    """Does an observed state show exactly the approved values?"""
     if item["kind"] == "processing_option":
         return _same(value, item["value"])
     if item["kind"] in config_items.ROW_KINDS:
         return bool((value or {}).get("exists")) and all(
             _same((value.get("values") or {}).get(f), v) for f, v in item["values"].items())
+    if item["kind"] in config_items.VERSION_KINDS:
+        return isinstance(value, dict) and _spec(value.get("specification")) == _spec(item["specification"])
     return False
+
+
+_matches_approved = matches_approved
+
+
+def complete_if_all_recorded(change_id: str, *, actor_user_id: str, actor_name: str) -> bool:
+    """Once every item is recorded, the change counts as applied (recorded
+    once, through the whole gate)."""
+    record = approval._load(change_id)
+    items = config_items.items_of(record)
+    done = record.get("item_delivery") or {}
+    if not items or not all(i["id"] in done for i in items):
+        return False
+    if execution.effective_state(record, execution.WRITE) == "applied":
+        return True
+    agents = sum(1 for i in items if (done[i["id"]].get("executor") == "agent"))
+    execution.record(
+        change_id, execution.WRITE, "applied", revalidate=lambda: approval.authorise_functional_delivery(change_id),
+        detail=f"all {len(items)} configuration items applied in DEV ({agents} by the agents, "
+               f"{len(items) - agents} by people)",
+        recorded={"by": actor_name, "user_id": actor_user_id, "items": [i["id"] for i in items], "at": time.time()})
+    return True
 
 
 def record_item_applied(change_id: str, *, item_id: Optional[str], actor_user_id: str, actor_name: str,
@@ -149,6 +185,19 @@ def record_item_applied(change_id: str, *, item_id: Optional[str], actor_user_id
         item = config_items.item(record, item_id)
         if item["id"] in delivered:
             raise DeliveryRefused(f"{item['id']} is already recorded as applied")
+    handover = None
+    if config_items.executor_of(item) == "agent":
+        from ..executors import runner
+
+        state = execution.item_state(record, item["id"])
+        if state in ("in_progress", "unknown", "diverged"):
+            raise DeliveryRefused(f"{item['id']} is being applied by an agent or its outcome is {state}: reconcile it "
+                                  "first -- nothing was recorded")
+        handover = runner.handover_reason(record, item)
+        if handover is None:
+            raise DeliveryRefused(f"{item['id']} ({config_items.label(item)}) is applied by the agents "
+                                  f"({item.get('route_reason', item.get('route'))}); a person records only the items "
+                                  "marked for a person -- nothing was recorded")
     evidence_reference = (evidence_reference or "").strip()
     before = (((record.get("binding") or {}).get("before_state") or {}).get("items") or {}).get(item["id"]) or {}
     before_value = before.get("value") if before.get("known") else None
@@ -188,7 +237,8 @@ def record_item_applied(change_id: str, *, item_id: Optional[str], actor_user_id
         source = f"stated by {actor_name} (read in JDE); live read unavailable: {reason}"
         reference = evidence_reference
     entry = {"by": actor_name, "user_id": actor_user_id, "observed": observed, "before": before_value, "source": source,
-             "evidence_reference": reference, "note": note, "at": time.time(), "live": bool(now.get("known"))}
+             "evidence_reference": reference, "note": note, "at": time.time(), "live": bool(now.get("known")),
+             "executor": "person", **({"handover": handover} if handover else {})}
     with execution._locked(change_id):
         current = approval._load(change_id)
         done = current.setdefault("item_delivery", {})
@@ -201,13 +251,11 @@ def record_item_applied(change_id: str, *, item_id: Optional[str], actor_user_id
         "event": "item_applied_in_dev", "stage": "delivery", "actor": actor_name, "change_id": change_id,
         "item_id": item["id"], "detail": f"{item['id']} {what} applied in DEV; {source}; evidence: {reference}",
         "item": item, "before": before_value, "observed": observed, "source": source, "evidence_reference": reference,
-        "note": note})
+        "note": note, **({"handover": handover} if handover else {})})
     if complete:
-        execution.record(
-            change_id, execution.WRITE, "applied", revalidate=lambda: approval.authorise_functional_delivery(change_id),
-            detail=f"all {len(items)} configuration items applied in DEV",
-            recorded={"by": actor_name, "user_id": actor_user_id, "items": [i["id"] for i in items], "at": time.time()})
+        complete_if_all_recorded(change_id, actor_user_id=actor_user_id, actor_name=actor_name)
     return {"outcome": "applied" if complete else "item_applied", "itemId": item["id"], "observed": observed,
+            "handover": handover,
             "observedValue": observed if isinstance(observed, str) else None, "beforeValue": before_value,
             "source": source, "evidenceReference": reference, "remaining": len(items) - len(
                 (approval._load(change_id).get("item_delivery") or {})), "evidenceEntryHash": evidence["entry_hash"]}

@@ -37,6 +37,10 @@ dependencies = [
     # attachments (run in a separate, resource-limited process).
     "pypdf>=4.0.0",
     "defusedxml>=0.7.0",
+    # executors/browser.py: the agent-driven browser (Chromium) that operates
+    # a customer's JD Edwards web client and Web OMW. The browser itself is
+    # installed with `python -m playwright install chromium`.
+    "playwright>=1.47",
 ]
 
 [project.optional-dependencies]

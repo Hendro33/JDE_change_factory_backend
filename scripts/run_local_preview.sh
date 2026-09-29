@@ -54,9 +54,15 @@ if [ ! -x "$VENV/bin/python" ]; then
   echo "Creating $VENV and installing the backend (first run only)..."
   "$PY" -m venv "$VENV"
 fi
-if ! "$VENV/bin/python" -c "import fastapi, uvicorn, openpyxl, claude_agent_sdk, jde_mcp_server, jde_api_service" 2>/dev/null; then
+if ! "$VENV/bin/python" -c "import fastapi, uvicorn, openpyxl, claude_agent_sdk, playwright, jde_mcp_server, jde_api_service" 2>/dev/null; then
   "$VENV/bin/pip" install -q --upgrade pip
   "$VENV/bin/pip" install -q -e "$BACKEND/api_service" -e "$BACKEND/mcp_server"
+fi
+# The browser the agents use for the JD Edwards web client (first run only).
+if ! "$VENV/bin/python" -c "import os,sys; from playwright.sync_api import sync_playwright
+with sync_playwright() as p: sys.exit(0 if os.path.exists(p.chromium.executable_path) else 1)" 2>/dev/null; then
+  echo "Installing the agents' browser (Chromium, first run only)..."
+  "$VENV/bin/python" -m playwright install chromium
 fi
 
 # -- Node 18+ for the frontend -------------------------------------------------
@@ -84,8 +90,9 @@ export JDE_CREDENTIAL_KEY="$CREDENTIAL_KEY" JDE_API_ALLOWED_ORIGINS="http://loca
 # The temporary setup account: used only if it does not exist yet; an existing
 # account is never reset, and it is switched off once you finish setup.
 export JDE_BOOTSTRAP_ADMIN_EMAIL=setup@jade.local JDE_BOOTSTRAP_ADMIN_NAME="Jade setup" JDE_BOOTSTRAP_ADMIN_PASSWORD="$ADMIN_PW"
-# JDE connection settings (address, certificate, credential) are made in the app.
-SERVER_SETTINGS="JDE_DISCOVERY_LIVE_ENABLED JDE_DISCOVERY_ALLOWED_HOSTS JDE_DISCOVERY_CA_BUNDLE JDE_DATABASE_URL JDE_DATABASE_SCHEMA JDE_BOOTSTRAP_CUSTOMER_NAME JDE_SMTP_HOST JDE_SMTP_PORT JDE_SMTP_USERNAME JDE_SMTP_PASSWORD JDE_SMTP_STARTTLS JDE_MAIL_FROM JDE_PUBLIC_URL JDE_ANTHROPIC_BASE_URL"
+# JDE settings (addresses, certificates, the discovery and DEV write users, agent execution
+# switches) are made in the app, per customer -- never here.
+SERVER_SETTINGS="JDE_DISCOVERY_LIVE_ENABLED JDE_DATABASE_URL JDE_DATABASE_SCHEMA JDE_BOOTSTRAP_CUSTOMER_NAME JDE_SMTP_HOST JDE_SMTP_PORT JDE_SMTP_USERNAME JDE_SMTP_PASSWORD JDE_SMTP_STARTTLS JDE_MAIL_FROM JDE_PUBLIC_URL JDE_ANTHROPIC_BASE_URL"
 # shellcheck disable=SC2086
 unset $SERVER_SETTINGS
 if [ -f "$DATA/server.env" ]; then

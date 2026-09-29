@@ -114,8 +114,6 @@ host-name/IP verification are never switched off. The server needs no settings; 
 | Variable | Meaning |
 |---|---|
 | `JDE_DISCOVERY_LIVE_ENABLED` | `false` locks live discovery off for every company. |
-| `JDE_DISCOVERY_ALLOWED_HOSTS` | If set, only these AIS hosts may be used, whatever a company saves. |
-| `JDE_DISCOVERY_CA_BUNDLE` | Fallback CA file for connections without an uploaded certificate. If it is unusable, those connections stay off. |
 
 **Readiness.** A live profile can be enabled only when every required item in five separately shown groups is satisfied:
 - **Connectivity:** live access not locked, TLS trust usable, the saved address permitted, endpoint reached over verified TLS.
@@ -160,13 +158,50 @@ Contract sources (docs.oracle.com could not be fetched from the build environmen
 1. **Customer/CNC:** a dedicated JDE user and a role that can read only the approved tables and applications in the DEV environment. Jade's read-only design does not make an over-privileged account safe.
 2. **Customer/CNC:** a network route that reaches only the DEV AIS server, and written confirmation that OCM maps the environment to the DEV data source only. Record this in the profile.
 3. **CNC:** a written statement of the Tools release and path code the DEV environment runs on (the runtime attestation). AIS does not report them.
-4. **Operator (optional):** set `JDE_DISCOVERY_ALLOWED_HOSTS` to the customers' AIS hosts.
-5. **Admin:** save the live profile with a short window and a minimal approved-read list. Enter the credential.
-6. **With the customer present:**
+4. **Admin:** save the live profile with a short window and a minimal approved-read list. Enter the credential.
+5. **With the customer present:**
    - run Test Connection;
    - run one approved sample read per capability;
    - compare the results, including the session context the token response reports, with what the customer sees in JDE.
-7. **Admin:** enable discovery only after that comparison. Disable the connection when the window ends.
+6. **Admin:** enable discovery only after that comparison. Disable the connection when the window ends.
+
+### Agent execution: the agents make the approved changes
+
+The agents apply approved configuration items in the customer's DEV system with a **separate DEV write user**. It is
+set per customer in Administration > Systems & Connections > JDE > Agent execution, stored encrypted and never
+returned:
+
+| Setting | What it is |
+|---|---|
+| Web client address | The JD Edwards HTML server (https), e.g. `https://jde-dev.customer.example/jde` |
+| Web OMW address | Only when Web OMW is served from another address |
+| Web client certificate | The certificate its server presents, uploaded like the AIS certificate (pinned; never unverified) |
+| DEV write user and role | A dedicated user, different from the read-only discovery user, whose DEV role can maintain exactly the configuration the customer's scope allows. Never `*ALL` |
+| On/off switches | Agent execution for the whole customer, and per capability. On by default where a route exists; every switch is recorded with name and date |
+
+The AIS address and certificate, the environment and the path code are the JD Edwards connection's own. **Test**
+signs the write user in to AIS (and checks the session's environment) and signs it in to the web client in the
+agents' browser; nothing is changed. Any material change to these settings, or to the connection, makes the test
+stale and the agents stop until it is run again.
+
+How an item is applied (`api_service/jde_api_service/executors/`):
+
+- **AIS**: User Defined Codes (P0004A) and the set-up applications in `executors/ais.py` `FORM_MAPS` (document types
+  P40040, line types P40205, order activity rules P40204). Form controls are resolved from the live form by data
+  dictionary alias and button title; a button JD Edwards does not report, or any title other than Find, Select, Add
+  and OK, is never pressed.
+- **Browser**: a version's processing options and a batch version's data selection and sequencing, in the web client.
+  Jade signs in itself; the agent never sees the password and can reach only the customer's web client hosts. Every
+  step is screenshotted into Blob Storage (or the local data folder).
+- **Person**: anything neither route covers (for example a constants table without a form map).
+
+Every item: the delivery gate again, a live read before (must match what the approval was bound to), exactly the
+approved change, a live read-back (must match the approved values). Otherwise the item stops: **Reconcile** it on the
+Delivery tab (Jade reads it live; where it cannot, a person states what JDE shows, with evidence). An item is never
+retried blindly. The write-pause switch (backup/restore) holds every agent attempt before anything is sent.
+
+The server needs Chromium for the browser route: `python -m playwright install chromium` (the preview script and the
+container image do this).
 
 **Disable Connection** blocks new and queued calls at once. It reports any request already in flight, which finishes; nothing is interrupted mid-request. Re-enabling needs a fresh Test Connection and fresh sample reads.
 
@@ -349,8 +384,6 @@ never from a browser:
 | Setting | Purpose |
 |---|---|
 | `JDE_DISCOVERY_LIVE_ENABLED=false` | Locks every JD Edwards connection off (emergency stop) |
-| `JDE_DISCOVERY_ALLOWED_HOSTS` | The only AIS hosts the backend may contact |
-| `JDE_DISCOVERY_CA_BUNDLE` | Optional PEM file for a private CA. Certificate verification is never switched off |
 | `JDE_ANTHROPIC_BASE_URL` | Optional HTTPS gateway in front of the Anthropic API |
 | `JDE_CREDENTIAL_KEY` | The credential-encryption key |
 

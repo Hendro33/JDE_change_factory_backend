@@ -149,14 +149,32 @@ def _item_views(change_record: dict) -> list:
         applied = delivered.get(it["id"])
         if applied is None and legacy_applied and (legacy_applied.get("recorded") or {}).get("observed_value") is not None:
             applied = legacy_applied.get("recorded")
+        status = _delivery_status(change_record, it) if binding else {"state": "", "detail": ""}
+        block = ((change_record.get("execution") or {}).get("items") or {}).get(it["id"]) or {}
         out.append(ConfigurationItemView(
             id=it["id"], capability_id=it.get("capability_id"), kind=it["kind"], label=config_items.label(it),
             target=config_items.target(it), action=it.get("action"), table=it.get("table"), key=it.get("key") or {},
             values=it.get("values") or {}, application=it.get("application"), version=it.get("version"),
             option=it.get("option"), value=it.get("value"), specification=it.get("specification"),
             purpose=it.get("purpose") or "", before=state.get("value") if known else None, before_known=known,
-            before_note=note, applied=applied))
+            before_note=note, applied=applied, executor=config_items.executor_of(it), route=it.get("route"),
+            route_reason=it.get("route_reason") or "", delivery_state=status.get("state", ""),
+            delivery_detail=status.get("detail", ""), handover_allowed=bool(status.get("handover_allowed")),
+            attempts=[{k: a.get(k) for k in ("attempt_id", "route", "agent", "started_at", "finished_at", "outcome",
+                                             "detail", "screenshots")} for a in block.get("attempts") or []],
+            reconciliations=block.get("reconciliations") or []))
     return out
+
+
+def _delivery_status(change_record: dict, item: dict) -> dict:
+    if change_record.get("status") != "approved":
+        return {"state": "", "detail": ""}
+    try:
+        from ..executors import runner
+
+        return runner.item_status(change_record, item)
+    except Exception as exc:  # noqa: BLE001 -- a view never fails on it
+        return {"state": "unknown", "detail": f"status unavailable: {exc}"}
 
 
 def _latest_change_record_for(story_id: str) -> Optional[dict[str, Any]]:

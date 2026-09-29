@@ -1,6 +1,6 @@
 """
-Configuration change sets: what the Functional Agent proposes and people
-approve, apply in DEV and record, item by item.
+Configuration change sets: what the Functional Agent proposes, the
+Application Manager approves, and the agents apply in DEV item by item.
 
 A real configuration change is rarely one value. A new order type, for
 example, is a UDC value (00/DT), a document type (F40039), order activity
@@ -24,8 +24,16 @@ the customer's configuration manuals and standards name them. Actions are
 "add" (the row must not exist yet) or "update" (it must exist); Jade never
 proposes a delete.
 
+Each item carries its route into DEV, decided by Jade when the set is
+proposed (never by the model) and approved with it: "executor" is "agent"
+(route "ais" or "browser") or "person" (JD Edwards cannot accommodate the
+item through either route). The rules live in api_service (executors/
+routes.py), registered here at start-up (register_router); without them
+every item is a person's.
+
 A legacy single processing-option operation ({"tool": "set_processing_option",
 ...}) is treated as a set with one item, so every earlier change keeps working.
+Items proposed before routes existed have no executor: a person applies them.
 """
 
 from __future__ import annotations
@@ -52,6 +60,26 @@ _OBJECT = re.compile(r"^[A-Z][A-Z0-9]{1,9}$")
 
 class ItemInvalid(ValueError):
     pass
+
+
+_ROUTER = None
+
+
+def register_router(router) -> None:
+    """router(item) -> (route, reason): "ais", "browser" or "person"."""
+    global _ROUTER
+    _ROUTER = router
+
+
+def route(it: dict) -> tuple[str, str]:
+    if _ROUTER is None:
+        return "person", "no agent executor is registered in this process"
+    return _ROUTER(it)
+
+
+def executor_of(it: dict) -> str:
+    """"agent" or "person". Items approved before routes existed: person."""
+    return it.get("executor") or "person"
 
 
 def _text(raw: dict, key: str, *, required: bool = True, limit: int = 200, upper: bool = False) -> str:
@@ -156,6 +184,9 @@ def normalise_change_set(operation: Any, enforcement_for) -> dict:
     if len(raw_items) > MAX_ITEMS:
         raise ItemInvalid(f"at most {MAX_ITEMS} items in one change set")
     items = [normalise_item(r, i, enforcement_for) for i, r in enumerate(raw_items)]
+    for it in items:
+        how, why = route(it)
+        it.update({"route": how, "executor": "person" if how == "person" else "agent", "route_reason": why})
     targets = [target(i) for i in items]
     dupes = sorted({t for t in targets if targets.count(t) > 1})
     if dupes:
@@ -305,7 +336,7 @@ def check_entry(entry: dict, it: dict) -> None:
 FORMAT_HELP = """A configuration change set, proposed with propose_change(story_id, operation, capability_id="configuration_change_set"):
 operation = {"tool": "configuration_change_set", "summary": "<what the set achieves>",
              "test_orchestration": "<optional: one of the customer's approved tests>",
-             "items": [ <ordered items, in the order a person applies them in DEV> ]}
+             "items": [ <ordered items, in the order they are applied in DEV> ]}
 Each item names its capability_id and a one-line "purpose", then by kind:
 - processing_option_update: {"application", "version", "option", "value"}
 - udc_value_maintenance: {"product_code", "udc_type", "code", "action": "add"|"update", "values": {"DRDL01", "DRDL02", "DRSPHD"}}
@@ -314,6 +345,7 @@ Each item names its capability_id and a one-line "purpose", then by kind:
   "values": {alias: value}} -- fields as JD Edwards data dictionary aliases
 - batch_version_data_selection / batch_version_data_sequencing: {"application" (R...), "version", "specification": "<the exact
   selection or sequence as it will be entered>"}
+Jade decides each item's route into DEV (AIS, the web client, or a person) -- do not set it.
 Universal rules: never XJDE/ZJDE versions, never a delete, never the UDC hard-coded flag (DRHRDC). Every item must be inside
 the customer's engagement scope (get_engagement_scope): its target listed for its capability, its action and fields allowed,
 its values allowed, its category not protected or never-touch -- otherwise the whole proposal is refused with the reason."""

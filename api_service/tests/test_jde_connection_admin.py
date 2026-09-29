@@ -149,9 +149,11 @@ def test_tls_and_network_failures_are_explained_and_never_bypassed(client, monke
     monkeypatch.setattr(service, "LIVE_HTTP_TRANSPORT", httpx.MockTransport(unreachable))
     r = client.post("/admin/jde/test-connection", headers=headers("vdb")).json()
     assert "VPN" in r["detail"] and "backend" in r["detail"]
-    monkeypatch.setenv("JDE_DISCOVERY_CA_BUNDLE", "/nonexistent/ca.pem")
-    view = client.get("/admin/jde/profile", headers=headers("vdb")).json()
-    assert not {p["id"]: p for p in view["serverPrerequisites"]}["tls_trust"]["satisfied"]
+    # A certificate selected in the settings but not stored keeps TLS trust unsatisfied (never unverified).
+    from jde_api_service.discovery import profile_service
+
+    config = profile_service.load("vdb")["config"].model_copy(update={"ca_certificate_sha256": "c" * 64})
+    assert not {p["id"]: p for p in profile_service.server_prerequisites(config, "vdb")}["tls_trust"]["satisfied"]
 
 
 def test_credentials_never_appear_in_responses_logs_or_exports(client, caplog, tmp_path):

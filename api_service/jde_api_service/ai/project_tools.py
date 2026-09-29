@@ -128,7 +128,8 @@ class ProjectTools:
               "required": ["story_id", "resolution_note"]}, self.resolve_without_change),
             ("propose_change",
              "Propose the exact configuration change for people to approve in Architecture Review. It does not approve "
-             "anything; after approval a person applies each item in DEV and Jade reads it back live.\n"
+             "anything; after approval the agents apply each item in DEV (a person only what JD Edwards cannot "
+             "accommodate through AIS or the web client) and Jade reads every item back live.\n"
              + _format_help(),
              {"type": "object", "properties": {**s, "operation": obj, "capability_id": {"type": "string"},
                                                "environment": {"type": "string"}},

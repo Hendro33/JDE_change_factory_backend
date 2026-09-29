@@ -54,7 +54,7 @@ def test_get_single_capability_exposes_separate_technical_and_policy_fields(clie
     # so a person applies the value and Jade reads it back live; that
     # nuance must survive to the API.
     assert "configuration change set" in validation["technicalValidation"]
-    assert "authorised person applies" in validation["technicalValidation"]
+    assert "the agents apply each approved item" in validation["technicalValidation"]
     assert "read" in validation["technicalValidation"] and "live" in validation["technicalValidation"]
     assert validation["policyRestriction"]
     assert validation["status"] == "needs_spike"

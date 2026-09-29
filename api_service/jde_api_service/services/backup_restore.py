@@ -133,7 +133,8 @@ def summarise(locations: dict[str, str], database: str) -> dict:
             scopes[doc_id] = scope.get("revision")
         for doc_id, entries in docs("evidence"):
             evidence[doc_id] = {"valid": _chain_valid(entries), "entries": len(entries)}
-        for table, column in (("ai_connections", "credential_secret"), ("jde_profiles", "credential_secret")):
+        for table, column in (("ai_connections", "credential_secret"), ("jde_profiles", "credential_secret"),
+                              ("jde_execution_settings", "credential_secret")):
             if conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)).fetchone():
                 stored_key_ids = sorted(set(stored_key_ids) | {
                     credential_crypto.stored_key_id(r[column]) or "plaintext"

@@ -183,6 +183,20 @@ class ConfigurationItemView(ApiModel):
     before_note: str = ""
     # The recorded delivery of this item (who, what was read, how), or None.
     applied: Optional[dict] = None
+    # Who applies it: "agent" (route "ais" or "browser") or "person", decided
+    # by Jade when proposed and approved with the change set.
+    executor: str = "person"
+    route: Optional[str] = None
+    route_reason: str = ""
+    # Where the item stands: applied, waiting_for_agent, waiting_for_person,
+    # agent_unavailable, agent_could_not_apply, in_progress, unknown, diverged.
+    delivery_state: str = ""
+    delivery_detail: str = ""
+    # A person may record this agent item now (no agent can apply it).
+    handover_allowed: bool = False
+    # The agents' attempts at this item (route, outcome, detail, screenshots).
+    attempts: list[dict] = []
+    reconciliations: list[dict] = []
 
 
 class ExactChange(ApiModel):

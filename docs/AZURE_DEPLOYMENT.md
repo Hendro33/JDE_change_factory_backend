@@ -38,9 +38,7 @@ Put secrets in Key Vault and reference them. Don't put them in plain App Setting
 | `JDE_TRUST_PROXY_HEADERS` | `true`, because Azure's front end forwards the client address. |
 | `JDE_SMTP_HOST`, `JDE_SMTP_PORT`, `JDE_SMTP_USERNAME`, `JDE_SMTP_PASSWORD` (Key Vault), `JDE_MAIL_FROM` | E-mail. Leave `JDE_SMTP_HOST` empty and Administrators hand invitation links over personally. |
 | `JDE_BOOTSTRAP_ADMIN_EMAIL`, `JDE_BOOTSTRAP_ADMIN_PASSWORD` (Key Vault), `JDE_BOOTSTRAP_CUSTOMER_NAME` | Needed for the first start only. See First start below. |
-| `JDE_DISCOVERY_ALLOWED_HOSTS` | Optional. Limits which AIS hosts may be contacted at all. |
 | `JDE_DISCOVERY_LIVE_ENABLED` | Optional. `false` locks every live JDE connection off (emergency stop). |
-| `JDE_DISCOVERY_CA_BUNDLE` | Optional. A server-wide CA bundle. A certificate uploaded for a customer's connection takes precedence. |
 | `JDE_ANTHROPIC_BASE_URL` | Optional. An HTTPS gateway in front of the Anthropic API. |
 
 The image already sets `JDE_API_REPO_ROOT=/app` and `JDE_API_DATA_DIR=/data`. On Azure, `/data` holds only per-instance scratch space (the Technical Agent's working copies during a run). Everything that must last is in PostgreSQL and Blob Storage.

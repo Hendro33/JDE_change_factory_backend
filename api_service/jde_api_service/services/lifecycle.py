@@ -333,11 +333,36 @@ def _functional_route(change, company_id: str, story_id: str, design: dict, rout
             route=route, delivery_steps=steps,
             open_items=["The capability for this change is Restricted or Suspended."])
     if not ex or ex.write_state != "applied":
+        flagged = next((i for i in ec.items if i.delivery_state in ("unknown", "diverged")), None)
+        if flagged is not None:
+            return _mk("delivery", "failed", NextAction(
+                kind="task", summary=(f"The agent stopped at {flagged.id} ({flagged.label}): "
+                                      f"{flagged.delivery_detail or 'its outcome in DEV is not established'}. Check "
+                                      "the item in DEV and reconcile it."),
+                owner="product_manager", action="reconcile_item", tab="delivery",
+                effect="Once reconciled, delivery continues; the agent never retries an item blindly."),
+                route=route, delivery_steps=steps)
+        nxt = next((i for i in ec.items if not i.applied), None)
+        if nxt is not None and nxt.executor == "agent" and nxt.delivery_state in ("waiting_for_agent", "in_progress"):
+            done = sum(1 for i in ec.items if i.applied)
+            return _mk("delivery", "waiting", NextAction(
+                kind="task", summary=(f"The agents are applying the approved configuration in JDE DEV: {done} of "
+                                      f"{len(ec.items)} applied; now {nxt.id}: {nxt.label}."),
+                owner="jade", action="agents_running", tab="delivery",
+                effect="Each item is read before and after the change; only exactly the approved values count."),
+                route=route, delivery_steps=steps)
+        if nxt is not None and nxt.executor == "agent" and nxt.delivery_state in ("agent_unavailable",
+                                                                                  "agent_could_not_apply"):
+            return _mk("delivery", "blocked", NextAction(
+                kind="task", summary=(f"No agent can apply {nxt.id} ({nxt.label}) now: {nxt.delivery_detail}. Fix "
+                                      "that and run the agents again, or apply it in DEV yourself and record it."),
+                owner="product_manager", action="run_agents_or_record", tab="delivery",
+                effect="A hand-over to a person is recorded with its reason."), route=route, delivery_steps=steps)
         if len(ec.items) > 1:
             done = sum(1 for i in ec.items if i.applied)
             nxt = next((i for i in ec.items if not i.applied), None)
             return _mk("delivery", "waiting", NextAction(
-                kind="task", summary=(f"Apply the approved configuration in JDE DEV item by item and record each: "
+                kind="task", summary=(f"Apply the items marked for a person in JDE DEV and record each: "
                                       f"{done} of {len(ec.items)} recorded"
                                       + (f"; next {nxt.id}: {nxt.label}." if nxt else ".")),
                 owner="product_manager", action="record_applied", tab="delivery",

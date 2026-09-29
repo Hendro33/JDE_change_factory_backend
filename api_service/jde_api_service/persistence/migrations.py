@@ -792,4 +792,41 @@ MIGRATIONS: list[tuple[int, str]] = [
         CREATE INDEX idx_technical_artifacts_company_v2 ON technical_artifacts(company_id);
         """,
     ),
+    (
+        16,
+        """
+        -- How Jade's agents make approved changes in a customer's DEV system:
+        -- the web client and Web OMW addresses, the dedicated DEV write user
+        -- (kept apart from the read-only discovery user; the password is
+        -- encrypted and never returned) and the Admin's on/off switches for
+        -- agent execution, per customer and per capability.
+        CREATE TABLE jde_execution_settings (
+            company_id TEXT PRIMARY KEY,
+            revision INTEGER NOT NULL,
+            config TEXT NOT NULL,
+            material_hash TEXT NOT NULL,
+            credential_username TEXT,
+            credential_secret TEXT,
+            credential_revision INTEGER NOT NULL DEFAULT 0,
+            credential_destination TEXT,
+            credential_updated_at TEXT,
+            credential_updated_by TEXT,
+            agent_execution_enabled INTEGER NOT NULL DEFAULT 1,
+            switches TEXT NOT NULL DEFAULT '{}',
+            health TEXT NOT NULL DEFAULT '{}',
+            updated_at TEXT NOT NULL,
+            updated_by TEXT NOT NULL
+        );
+        -- Every change to those settings and switches, with name and date.
+        CREATE TABLE jde_execution_audit (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            company_id TEXT NOT NULL,
+            action TEXT NOT NULL,
+            detail TEXT NOT NULL DEFAULT '',
+            actor TEXT NOT NULL,
+            at TEXT NOT NULL
+        );
+        CREATE INDEX idx_jde_execution_audit_company ON jde_execution_audit(company_id, id);
+        """,
+    ),
 ]

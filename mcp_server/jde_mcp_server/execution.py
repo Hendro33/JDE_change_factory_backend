@@ -25,13 +25,16 @@ until someone with approval authority reconciles it by checking the
 actual target state. A write that is `applied` never runs again under
 the same change: a further change needs a new proposal and approval.
 
-Delivery today is the RECORDED route: an authorised person applies the
-approved change in DEV (or checks in / builds a technical package) and
-records it; Jade verifies what it can live through the customer's own
-connection. record() stores such a step as a completed attempt in one
-locked transaction, after re-running every check. An automated call that
-leaves Jade (a live test orchestration) still uses begin()/finish(), so an
-interrupted call is recorded as unknown, never guessed.
+A configuration change set is delivered item by item. The agents apply
+each item marked "agent" (api_service executors/): begin_item() records the
+attempt before any request leaves Jade and finish_item() closes it with
+what the live read-back established. An item marked "person" is applied
+in DEV by an authorised person and recorded; Jade verifies what it can live
+through the customer's own connection. record() stores such a step as a
+completed attempt in one locked transaction, after re-running every check.
+An automated call that leaves Jade (a live test orchestration) uses
+begin()/finish(), so an interrupted call is recorded as unknown, never
+guessed.
 
 The record lives in the change record itself, in Jade's database, so it
 survives restarts; the database transaction serialises processes.
@@ -215,6 +218,142 @@ def record(change_id: str, kind: str, outcome: str, *, revalidate: Optional[Call
         return attempt_id
 
 
+# ---------------------------------------------------------------------
+# Agent execution of one item of a configuration change set
+#
+# Each item an agent applies has its own attempt record, with the same
+# states as a write: ready, in_progress, applied, unknown, diverged. The
+# attempt is recorded BEFORE the first request leaves Jade; an item whose
+# outcome is unknown or diverged stops the change set until a person with
+# approval authority reconciles it -- it is never retried blindly.
+# ---------------------------------------------------------------------
+_ITEM_OUTCOME_STATE = {"applied": "applied", "not_sent": "ready", "unknown": "unknown"}
+
+
+def _item_block(record: dict, item_id: str) -> dict:
+    items = record.setdefault("execution", {}).setdefault("items", {})
+    return items.setdefault(item_id, {"state": "ready", "attempts": [], "reconciliations": []})
+
+
+def item_state(record: dict, item_id: str) -> str:
+    block = ((record.get("execution") or {}).get("items") or {}).get(item_id)
+    if not block:
+        return "ready"
+    state = block.get("state", "ready")
+    if state == "in_progress":
+        started = (block.get("attempts") or [{}])[-1].get("started_at") or 0
+        if _now() - started > STALE_AFTER_SECONDS:
+            return "unknown"
+    return state
+
+
+def item_block(record: dict, item_id: str) -> Optional[dict]:
+    return ((record.get("execution") or {}).get("items") or {}).get(item_id)
+
+
+def begin_item(change_id: str, item_id: str, *, route: str, agent: str, before: object = None,
+               revalidate: Optional[Callable[[], object]] = None) -> str:
+    """Record an agent's attempt at one item BEFORE any request is sent.
+    Refused while writes are paused, when any check fails on revalidation,
+    when the item was already recorded, or when it is not ready."""
+    with _locked(change_id):
+        pause_file = os.environ.get("JDE_WRITE_PAUSE_FILE")
+        if pause_file and os.path.exists(pause_file):
+            raise ExecutionBlocked(f"change {change_id}: writes are paused for a backup or restore -- nothing was sent")
+        if revalidate is not None:
+            revalidate()
+        record = approval._load(change_id)
+        if record is None:
+            raise approval.ChangeApprovalError(f"no change record for {change_id}")
+        if item_id in (record.get("item_delivery") or {}):
+            raise ExecutionBlocked(f"change {change_id}: {item_id} is already recorded as applied")
+        state = item_state(record, item_id)
+        if state != "ready":
+            raise ExecutionBlocked(f"change {change_id} {item_id}: {_BLOCK_REASON.get(state, state)} (state: {state})")
+        block = _item_block(record, item_id)
+        attempt_id = uuid.uuid4().hex[:12]
+        block["attempts"].append({"attempt_id": attempt_id, "route": route, "agent": agent, "started_at": _now(),
+                                  "finished_at": None, "before": before, "outcome": None, "detail": ""})
+        block["state"] = "in_progress"
+        approval._save(change_id, record)
+        return attempt_id
+
+
+def finish_item(change_id: str, item_id: str, attempt_id: str, outcome: str, detail: str = "", *,
+                delivery: Optional[dict] = None, extra: Optional[dict] = None) -> None:
+    """Close an item attempt: applied (the live read-back shows exactly the
+    approved values; `delivery` is stored as the item's delivery record),
+    not_sent (nothing that could save left Jade) or unknown."""
+    if outcome not in _ITEM_OUTCOME_STATE:
+        raise approval.ChangeApprovalError(f"{outcome!r} is not an item outcome")
+    with _locked(change_id):
+        record = approval._load(change_id)
+        block = _item_block(record, item_id)
+        attempt = next((a for a in block["attempts"] if a["attempt_id"] == attempt_id), None)
+        if attempt is None:
+            raise approval.ChangeApprovalError(f"no attempt {attempt_id} on {change_id} {item_id}")
+        attempt.update({"finished_at": _now(), "outcome": outcome, "detail": detail[:1000], **(extra or {})})
+        is_current = block["state"] == "in_progress" and block["attempts"][-1]["attempt_id"] == attempt_id
+        if is_current:
+            block["state"] = _ITEM_OUTCOME_STATE[outcome]
+        else:
+            block["state"] = "unknown" if block["state"] != "diverged" else "diverged"
+        if outcome == "applied" and is_current and delivery is not None:
+            record.setdefault("item_delivery", {})[item_id] = delivery
+        approval._save(change_id, record)
+
+
+def reconcile_item(change_id: str, item_id: str, *, observed: object, matches_approved: bool, matches_before: bool,
+                   source: str, actor_user_id: str, actor_name: str, evidence_reference: str, note: str = "") -> dict:
+    """Settle an item of unknown outcome by its ACTUAL state in DEV:
+    applied (exactly the approved values -- the item is recorded as
+    applied), not_applied (still the state before the change: ready again,
+    and running it again is a deliberate new action) or diverged (neither:
+    the change set stops for good -- investigate, then propose again)."""
+    from .evidence import capture_evidence
+
+    if not actor_user_id:
+        raise approval.ChangeApprovalError("a reconciliation must record who performed it")
+    if not (evidence_reference or "").strip():
+        raise approval.ChangeApprovalError("a reconciliation needs an evidence reference (the live read, or a "
+                                           "screenshot or ticket)")
+    with _locked(change_id):
+        record = approval._load(change_id)
+        if record is None:
+            raise approval.ChangeApprovalError(f"no change record for {change_id}")
+        state = item_state(record, item_id)
+        if state != "unknown":
+            raise ExecutionBlocked(f"change {change_id} {item_id} is {state}; only an item of unknown outcome is "
+                                   "reconciled")
+        block = _item_block(record, item_id)
+        if matches_approved:
+            outcome, new_state = "applied", "applied"
+        elif matches_before:
+            outcome, new_state = "not_applied", "ready"
+        else:
+            outcome, new_state = "diverged", "diverged"
+        unknown_attempt = next((a for a in reversed(block["attempts"]) if a.get("outcome") in (None, "unknown")), None)
+        now = _now()
+        entry = {"kind": "item_reconciliation", "item_id": item_id, "at": now, "at_iso": _iso(now),
+                 "actor": {"user_id": actor_user_id, "display_name": actor_name}, "observed": observed,
+                 "source": source, "evidence_reference": evidence_reference.strip(), "outcome": outcome, "note": note,
+                 "settles_attempt_id": unknown_attempt.get("attempt_id") if unknown_attempt else None}
+        entry["evidence_entry_hash"] = capture_evidence(record["story_id"], {
+            "event": "item_reconciliation", "stage": "delivery", "actor": actor_name, "change_id": change_id,
+            "item_id": item_id, "detail": f"{item_id} reconciled as {outcome} (observed {observed!r}; {source}; "
+                                          f"evidence: {entry['evidence_reference']})", "reconciliation": entry,
+        })["entry_hash"]
+        block["reconciliations"].append(entry)
+        block["state"] = new_state
+        if outcome == "applied":
+            record.setdefault("item_delivery", {})[item_id] = {
+                "by": actor_name, "user_id": actor_user_id, "observed": observed, "source": source,
+                "evidence_reference": entry["evidence_reference"], "note": note, "at": now,
+                "live": source.startswith("live"), "executor": "agent", "reconciled": True}
+        approval._save(change_id, record)
+        return entry
+
+
 def mark_interrupted_unknown() -> int:
     """At startup nothing can still be running in this process, so every
     in-progress attempt is recorded as unknown. Returns how many."""
@@ -223,6 +362,13 @@ def mark_interrupted_unknown() -> int:
         with _locked(change_id):
             record = approval._load(change_id)
             changed = False
+            for block in ((record.get("execution") or {}).get("items") or {}).values():
+                if block.get("state") == "in_progress":
+                    block["state"] = "unknown"
+                    last = block["attempts"][-1]
+                    last["detail"] = (last.get("detail") or "") + " Interrupted by a restart before its outcome was recorded."
+                    changed = True
+                    count += 1
             for kind in (WRITE, BUILD, TEST):
                 block = (record.get("execution") or {}).get(kind)
                 if block and block.get("state") == "in_progress":

@@ -9,9 +9,10 @@ retry after a failed run; a human should not normally need it.
 
 Gate 2 -- "this specific proposed change may be delivered" -- calls
 approval.py's approve_change()/reject_change(), passing the approver's
-company and roles from the authenticated session. Delivery itself is the
-recorded route (delivery/functional.py): a person applies the approved
-change in DEV and records it, and Jade verifies it live.
+company and roles from the authenticated session. After approval the agents
+apply the change set's agent items in DEV (executors/runner.py); a person
+applies and records only the items marked for a person
+(delivery/functional.py), and Jade verifies every item live.
 This router does not create a second approval system: it resolves
 which pending change record belongs to this story (via
 approval.list_pending_changes(), the same read-only function
@@ -171,9 +172,26 @@ def _pending_change_record(story_id: str) -> dict:
     return max(pending, key=lambda c: c.get("created_at", 0))
 
 
+def _start_agents(background_tasks: BackgroundTasks, change_record_id: str, ctx: AuthContext) -> None:
+    """After an approval, or after a person recorded their item: the agents
+    take the change set's next items (the runner re-checks everything)."""
+    from jde_mcp_server import config_items
+
+    from ..executors import runner
+
+    record = approval._load(change_record_id)
+    if record is None or not config_items.is_change_set(record):
+        return
+    if any(config_items.executor_of(i) == "agent" and i["id"] not in (record.get("item_delivery") or {})
+           for i in config_items.items_of(record)):
+        background_tasks.add_task(runner.run_in_background, change_record_id, ctx.identity.id,
+                                  ctx.identity.display_name)
+
+
 @router.post("/changes/{change_id}/approve-change", status_code=200)
 def approve_exact_change(
-    change_id: str, payload: GovernanceDecisionInput, ctx: AuthContext = Depends(require_write_access)
+    change_id: str, payload: GovernanceDecisionInput, background_tasks: BackgroundTasks,
+    ctx: AuthContext = Depends(require_write_access)
 ) -> dict:
     """Gate 2 -- "Jade may execute this specific proposed change."
     approval.approve_change() is the authoritative approval record, not
@@ -205,6 +223,7 @@ def approve_exact_change(
         identity_id=ctx.identity.id,
         note=payload.note,
     )
+    _start_agents(background_tasks, record["change_id"], ctx)
     change = get_change_service().get_for_customer(change_id, ctx.customer_id)
     assert change is not None
     return change.model_dump(mode="json", by_alias=True)
@@ -287,21 +306,25 @@ def _own_change_record(change_id: str, ctx: AuthContext) -> dict:
 
 
 @router.post("/changes/{change_id}/delivery/applied")
-def record_applied(change_id: str, payload: RecordAppliedInput,
+def record_applied(change_id: str, payload: RecordAppliedInput, background_tasks: BackgroundTasks,
                    ctx: AuthContext = Depends(require_write_access)) -> dict:
-    """The Application Manager applied the approved change in DEV. Jade
-    re-checks the approval, scope and authority, reads the value back live
-    and records it only if it is the approved value."""
+    """The Application Manager applied an item marked for a person (or an
+    agent item no agent can apply now) in DEV. Jade re-checks the approval,
+    scope and authority, reads the value back live and records it only if
+    it is the approved value; then the agents continue with the next items."""
     record = _own_change_record(change_id, ctx)
     try:
-        return delivery.record_applied(record["change_id"], actor_user_id=ctx.identity.id,
-                                       actor_name=ctx.identity.display_name,
-                                       evidence_reference=payload.evidence_reference, note=payload.note,
-                                       stated_value=payload.stated_value, item_id=payload.item_id,
-                                       stated_values=payload.stated_values,
-                                       confirmed_as_specified=payload.confirmed_as_specified)
+        result = delivery.record_applied(record["change_id"], actor_user_id=ctx.identity.id,
+                                         actor_name=ctx.identity.display_name,
+                                         evidence_reference=payload.evidence_reference, note=payload.note,
+                                         stated_value=payload.stated_value, item_id=payload.item_id,
+                                         stated_values=payload.stated_values,
+                                         confirmed_as_specified=payload.confirmed_as_specified)
     except _DELIVERY_REFUSALS as exc:
         raise _delivery_error(exc)
+    if result.get("outcome") == "item_applied":
+        _start_agents(background_tasks, record["change_id"], ctx)
+    return result
 
 
 @router.post("/changes/{change_id}/delivery/run-test")

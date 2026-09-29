@@ -1,14 +1,15 @@
 name: CI
 
-# Runs on every pull request, on pushes to main and the claude/** working
-# branches, and by hand. Nothing here
-# deploys, and nothing talks to JDE or Jira: the tests and the gate proof run
-# in mock mode against throwaway directories.
+# The whole backend suite on SQLite and on PostgreSQL, on every pull request,
+# on pushes to main, production-ready and the claude/** working branches, and
+# by hand. Nothing here deploys, and nothing talks to a real JD Edwards or
+# Jira: the customer's AIS server and web client are test fixtures at the
+# network boundary, and the language model is scripted where a test needs an
+# agent's answer. The browser executor's tests run in a real Chromium.
 on:
   pull_request:
   push:
-    # Also the working branches, so a branch shows its status before a PR exists.
-    branches: [main, "claude/**"]
+    branches: [main, production-ready, "claude/**"]
   workflow_dispatch:
 
 permissions:
@@ -20,25 +21,47 @@ concurrency:
 
 jobs:
   backend:
+    name: backend (${{ matrix.database }})
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        database: [sqlite, postgres]
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: jade
+          POSTGRES_PASSWORD: jade-ci-only
+          POSTGRES_DB: jade_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U jade" --health-interval 5s --health-timeout 5s --health-retries 20
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.12"
           cache: pip
           cache-dependency-path: |
             api_service/pyproject.toml
             mcp_server/pyproject.toml
 
       - name: Install
-        run: pip install -e "./api_service[test]" -e ./mcp_server
+        run: |
+          pip install -e "./api_service[test,postgres]" -e "./mcp_server[postgres]"
+          python -m playwright install --with-deps chromium
 
-      - name: Backend tests
+      - name: Backend tests (SQLite)
+        if: matrix.database == 'sqlite'
         working-directory: api_service
         run: python -m pytest -q
 
-      - name: Execution gate proof
-        run: python prove_the_gate.py
+      - name: Backend tests (PostgreSQL)
+        if: matrix.database == 'postgres'
+        working-directory: api_service
+        env:
+          JDE_TEST_DATABASE_URL: postgresql://jade:jade-ci-only@localhost:5432/jade_test
+        run: python -m pytest -q

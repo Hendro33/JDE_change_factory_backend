@@ -31,8 +31,8 @@ HISTORY_LIMIT = 300
 #   timeout_before_apply -- sent, then no answer; the target was NOT changed
 #   timeout_after_apply  -- sent and applied, then no answer
 #   fail                 -- an explicit error answer; nothing applied
-FAULT_MODES = {"fail_before_send", "timeout_before_apply", "timeout_after_apply", "fail"}
-FAULT_OPERATIONS = {"discovery_read", "orchestration"}
+FAULT_MODES = {"fail_before_send", "timeout_before_apply", "timeout_after_apply", "fail", "commit_then_timeout"}
+FAULT_OPERATIONS = {"discovery_read", "orchestration", "form_commit"}
 
 _TEMPLATE: dict[str, Any] = {
     "reachable": True,

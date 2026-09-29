@@ -271,16 +271,20 @@ class AgentRun:
     def options(self, *, cwd: str, permission_mode: str, allowed_tools: list[str], max_turns: int,
                 disallowed_tools: Optional[list[str]] = None, tool_servers: Optional[dict] = None,
                 subagents: Optional[list[str]] = None, top_level: Optional[str] = None,
-                top_level_in_system_prompt: bool = True):
+                top_level_in_system_prompt: bool = True, granted_tools: Optional[list[str]] = None):
         """subagents: roles reached via Task (each defined from its pack);
         top_level: a role whose pack instructions become the main agent's
         system prompt. A tool is available only if the driver allows it AND
-        a pack of this run requests it within its role's ceiling."""
+        a pack of this run requests it within its role's ceiling.
+        granted_tools: tools the driver itself grants for this run whatever
+        the pack requests -- only an executor's tools, bound to one approved
+        item of one approved change (executors/browser.py)."""
         roles = list(subagents or []) + ([top_level] if top_level else [])
         requested = {t for r in roles for t in self.packs[r].effective_tools(documents_allowed=self.documents_allowed)}
         driver_allowed = set(allowed_tools) | set(ai_packs.KNOWLEDGE_TOOLS)
         allowed = [t for t in dict.fromkeys([*allowed_tools, *ai_packs.KNOWLEDGE_TOOLS])
                    if (t == "Task" and subagents) or t in requested]
+        allowed += [t for t in (granted_tools or []) if t not in allowed]
         # Hide (not merely deny) every project-server and knowledge tool this
         # run does not allow, so the model never sees them.
         from ..services.architecture_driver import PROJECT_SERVER_TOOLS

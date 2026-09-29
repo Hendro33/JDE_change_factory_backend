@@ -3,12 +3,14 @@ How discovery reads (and delivery verification) reach a customer's AIS
 server.
 
   * LiveAisTransport: httpx with TLS verification, no redirects, a short
-    timeout and exactly one permitted destination: the host of the saved AIS
-    address. Its trust (see Trust) comes from the company's connection
-    settings in Jade. The server operator can still lock live discovery off
-    (JDE_DISCOVERY_LIVE_ENABLED=false) or narrow destinations
-    (JDE_DISCOVERY_ALLOWED_HOSTS). There is no fallback in either direction:
-    a connection that cannot connect fails, with the reason.
+    timeout and exactly one permitted destination: the host of the AIS
+    address saved for the customer in Administration. Its trust (see Trust)
+    comes from the same settings: the certificate the Admin uploaded, or the
+    public CAs. No JD Edwards host, user or certificate comes from the
+    server's environment; the operator can only lock every connection off
+    (JDE_DISCOVERY_LIVE_ENABLED=false, an emergency stop). There is no
+    fallback in either direction: a connection that cannot connect fails,
+    with the reason.
 
 Both only accept a ReadPlan that has passed capabilities.assert_read_semantics,
 and only the fixed auth and read endpoints. No retries, no pagination.
@@ -38,10 +40,6 @@ from .capabilities import AUTH_ENDPOINTS, ReadPlan
 # Documented defaultconfig fields Jade keeps (server-level defaults).
 DEFAULTCONFIG_KEYS = ("aisVersion", "defaultEnvironment", "defaultRole", "defaultJasServer")
 LIVE_ENABLED_ENV = "JDE_DISCOVERY_LIVE_ENABLED"
-ALLOWED_HOSTS_ENV = "JDE_DISCOVERY_ALLOWED_HOSTS"
-# Optional server-level PEM bundle, used only when the connection settings
-# carry no uploaded certificate. Verification itself is never switched off.
-CA_BUNDLE_ENV = "JDE_DISCOVERY_CA_BUNDLE"
 
 BREAKER_THRESHOLD = 3
 BREAKER_OPEN_SECONDS = 300
@@ -138,17 +136,14 @@ def live_status_detail(trust: Optional[Trust] = None) -> str:
 
 def tls_context(trust: Optional[Trust] = None) -> ssl.SSLContext:
     """The one TLS configuration every live AIS request uses (token request,
-    server defaults, reads, logout). A certificate uploaded in the settings,
-    else the server's JDE_DISCOVERY_CA_BUNDLE, is trusted ONLY; otherwise the
+    server defaults, reads, logout, the agents' form requests). A
+    certificate uploaded in the settings is trusted ONLY; otherwise the
     public trust store. Certificate and hostname/IP checks stay on. Raises
     if the trust cannot be loaded."""
     if trust and trust.ca_missing:
         raise FileNotFoundError("the certificate named in the settings is not stored")
-    path = os.environ.get(CA_BUNDLE_ENV, "").strip()
     if trust and trust.ca_pem:
         ctx = ssl.create_default_context(cadata=trust.ca_pem)
-    elif path:
-        ctx = ssl.create_default_context(cafile=path)
     else:
         ctx = ssl.create_default_context()
     if ctx.verify_mode != ssl.CERT_REQUIRED or not ctx.check_hostname:  # defensive: never weaker than the default
@@ -167,20 +162,12 @@ def tls_trust(trust: Optional[Trust] = None) -> tuple[bool, str]:
             return False, f"the uploaded certificate is not usable ({type(exc).__name__})"
         return True, (f"only the certificate uploaded in the settings (sha256 {trust.ca_sha256[:16]}...), with "
                       "certificate and host-name/IP checks")
-    path = os.environ.get(CA_BUNDLE_ENV, "").strip()
     try:
         tls_context()
-    except FileNotFoundError:
-        return False, f"{CA_BUNDLE_ENV} points to {path}, which does not exist on the server"
-    except PermissionError:
-        return False, f"{CA_BUNDLE_ENV} points to {path}, which the backend cannot read"
     except (ssl.SSLError, OSError, ValueError) as exc:
-        return False, f"{CA_BUNDLE_ENV} ({os.path.basename(path)}) is not a usable certificate bundle ({type(exc).__name__})"
-    if not path:
-        return True, ("the public CA trust store, with certificate and host-name checks (for a self-signed or "
-                      "private-CA AIS certificate, upload it in the connection settings)")
-    return True, (f"only the CA bundle configured on the server ({os.path.basename(path)}), with certificate and "
-                  "host-name/IP checks")
+        return False, f"the server's public CA trust store is not usable ({type(exc).__name__})"
+    return True, ("the public CA trust store, with certificate and host-name checks (for a self-signed or "
+                  "private-CA AIS certificate, upload it in the connection settings)")
 
 
 def diagnose(exc: Exception, host: str) -> str:
@@ -205,17 +192,9 @@ def diagnose(exc: Exception, host: str) -> str:
     return f"{type(exc).__name__} contacting the AIS endpoint"
 
 
-def server_allowed_hosts() -> set[str]:
-    """An optional server-operator narrowing of destinations."""
-    return {h.strip().lower() for h in os.environ.get(ALLOWED_HOSTS_ENV, "").split(",") if h.strip()}
-
-
 def allowed_hosts(trust: Optional[Trust] = None) -> set[str]:
-    """Permitted destinations: the operator's list when one is set on the
-    server, otherwise exactly the host of the company's saved AIS address."""
-    server = server_allowed_hosts()
-    if server:
-        return server
+    """The one permitted destination: the host of the AIS address saved for
+    the customer in Administration."""
     return {trust.host} if trust and trust.host else set()
 
 
@@ -265,9 +244,7 @@ class LiveAisTransport:
         if urlparse(base_url).scheme != "https":
             raise DestinationNotAllowed("live discovery only uses https")
         if host not in allowed_hosts(trust):
-            raise DestinationNotAllowed(
-                f"{host} is not a permitted destination (the server operator limits destinations with {ALLOWED_HOSTS_ENV})"
-            )
+            raise DestinationNotAllowed(f"{host} is not the AIS address saved for this customer")
         self.company_id = company_id
         self.base_url = base_url
         trust_ok, trust_detail = tls_trust(trust)

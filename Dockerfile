@@ -20,7 +20,12 @@ COPY mcp_server ./mcp_server
 COPY api_service/pyproject.toml ./api_service/pyproject.toml
 COPY api_service/jde_api_service ./api_service/jde_api_service
 
+# Chromium (with its system libraries) for the agents' browser executor, in a
+# path every user can read.
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/playwright
 RUN pip install -e "./mcp_server[postgres]" -e "./api_service[postgres,azure]" \
+    && python -m playwright install --with-deps chromium \
+    && chmod -R a+rX /opt/playwright \
     && useradd --create-home --uid 10001 jade \
     && mkdir -p /data && chown jade:jade /data
 

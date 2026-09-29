@@ -143,26 +143,33 @@ def https_ais(tmp_path):
         s.shutdown()
 
 
-def test_the_ca_bundle_is_used_for_every_request_with_hostname_checks(https_ais, monkeypatch, tmp_path):
+def _trust(cert_path: str, host: str = "127.0.0.1"):
+    import hashlib
+
+    from jde_api_service.discovery import transport
+
+    pem = open(cert_path).read()
+    return transport.Trust(host=host, ca_pem=pem, ca_sha256=hashlib.sha256(pem.encode()).hexdigest())
+
+
+def test_the_uploaded_certificate_is_used_for_every_request_with_hostname_checks(https_ais, monkeypatch, tmp_path):
+    """Trust comes only from the customer's settings: the certificate the
+    Admin uploaded, or the public CAs -- never from the server environment."""
     from jde_api_service.discovery import capabilities, transport
 
     monkeypatch.setenv("JDE_DISCOVERY_LIVE_ENABLED", "true")
-    monkeypatch.setenv("JDE_DISCOVERY_ALLOWED_HOSTS", "127.0.0.1")
     base = f"https://127.0.0.1:{https_ais['port']}"
 
-    # No bundle: the default trust store refuses the private certificate before any HTTP is exchanged.
-    monkeypatch.delenv("JDE_DISCOVERY_CA_BUNDLE", raising=False)
+    # No uploaded certificate: the public trust store refuses the private certificate before any HTTP is exchanged.
     with pytest.raises(transport.TransportError, match="upload the AIS certificate"):
-        transport.LiveAisTransport("vdb", base, 5).check_reachability()
-    # The wrong CA is refused too.
-    monkeypatch.setenv("JDE_DISCOVERY_CA_BUNDLE", https_ais["other_cert"])
+        transport.LiveAisTransport("vdb", base, 5, trust=transport.Trust(host="127.0.0.1")).check_reachability()
+    # The wrong certificate is refused too.
     with pytest.raises(transport.TransportError):
-        transport.LiveAisTransport("vdb", base, 5).check_reachability()
+        transport.LiveAisTransport("vdb", base, 5, trust=_trust(https_ais["other_cert"])).check_reachability()
     assert https_ais["seen"] == []
 
-    # The right bundle: token request, server defaults, a read and logout all succeed over it.
-    monkeypatch.setenv("JDE_DISCOVERY_CA_BUNDLE", https_ais["good_cert"])
-    t = transport.LiveAisTransport("vdb", base, 5)
+    # The right certificate: token request, server defaults, a read and logout all succeed over it.
+    t = transport.LiveAisTransport("vdb", base, 5, trust=_trust(https_ais["good_cert"]))
     ctx = t._client._transport._pool._ssl_context  # the context httpx actually uses
     assert ctx.verify_mode == ssl.CERT_REQUIRED and ctx.check_hostname
     assert "verified TLS" in t.check_reachability()
@@ -174,24 +181,24 @@ def test_the_ca_bundle_is_used_for_every_request_with_hostname_checks(https_ais,
                                                 "/jderest/v2/dataservice", "/jderest/v2/tokenrequest/logout"]
 
     # Host/IP verification stays on: a certificate for 127.0.0.2 is refused on 127.0.0.1.
-    monkeypatch.setenv("JDE_DISCOVERY_CA_BUNDLE", https_ais["wrong_ip_cert"])
     with pytest.raises(transport.TransportError):
-        transport.LiveAisTransport("vdb", f"https://127.0.0.1:{https_ais['wrong_ip_port']}", 5).check_reachability()
+        transport.LiveAisTransport("vdb", f"https://127.0.0.1:{https_ais['wrong_ip_port']}", 5,
+                                   trust=_trust(https_ais["wrong_ip_cert"])).check_reachability()
+    # The only destination is the saved AIS address.
+    with pytest.raises(transport.DestinationNotAllowed, match="not the AIS address saved"):
+        transport.LiveAisTransport("vdb", base, 5, trust=_trust(https_ais["good_cert"], host="ais.elsewhere.example"))
 
 
-def test_a_missing_or_invalid_bundle_keeps_live_discovery_off(monkeypatch, tmp_path):
+def test_a_missing_or_invalid_uploaded_certificate_keeps_live_discovery_off(monkeypatch, tmp_path):
     from jde_api_service.discovery import transport
 
     monkeypatch.setenv("JDE_DISCOVERY_LIVE_ENABLED", "true")
-    monkeypatch.setenv("JDE_DISCOVERY_ALLOWED_HOSTS", "141.144.202.25")
-    monkeypatch.setenv("JDE_DISCOVERY_CA_BUNDLE", str(tmp_path / "missing.pem"))
-    assert not transport.live_allowed_by_deployment() and "does not exist" in transport.live_status_detail()
-    bad = tmp_path / "bad.pem"
-    bad.write_text("not a certificate")
-    monkeypatch.setenv("JDE_DISCOVERY_CA_BUNDLE", str(bad))
-    assert not transport.live_allowed_by_deployment() and "not a usable certificate bundle" in transport.live_status_detail()
+    missing = transport.Trust(host="ais-vdb.customer.example", ca_sha256="a" * 64, ca_missing=True)
+    assert not transport.live_allowed_by_deployment(missing) and "not stored" in transport.live_status_detail(missing)
+    bad = transport.Trust(host="ais-vdb.customer.example", ca_pem="not a certificate", ca_sha256="b" * 64)
+    assert not transport.live_allowed_by_deployment(bad) and "not usable" in transport.live_status_detail(bad)
     with pytest.raises(transport.DestinationNotAllowed, match="held OFF"):
-        transport.LiveAisTransport("vdb", "https://141.144.202.25:7077", 5)
+        transport.LiveAisTransport("vdb", "https://ais-vdb.customer.example", 5, trust=bad)
 
 
 # ---------------------------------------------------------------------
@@ -304,9 +311,9 @@ def test_readiness_needs_the_dedicated_account_and_network_restriction(client, m
     assert list(groups) == ["connectivity", "identity", "jde_authorization", "network_restriction", "runtime_safeguards"]
     assert groups["connectivity"]["satisfied"] and groups["identity"]["satisfied"]
     assert not groups["jde_authorization"]["satisfied"] and not groups["network_restriction"]["satisfied"]
-    # Jade never writes to JDE: the writes-disabled safeguard always holds.
+    # The read-only discovery user never writes: changes go through the agents' separate DEV write user.
     safeguards = {i["id"]: i for i in groups["runtime_safeguards"]["items"]}
-    assert safeguards["writes_disabled"]["satisfied"] and "no JDE write path" in safeguards["writes_disabled"]["detail"]
+    assert safeguards["writes_disabled"]["satisfied"] and "separate DEV write user" in safeguards["writes_disabled"]["detail"]
     assert not view["ready"]
     assert client.post("/admin/jde/enable", headers=H, json={"expectedRevision": view["revision"]}).status_code != 200
 

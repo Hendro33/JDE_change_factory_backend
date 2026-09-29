@@ -59,8 +59,6 @@ Put these in `.jade-data/server.env`, one `KEY=value` per line. Other keys are i
 | `JDE_DATABASE_URL`, `JDE_DATABASE_SCHEMA` | Use PostgreSQL instead of the local SQLite database. |
 | `JDE_BOOTSTRAP_CUSTOMER_NAME` | The name of the first customer on a fresh start. |
 | `JDE_DISCOVERY_LIVE_ENABLED` | `false` locks every JD Edwards connection off. |
-| `JDE_DISCOVERY_ALLOWED_HOSTS` | Limits which AIS hosts may be contacted. |
-| `JDE_DISCOVERY_CA_BUNDLE` | A CA file for connections without an uploaded certificate. |
 | `JDE_ANTHROPIC_BASE_URL` | An HTTPS gateway in front of the Anthropic API. |
 
 ## Reaching your JD Edwards system

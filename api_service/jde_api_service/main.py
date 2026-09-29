@@ -30,6 +30,7 @@ from .routers import (
     changes,
     company_users,
     discovery,
+    jde_execution,
     domain_governance,
     session,
     process,
@@ -75,6 +76,13 @@ def _wire_execution_gate() -> None:
     from .delivery import readers
 
     readers.register()
+    # Which route each configuration item takes into DEV (AIS, the web
+    # client, or a person), decided by Jade when a change set is proposed.
+    from jde_mcp_server import config_items as _config_items
+
+    from .executors import routes as _routes
+
+    _config_items.register_router(_routes.route_for)
 
 
 async def _lifespan(app: FastAPI):
@@ -89,12 +97,8 @@ async def _lifespan(app: FastAPI):
     from .discovery import transport as _jde_transport
 
     if _jde_transport.server_lock():
-        logger.info("Live JDE discovery is locked off on this server (%s=false)", _jde_transport.LIVE_ENABLED_ENV)
-    elif os.environ.get(_jde_transport.CA_BUNDLE_ENV, "").strip():
-        _ok, _detail = _jde_transport.tls_trust()
-        if not _ok:
-            logger.error("The server-level JDE CA bundle is unusable (connections without an uploaded certificate "
-                         "stay off): %s", _detail)
+        logger.info("Every JD Edwards connection is locked off on this server (%s=false)",
+                    _jde_transport.LIVE_ENABLED_ENV)
     interrupted = reconcile_interrupted_runs()
     if any(interrupted.values()):
         logger.warning("Marked runs interrupted by the restart as failed: %s", interrupted)
@@ -173,6 +177,7 @@ app.include_router(architecture_review.router)
 app.include_router(admin.router)
 app.include_router(company_users.router)
 app.include_router(discovery.router)
+app.include_router(jde_execution.router)
 app.include_router(technical.router)
 app.include_router(process.router)
 app.include_router(ai.router)

@@ -143,15 +143,22 @@ def test_a_new_order_type_is_proposed_approved_applied_and_verified_item_by_item
     assert "| I2 | Add F40039" in md and "every item matches" in md
 
 
-def test_the_next_action_names_the_progress_and_the_next_item(ready):
+def test_the_next_action_names_the_next_item_and_who_applies_it(ready):
+    """Every item here has an agent route, but agent execution is not set up
+    for this customer: the next action says so, item by item, and a person
+    may apply it instead (the hand-over is recorded)."""
     client = ready
-    _approve(_propose("S-CS-NEXT")["change_id"])
+    rec = _propose("S-CS-NEXT")
+    assert [(i["executor"], i["route"]) for i in rec["operation"]["items"]] == [
+        ("agent", "ais"), ("agent", "ais"), ("agent", "browser"), ("agent", "browser")]
+    _approve(rec["change_id"])
     nxt = client.get("/changes/S-CS-NEXT", headers=headers("vdb")).json()["lifecycle"]["nextAction"]
-    assert nxt["action"] == "record_applied" and "0 of 4 recorded; next I1" in nxt["summary"]
+    assert nxt["action"] == "run_agents_or_record" and "I1" in nxt["summary"] and "not set up" in nxt["summary"]
     apply_row_in_dev("vdb", "F0005", {"DRSY": "00", "DRRT": "DT", "DRKY": "SW"}, {"DRDL01": "Sales Order - Webshop"})
-    assert _record(client, "S-CS-NEXT", itemId="I1").status_code == 200
+    r = _record(client, "S-CS-NEXT", itemId="I1")
+    assert r.status_code == 200 and "handed to a person" in r.json()["handover"]
     nxt = client.get("/changes/S-CS-NEXT", headers=headers("vdb")).json()["lifecycle"]["nextAction"]
-    assert "1 of 4 recorded; next I2" in nxt["summary"]
+    assert "I2" in nxt["summary"]
 
 
 @pytest.mark.parametrize("change, reason", [

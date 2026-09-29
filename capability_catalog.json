@@ -68,12 +68,12 @@
       },
       "validation": {
         "status": "needs_spike",
-        "technical_validation": "Proposed as items of a configuration change set, each checked against the universal rules and the company's approved configuration when proposed, approved and delivered. Automated application is not validated on a customer system yet, so an authorised person applies each approved item in DEV and records it; Jade reads it back live through the customer's AIS connection where the connection permits.",
+        "technical_validation": "Proposed as items of a configuration change set, each checked against the universal rules and the company's approved configuration when proposed, approved and delivered. After approval the agents apply each approved item in DEV (api_service executors/: AIS form requests, or the web client in an agent-driven browser) with the customer's dedicated DEV write user, a live read before and after, and stop for reconciliation on any mismatch or unknown outcome; an Admin can switch agent execution off per customer and per capability. An item JD Edwards cannot accommodate through either route is applied by a person and recorded.",
         "policy_restriction": "None beyond the universal exclusions (tax/GL/AAI/security fields, XJDE/ZJDE) -- this capability is not blanket-Restricted, it is Needs spike pending the technical work above",
         "evidence_references": [
           "mcp_server/jde_mcp_server/config_items.py (items, universal rules, scope)",
           "mcp_server/jde_mcp_server/approval.py (propose, approve, authorise_functional_delivery)",
-          "api_service/jde_api_service/delivery/ (recorded delivery and live read-back per item)"
+          "api_service/jde_api_service/executors/ (agent execution per item) and delivery/ (items for a person; live read-back per item)"
         ],
         "validation_date": null,
         "approver": null,
@@ -197,7 +197,7 @@
         "evidence_references": [
           "mcp_server/jde_mcp_server/config_items.py (items, universal rules, scope)",
           "mcp_server/jde_mcp_server/approval.py (propose, approve, authorise_functional_delivery)",
-          "api_service/jde_api_service/delivery/ (recorded delivery and live read-back per item)"
+          "api_service/jde_api_service/executors/ (agent execution per item) and delivery/ (items for a person; live read-back per item)"
         ],
         "validation_date": null,
         "approver": null,
@@ -320,7 +320,7 @@
         "evidence_references": [
           "mcp_server/jde_mcp_server/config_items.py (items, universal rules, scope)",
           "mcp_server/jde_mcp_server/approval.py (propose, approve, authorise_functional_delivery)",
-          "api_service/jde_api_service/delivery/ (recorded delivery and live read-back per item)"
+          "api_service/jde_api_service/executors/ (agent execution per item) and delivery/ (items for a person; live read-back per item)"
         ],
         "validation_date": null,
         "approver": null,
@@ -439,12 +439,12 @@
       },
       "validation": {
         "status": "needs_spike",
-        "technical_validation": "Proposed as items of a configuration change set, each checked against the universal rules and the company's approved configuration when proposed, approved and delivered. Automated application is not validated on a customer system yet, so an authorised person applies each approved item in DEV and records it; Jade reads it back live through the customer's AIS connection where the connection permits.",
+        "technical_validation": "Proposed as items of a configuration change set, each checked against the universal rules and the company's approved configuration when proposed, approved and delivered. After approval the agents apply each approved item in DEV (api_service executors/: AIS form requests, or the web client in an agent-driven browser) with the customer's dedicated DEV write user, a live read before and after, and stop for reconciliation on any mismatch or unknown outcome; an Admin can switch agent execution off per customer and per capability. An item JD Edwards cannot accommodate through either route is applied by a person and recorded.",
         "policy_restriction": "Deletion and special-handling changes are excluded from this capability's remit entirely (see near-term exclusions), not merely Restricted pending review",
         "evidence_references": [
           "mcp_server/jde_mcp_server/config_items.py (items, universal rules, scope)",
           "mcp_server/jde_mcp_server/approval.py (propose, approve, authorise_functional_delivery)",
-          "api_service/jde_api_service/delivery/ (recorded delivery and live read-back per item)"
+          "api_service/jde_api_service/executors/ (agent execution per item) and delivery/ (items for a person; live read-back per item)"
         ],
         "validation_date": null,
         "approver": null,
@@ -561,12 +561,12 @@
       },
       "validation": {
         "status": "needs_spike",
-        "technical_validation": "Proposed as items of a configuration change set, each checked against the universal rules and the company's approved configuration when proposed, approved and delivered. Automated application is not validated on a customer system yet, so an authorised person applies each approved item in DEV and records it; Jade reads it back live through the customer's AIS connection where the connection permits.",
+        "technical_validation": "Proposed as items of a configuration change set, each checked against the universal rules and the company's approved configuration when proposed, approved and delivered. After approval the agents apply each approved item in DEV (api_service executors/: AIS form requests, or the web client in an agent-driven browser) with the customer's dedicated DEV write user, a live read before and after, and stop for reconciliation on any mismatch or unknown outcome; an Admin can switch agent execution off per customer and per capability. An item JD Edwards cannot accommodate through either route is applied by a person and recorded.",
         "policy_restriction": "Blanket constants/master-data access is explicitly excluded from any future promotion -- only a narrow, named allowlist can ever be considered",
         "evidence_references": [
           "mcp_server/jde_mcp_server/config_items.py (items, universal rules, scope)",
           "mcp_server/jde_mcp_server/approval.py (propose, approve, authorise_functional_delivery)",
-          "api_service/jde_api_service/delivery/ (recorded delivery and live read-back per item)"
+          "api_service/jde_api_service/executors/ (agent execution per item) and delivery/ (items for a person; live read-back per item)"
         ],
         "validation_date": null,
         "approver": null,
@@ -685,12 +685,12 @@
       },
       "validation": {
         "status": "needs_spike",
-        "technical_validation": "Proposed as items of a configuration change set, each checked against the universal rules and the company's approved configuration when proposed, approved and delivered. Automated application is not validated on a customer system yet, so an authorised person applies each approved item in DEV and records it; Jade reads it back live through the customer's AIS connection where the connection permits.",
+        "technical_validation": "Proposed as items of a configuration change set, each checked against the universal rules and the company's approved configuration when proposed, approved and delivered. After approval the agents apply each approved item in DEV (api_service executors/: AIS form requests, or the web client in an agent-driven browser) with the customer's dedicated DEV write user, a live read before and after, and stop for reconciliation on any mismatch or unknown outcome; an Admin can switch agent execution off per customer and per capability. An item JD Edwards cannot accommodate through either route is applied by a person and recorded.",
         "policy_restriction": "None beyond universal exclusions; kept separate from line_type_definition per Section 2's 'each is a separate sub-capability'",
         "evidence_references": [
           "mcp_server/jde_mcp_server/config_items.py (items, universal rules, scope)",
           "mcp_server/jde_mcp_server/approval.py (propose, approve, authorise_functional_delivery)",
-          "api_service/jde_api_service/delivery/ (recorded delivery and live read-back per item)"
+          "api_service/jde_api_service/executors/ (agent execution per item) and delivery/ (items for a person; live read-back per item)"
         ],
         "validation_date": null,
         "approver": null,
@@ -812,12 +812,12 @@
       },
       "validation": {
         "status": "needs_spike",
-        "technical_validation": "Proposed as items of a configuration change set, each checked against the universal rules and the company's approved configuration when proposed, approved and delivered. Automated application is not validated on a customer system yet, so an authorised person applies each approved item in DEV and records it; Jade reads it back live through the customer's AIS connection where the connection permits.",
+        "technical_validation": "Proposed as items of a configuration change set, each checked against the universal rules and the company's approved configuration when proposed, approved and delivered. After approval the agents apply each approved item in DEV (api_service executors/: AIS form requests, or the web client in an agent-driven browser) with the customer's dedicated DEV write user, a live read before and after, and stop for reconciliation on any mismatch or unknown outcome; an Admin can switch agent execution off per customer and per capability. An item JD Edwards cannot accommodate through either route is applied by a person and recorded.",
         "policy_restriction": "Unsafe variants (GL-posting or inventory-updating line types outside an approved template's own defaults) remain Restricted even after any future spike -- this entry can be promoted only for the safe subset",
         "evidence_references": [
           "mcp_server/jde_mcp_server/config_items.py (items, universal rules, scope)",
           "mcp_server/jde_mcp_server/approval.py (propose, approve, authorise_functional_delivery)",
-          "api_service/jde_api_service/delivery/ (recorded delivery and live read-back per item)"
+          "api_service/jde_api_service/executors/ (agent execution per item) and delivery/ (items for a person; live read-back per item)"
         ],
         "validation_date": null,
         "approver": null,
@@ -938,12 +938,12 @@
       },
       "validation": {
         "status": "needs_spike",
-        "technical_validation": "Proposed as items of a configuration change set, each checked against the universal rules and the company's approved configuration when proposed, approved and delivered. Automated application is not validated on a customer system yet, so an authorised person applies each approved item in DEV and records it; Jade reads it back live through the customer's AIS connection where the connection permits.",
+        "technical_validation": "Proposed as items of a configuration change set, each checked against the universal rules and the company's approved configuration when proposed, approved and delivered. After approval the agents apply each approved item in DEV (api_service executors/: AIS form requests, or the web client in an agent-driven browser) with the customer's dedicated DEV write user, a live read before and after, and stop for reconciliation on any mismatch or unknown outcome; an Admin can switch agent execution off per customer and per capability. An item JD Edwards cannot accommodate through either route is applied by a person and recorded.",
         "policy_restriction": "Any combination with existing dependent transactions remains permanently out of this capability's remit, independent of any future validation",
         "evidence_references": [
           "mcp_server/jde_mcp_server/config_items.py (items, universal rules, scope)",
           "mcp_server/jde_mcp_server/approval.py (propose, approve, authorise_functional_delivery)",
-          "api_service/jde_api_service/delivery/ (recorded delivery and live read-back per item)"
+          "api_service/jde_api_service/executors/ (agent execution per item) and delivery/ (items for a person; live read-back per item)"
         ],
         "validation_date": null,
         "approver": null,

@@ -249,14 +249,12 @@ def test_no_discovery_action_can_invoke_a_write_capability():
 # ---------------------------------------------------------------------
 # Live transport safeguards (against an httpx mock -- no network)
 # ---------------------------------------------------------------------
-def _live(client, monkeypatch, handler, *, allow_host=True, enable=True):
+def _live(client, monkeypatch, handler, *, enable=True):
     from jde_api_service.discovery import service
 
-    # Live needs no server settings; the operator can still lock it off or narrow destinations.
+    # Live needs no server settings; the operator can only lock every connection off (emergency stop).
     if not enable:
         monkeypatch.setenv("JDE_DISCOVERY_LIVE_ENABLED", "false")
-    if not allow_host:
-        monkeypatch.setenv("JDE_DISCOVERY_ALLOWED_HOSTS", "some-other-ais.example")
     monkeypatch.setattr(service, "LIVE_HTTP_TRANSPORT", httpx.MockTransport(handler))
     save_profile(client, connectionMode="live")
     save_credential(client)
@@ -286,11 +284,18 @@ def test_the_server_operator_can_lock_live_off_and_it_never_falls_back(client, m
     assert requests == [] and calls == []  # nothing is sent, and nothing stands in for the customer's AIS
 
 
-def test_the_server_operator_can_narrow_destinations(client, monkeypatch):
+def test_no_jde_host_or_certificate_comes_from_the_server_environment(client, monkeypatch):
+    """The destination and trust are the customer's saved settings only: the
+    old server-wide allow-list and CA bundle variables have no effect."""
     requests: list = []
-    _live(client, monkeypatch, _ais_ok(requests), allow_host=False)
+    monkeypatch.setenv("JDE_DISCOVERY_ALLOWED_HOSTS", "some-other-ais.example")
+    monkeypatch.setenv("JDE_DISCOVERY_CA_BUNDLE", "/nonexistent/ca.pem")
+    _live(client, monkeypatch, _ais_ok(requests))
     r = client.post("/admin/jde/test-connection", headers=headers("vdb")).json()
-    assert r["outcome"] == "blocked" and "not a permitted destination" in r["detail"] and requests == []
+    assert r["outcome"] == "ok", r
+    from jde_api_service.discovery import transport
+
+    assert not hasattr(transport, "ALLOWED_HOSTS_ENV") and not hasattr(transport, "CA_BUNDLE_ENV")
 
 
 def test_live_test_connection_uses_only_fixed_endpoints_and_verified_tls(client, monkeypatch):
@@ -399,9 +404,9 @@ def test_the_transport_is_always_the_customers_live_ais(client):
                                 live_transport=mock, trust=trust)
     # The saved host is the only destination: any other host is refused, and
     # with no saved host there is no destination at all.
-    with pytest.raises(transport.DestinationNotAllowed, match="not a permitted destination"):
+    with pytest.raises(transport.DestinationNotAllowed, match="not the AIS address saved"):
         transport.transport_for("vdb", config.model_copy(update={"ais_base_url": "https://elsewhere.example"}),
                                 live_transport=mock, trust=trust)
-    with pytest.raises(transport.DestinationNotAllowed, match="not a permitted destination"):
+    with pytest.raises(transport.DestinationNotAllowed, match="not the AIS address saved"):
         transport.transport_for("vdb", config, live_transport=mock)
     assert view["config"]["aisBaseUrl"] == "https://ais-vdb.customer.example"

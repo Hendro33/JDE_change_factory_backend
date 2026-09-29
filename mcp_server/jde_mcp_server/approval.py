@@ -373,8 +373,9 @@ def _require_live_approval(change_id: str) -> tuple[dict, dict]:
 # inside the change's lock, immediately before the step is stored.
 # ---------------------------------------------------------------------
 def authorise_functional_delivery(change_id: str) -> tuple[dict, dict]:
-    """Everything that must be true for a person to apply this approved
-    change in DEV and record it, re-derived from source: the story and the
+    """Everything that must be true for an agent to apply this approved
+    change in DEV, or a person to apply and record it, re-derived from
+    source: the story and the
     exact change approved and unexpired, the approver's CURRENT authority,
     no earlier step in flight or of unknown outcome, the approval's basis
     (design revision, no invalidation, and -- where Jade can read it -- the
@@ -397,14 +398,21 @@ def authorise_functional_delivery(change_id: str) -> tuple[dict, dict]:
     execution.require_ready(record, execution.WRITE)
     from . import binding
 
-    # The person applies the change in JDE BEFORE recording it, so the
-    # target has changed by design: the current value is compared with the
-    # APPROVED value when the step is recorded (api_service delivery/), not
-    # with the before-state here.
+    # Earlier items (or, for a person's item, the person) change the target
+    # by design before a step is recorded: each item is compared with its
+    # approved-against state right before an agent applies it, and with the
+    # APPROVED value when it is recorded (api_service executors/ and
+    # delivery/), not with the whole change's before-state here.
     found = binding.problems(record, read_current=False, require_known_before=False)
     if found:
         raise binding.BindingInvalid(f"change {change_id} is not eligible: " + "; ".join(found))
     if config_items.is_change_set(record):
+        diverged = [i["id"] for i in record["operation"]["items"] if execution.item_state(record, i["id"]) == "diverged"]
+        if diverged:
+            raise execution.ExecutionBlocked(
+                f"change {change_id}: reconciliation found {', '.join(diverged)} in neither the state before the "
+                "change nor the approved state; this change can no longer execute -- investigate, then propose a "
+                "new change")
         check_environment_binding(scope, record["environment"])
         for item in record["operation"]["items"]:
             try:

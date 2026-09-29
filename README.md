@@ -16,33 +16,39 @@ apart from one first customer and a temporary setup account.
 | Role | What they do in Jade |
 |---|---|
 | **Domain Owner** | Raises requests, reviews and approves the user story for their business domain, follows delivery. |
-| **Application Manager** | Places stories in a domain, approves them for delivery, approves the exact change set, applies it in DEV and records each item, runs or records the test, finalises the as-built record. |
-| **Administrator** | Sets up the customer: users and roles, business domains, engagement scope and approval policy, the AI key, Jira and the JD Edwards connection. |
+| **Application Manager** | Places stories in a domain, approves them for delivery, approves the exact change set (the agents then apply it in DEV), applies and records only the items marked for a person, reconciles any item an agent stopped on, runs or records the test, finalises the as-built record. |
+| **Administrator** | Sets up the customer: users and roles, business domains, engagement scope and approval policy, the AI key, Jira, the JD Edwards connection and agent execution (the DEV write user, the web client, the on/off switches). |
 
 A CNC operator records CNC activation for technical (development object) changes.
 
 ## How a change reaches JD Edwards
 
-Jade never writes to JD Edwards. The approved change is applied in DEV by an authorised person, and Jade verifies it:
+The agents make the approved changes in the customer's DEV system themselves. A person does only what JD Edwards
+cannot accommodate through AIS or the web client.
 
 1. The AI agents turn the request into a user story. The Domain Owner approves it and the Application Manager
    approves it for delivery.
 2. The Architect researches the customer's DEV environment through the customer's JD Edwards connection (approved,
-   read-only AIS reads) and designs the solution. For a configuration change, the Functional Agent -- the JD Edwards
-   configuration specialist -- then specifies the exact configuration change set in the same run, to the customer's
-   configuration standards and the JD Edwards manuals in its Start-up Pack: UDC values, set-up tables, document and
-   line types, order activity rules, processing options, batch version data selection and sequencing, each checked
-   against the customer's approved configuration (Governance).
-3. The Application Manager approves that exact change set. Jade reads each target's current state live and binds
-   the approval to it.
-4. A person applies the items in DEV, in order, and records each one. Jade re-checks the approval, scope and
-   authority and reads each item back live. Only exactly the approved values are ever recorded as applied. When the
-   connection cannot read an item (a batch version's data selection, for example), the person states it with an
-   evidence reference, and the record says so.
-5. The approved test Orchestration runs live on the customer's AIS server, or the person records the test result.
-6. The as-built record is generated and finalised when every delivery checkpoint is complete.
+   read-only AIS reads, with the read-only discovery user) and the Functional Agent proposes the exact configuration
+   change set. Jade marks each item with its route: **agent** (AIS form requests, or the web client in an
+   agent-driven browser) or **person**.
+3. The Application Manager approves that exact change set. Jade reads each target live and binds the approval to it.
+4. The agents apply each agent item in order (`api_service/jde_api_service/executors/`), signed in as the customer's
+   dedicated DEV write user: the whole delivery gate runs again for every item (approval, authority, scope, DEV only,
+   writes not paused), a live read before the change must show the approved-against state, the change is exactly the
+   approved item, and a live read-back must show exactly the approved values. A mismatch or an unknown outcome stops
+   the item for reconciliation; it is never retried blindly. Browser steps are screenshotted as evidence.
+5. A person applies only the items marked for a person, or an agent item no agent can apply right now (agent execution
+   switched off or not set up, or the agent stopped before saving anything), and records it; the hand-over is recorded.
+6. The approved test Orchestration runs live on the customer's AIS server, or the person records the test result.
+7. The as-built record is generated and finalised when every delivery checkpoint is complete.
 
-Technical changes (business functions, event rules) follow the same principle: the Technical Agent prepares the
+Everything about a customer's JD Edwards -- AIS, web client and Web OMW addresses, certificates, the read-only and
+the write user, environment and path code, and the per-capability on/off switches for agent execution -- is entered
+in Administration > Systems & Connections > JDE and stored per customer, secrets encrypted. Nothing about a
+customer's JD Edwards comes from the server's environment.
+
+Technical changes (business functions, event rules) still follow the recorded route: the Technical Agent prepares the
 package; people apply, build and promote it through OMW and CNC, and record each step.
 
 ## Running it

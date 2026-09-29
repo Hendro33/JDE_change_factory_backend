@@ -278,8 +278,6 @@ def enable_blockers(profile: dict) -> list[str]:
         trust = trust_for(profile["company_id"], config)
         if not live_allowed_by_deployment(trust):
             out.append(live_status_detail(trust))
-        elif trust.host not in allowed_hosts(trust):
-            out.append("the AIS host is not a permitted destination (narrowed by the server operator)")
     if credential_storage(profile) != "encrypted":
         out.append("no readable discovery credential")
     h = health(profile)
@@ -361,9 +359,10 @@ def prerequisites(profile: dict) -> list[dict]:
 
 def server_prerequisites(config: JdeProfileConfig, company_id: str = "") -> list[dict]:
     """What must hold for a live connection: live access not locked by the
-    server operator, the saved address as the permitted destination, usable
-    TLS trust (an uploaded certificate or public CAs), and the server's
-    credential-encryption key. All but the key come from the settings."""
+    server operator (emergency stop), the saved address as the only
+    destination, usable TLS trust (an uploaded certificate or public CAs),
+    and the server's credential-encryption key. All but the key and the
+    emergency stop come from the settings."""
     from ..services import credential_crypto
 
     trust = trust_for(company_id, config)
@@ -373,7 +372,7 @@ def server_prerequisites(config: JdeProfileConfig, company_id: str = "") -> list
         {"id": "live_enabled", "label": "Live access available", "satisfied": live_allowed_by_deployment(trust),
          "detail": live_status_detail(trust)},
         {"id": "allowlist", "label": f"AIS host {trust.host} is the permitted destination", "satisfied": permitted,
-         "detail": "the saved AIS address" if permitted else "the server operator limits destinations to other hosts"},
+         "detail": "the saved AIS address" if permitted else "no AIS address is saved"},
         {"id": "tls_trust", "label": "TLS certificate trust (never unverified)", "satisfied": trust_ok,
          "detail": trust_detail},
         {"id": "encryption_key", "label": "Credential-encryption key configured on the server",
@@ -445,7 +444,7 @@ def readiness(profile: dict) -> tuple[list[dict], bool]:
         _item("allowlist", "AIS host is the permitted destination", "configuration",
               (not live) or trust.host in allowed_hosts(trust),
               (f"{trust.host}: the saved AIS address" if trust.host in allowed_hosts(trust)
-               else f"{trust.host} is outside the destinations the server operator allows") if live else na,
+               else "no AIS address is saved") if live else na,
               required=live),
         _item("tls_verified", "Endpoint reached from the backend over verified TLS", "machine_verified",
               reach.state == "ok" and (not live or "verified TLS" in reach.detail), reach.detail or "not checked yet"),
@@ -481,8 +480,9 @@ def readiness(profile: dict) -> tuple[list[dict], bool]:
               config.isolation_evidence.strip() or "not confirmed"),
     ]
     safeguards = [
-        _item("writes_disabled", "Jade never writes to JDE (changes are applied by a person and recorded)",
-              "server_managed", True, "no JDE write path exists in Jade", required=live),
+        _item("writes_disabled", "This read-only user never writes to JDE",
+              "server_managed", True, "discovery sends reads only; approved changes are made by the agents with the "
+              "separate DEV write user (Agent execution, below), under the delivery gate", required=live),
         _item("approved_reads", "Approved reads defined (exact targets, columns, record limit)", "configuration",
               bool(config.approved_reads), f"{len(config.approved_reads)} approved read(s), at most "
                                            f"{config.limits.max_records} records each"),

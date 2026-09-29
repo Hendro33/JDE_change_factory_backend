@@ -1,7 +1,8 @@
 """
 At start-up, bring every stored secret under the server's current
 credential key: the Jira API tokens, each customer's AI provider key and
-each customer's JD Edwards credential. A value encrypted under the
+each customer's JD Edwards credentials (the read-only discovery user and
+the DEV write user). A value encrypted under the
 previous key (JDE_CREDENTIAL_KEY_PREVIOUS) is re-encrypted; a legacy
 plaintext value is encrypted; a value neither key can read is left as it
 is and reported as unreadable where it is used.
@@ -17,6 +18,7 @@ SECRETS = (
     ("jira_credentials", "company_id", "api_token"),
     ("ai_connections", "company_id", "credential_secret"),
     ("jde_profiles", "company_id", "credential_secret"),
+    ("jde_execution_settings", "company_id", "credential_secret"),
 )
 
 

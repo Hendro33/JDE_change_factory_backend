@@ -72,6 +72,19 @@ mapped to processes, and the as-built record says so.
 The connection, its credential and its readiness are remembered across restarts. Any material change to the settings
 switches discovery off until you test again. **Disable Connection** stops all requests at once.
 
+### Agent execution (same page, below)
+
+The agents make the approved changes in DEV themselves, with a **separate DEV write user**. Ask the customer's CNC for
+a dedicated JD Edwards user and DEV role for Jade's changes (never `*ALL`, never the discovery user).
+
+1. **Set up**: the JD Edwards web client address of DEV (e.g. `https://jde-dev.customer.example/jde`), Web OMW only
+   if it has its own address, the web client's certificate if it is self-signed or private, and the write role.
+   **Save settings**.
+2. Enter the **DEV write user** and its password, **Save write user**. It is encrypted and never shown again.
+3. **Test**: the write user signs in to AIS and to the web client (in the agents' browser); nothing is changed.
+4. Both routes show **Ready**. Under **Governance › Agent execution** you can switch the agents off for the customer
+   or per capability at any time; every switch is recorded with your name and the date.
+
 ## 7. Engagement scope and approval policy
 
 **Administration › Governance › Edit.** This is what the delivery gate enforces for this customer's stories.
@@ -79,7 +92,7 @@ switches discovery off until you test again. **Disable Connection** stops all re
 - **Approval policy:** which roles may approve an exact change (normally Application Manager), and for how many hours.
 - **DEV environment binding:** environment, path code and business data source, with your confirmation and evidence
   that its OCM mappings cannot affect another environment.
-- **Mechanisms allowed:** processing-option changes and/or test Orchestrations.
+- **Mechanisms allowed:** configuration changes and/or test Orchestrations.
 - **Approved versions:** one line per version, e.g.
   `processing_option_update|document_and_order_types|P4210|CIQ0001|PDOCTYPE|SO|webshop order entry`.
   XJDE/ZJDE versions are always refused.
@@ -94,8 +107,11 @@ switches discovery off until you test again. **Disable Connection** stops all re
 3. **Domain Owner:** *User Story Review*: confirm impact and benefit, then **Approve**.
 4. **Application Manager:** *Backlog Review* › **Approve for Delivery**. The Architect researches DEV and proposes a
    solution with its exact change.
-5. **Application Manager:** *Architecture Review* › **Approve exact change**. The current value is read live and shown.
-6. Apply exactly that value in JDE DEV, then *Delivery* › **Record applied in DEV**. Jade reads it back live.
+5. **Application Manager:** *Architecture Review* › **Approve exact change**. The current values are read live and
+   shown, with who applies each item (the agents through AIS or the web client, or a person).
+6. The agents apply the items in DEV and Jade reads each back live (*Delivery* shows the progress and screenshots of
+   the agents' web-client steps). Apply and record only the items marked for a person; reconcile any item an agent
+   stopped on.
 7. **Run approved test** (the Orchestration runs live), or record the test result yourself.
 8. *As-Built* › **Generate the as-built record** › **Finalise and complete the story**.
 
