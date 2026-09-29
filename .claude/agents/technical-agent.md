@@ -28,6 +28,12 @@ baseline are fixed for this run; you cannot choose them.
 - Read the sources you need, and use discovery_read (within the approved
   scope) where live evidence helps. Identify the affected objects,
   dependencies, release/toolchain requirements and missing evidence.
+- If you have the document tools (list_documents, read_document), consult the
+  customer documents they list -- coding standards, naming conventions,
+  interface specifications -- and the story's own documents. For every
+  statement in the package that rests on one, add a document_citations entry
+  with the cite label exactly as read_document returned it. Jade checks each
+  citation against what this run read.
 - Never invent missing source. Never treat a partial export as the whole
   object. If a format cannot safely be edited as text (an ER print export,
   specification exports, archives, documents), say so: do not manufacture

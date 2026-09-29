@@ -40,7 +40,8 @@ OUTCOME_KINDS = {"clarification_required", "inconclusive", "blocked_unsupported"
 
 
 class TechnicalAgentTools:
-    def __init__(self, *, company_id: str, story_id: str, run_id: str) -> None:
+    def __init__(self, *, company_id: str, story_id: str, run_id: str,
+                 knowledge_log: Optional[list[dict]] = None) -> None:
         run = store.get_run(run_id)
         if run is None or run["company_id"] != company_id or run["story_id"] != story_id:
             raise ValueError("no such Technical Agent run for this story")
@@ -55,6 +56,14 @@ class TechnicalAgentTools:
             no_grant_reason=reason)
         self.outcome: dict[str, Any] = {}
         self.calls: list[str] = []
+        # What the run's document tools returned (ai/runtime.py); citations are
+        # checked against it, never taken on the model's word.
+        self.knowledge_log = knowledge_log if knowledge_log is not None else []
+
+    def _citations(self, raw) -> list[dict]:
+        from ..knowledge.tools import verify_citations
+
+        return verify_citations(raw if isinstance(raw, list) else [], self.knowledge_log)
 
     def _event(self, name: str, detail: str = "", **data: Any) -> None:
         self.calls.append(name)
@@ -247,7 +256,8 @@ class TechnicalAgentTools:
             dependencies=[str(d)[:300] for d in (args.get("dependencies") or [])][:20], test_plan=tests,
             missing_evidence=[str(m)[:500] for m in (args.get("missing_evidence") or [])][:20],
             unsupported=[str(u)[:500] for u in (args.get("unsupported") or [])][:20],
-            recovery=str(args.get("recovery", ""))[:1000], repair_of=repair_of)
+            recovery=str(args.get("recovery", ""))[:1000], repair_of=repair_of,
+            document_citations=self._citations(args.get("document_citations")))
         try:
             package = service.submit(self.company_id, self.story_id, self.run_id, content)
         except (store.StaleSubmission, service.TechnicalRefused) as exc:
@@ -263,10 +273,12 @@ class TechnicalAgentTools:
                 "change_id": package["change_id"], "status": "prepared -- awaiting exact implementation approval by a "
                                                               "person; nothing has been applied"}
 
-    def report_outcome(self, kind: str, explanation: str, questions: list[str]) -> dict[str, Any]:
+    def report_outcome(self, kind: str, explanation: str, questions: list[str],
+                       document_citations: Optional[list] = None) -> dict[str, Any]:
         if kind not in OUTCOME_KINDS:
             return {"recorded": False, "reason": f"kind must be one of {sorted(OUTCOME_KINDS)}"}
-        self.outcome = {"kind": kind, "explanation": explanation[:3000], "questions": [q[:500] for q in questions][:20]}
+        self.outcome = {"kind": kind, "explanation": explanation[:3000], "questions": [q[:500] for q in questions][:20],
+                        "document_citations": self._citations(document_citations)}
         self._event("report_outcome", kind)
         return {"recorded": True, **self.outcome}
 
@@ -324,8 +336,10 @@ class TechnicalAgentTools:
             sdk.tool("submit_implementation_package", "Submit the workspace changes as the next package revision for a "
                      "person to approve. Needs: explanation, requirement_trace [{requirement, how}], dependencies, "
                      "test_plan [{name, kind: positive|negative|neighbouring, event, inputs{}, expected{}, rationale}] "
-                     "with all three kinds, missing_evidence, unsupported, recovery; repair_reason for a repair. Jade "
-                     "computes the diff and checksums itself.",
+                     "with all three kinds, missing_evidence, unsupported, recovery; repair_reason for a repair; "
+                     "document_citations [{claim, source}] for every statement that rests on a document you read "
+                     "(source = the cite label exactly as read_document returned it). Jade computes the diff and "
+                     "checksums itself and checks each citation against what this run read.",
                      {**obj, "properties": {
                          "explanation": {"type": "string"}, "repair_reason": {"type": "string"},
                          "requirement_trace": {"type": "array", "items": obj},
@@ -333,16 +347,19 @@ class TechnicalAgentTools:
                          "test_plan": {"type": "array", "items": obj},
                          "missing_evidence": {"type": "array", "items": {"type": "string"}},
                          "unsupported": {"type": "array", "items": {"type": "string"}},
-                         "recovery": {"type": "string"}}, "required": ["explanation", "test_plan"]})(
+                         "recovery": {"type": "string"},
+                         "document_citations": {"type": "array", "items": obj}}, "required": ["explanation", "test_plan"]})(
                 lambda a: _async(reply(self.submit(a)))),
             sdk.tool("report_outcome", "Report that no package can safely be prepared: kind clarification_required | "
                      "inconclusive | blocked_unsupported | blocked_missing_evidence, with the explanation and the "
-                     "questions a person must answer. This is a valid outcome, not a failure.",
+                     "questions a person must answer, and document_citations [{claim, source}] for anything resting "
+                     "on a document you read. This is a valid outcome, not a failure.",
                      {**obj, "properties": {"kind": {"type": "string"}, "explanation": {"type": "string"},
-                                            "questions": {"type": "array", "items": {"type": "string"}}},
+                                            "questions": {"type": "array", "items": {"type": "string"}},
+                                            "document_citations": {"type": "array", "items": obj}},
                       "required": ["kind", "explanation"]})(
                 lambda a: _async(reply(self.report_outcome(a.get("kind", ""), a.get("explanation", ""),
-                                                           a.get("questions") or [])))),
+                                                           a.get("questions") or [], a.get("document_citations"))))),
             sdk.tool("get_package_status", "A package revision's approval, recorded milestones (apply, build, CNC, "
                      "verify), last build log and whether its next step may be recorded. Omit revision for the latest.",
                      {**obj, "properties": {"revision": {"type": "integer"}}})(

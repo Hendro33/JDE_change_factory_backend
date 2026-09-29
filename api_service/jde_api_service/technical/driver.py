@@ -69,7 +69,8 @@ async def run_technical_agent(*, company_id: str, story_id: str, run_id: str, re
                                          customer_id=company_id, agent_version=ai_run.agent_version("technical-agent"))
             store.add_event(run_id, "agent_run", f"{agent_run.run_id} ({ai_run.run_id}, pack "
                                                  f"{ai_run.agent_version('technical-agent')})")
-            tools = TechnicalAgentTools(company_id=company_id, story_id=story_id, run_id=run_id)
+            tools = TechnicalAgentTools(company_id=company_id, story_id=story_id, run_id=run_id,
+                                        knowledge_log=ai_run.knowledge_log)
             options = ai_run.options(cwd=repo_root, permission_mode=PERMISSION_MODE, allowed_tools=ALLOWED,
                                      disallowed_tools=DISALLOWED, max_turns=MAX_TURNS,
                                      tool_servers={SERVER_NAME: tools.sdk_server()}, subagents=["technical-agent"])

@@ -219,12 +219,13 @@ def test_the_technical_driver_builds_its_options_through_the_restricted_runtime(
                                                      repo_root=str(REPO), purpose="prepare", observer=fake_query))
     opts = captured["options"]
     assert opts.tools == ["Task"]
-    assert list(opts.mcp_servers) == ["jade-technical"]
-    assert opts.allowed_tools == technical_driver.ALLOWED
-    # The project server's other tools and the document tools (outside the
-    # Technical Agent's ceiling) are hidden from the model, not merely denied.
-    assert set(opts.disallowed_tools) == {*technical_driver.DISALLOWED, "mcp__jade-knowledge__list_documents",
-                                          "mcp__jade-knowledge__read_document"}
+    # The standard pack references the story's documents, so the document
+    # tools are available too (read only when the customer's policy allows).
+    knowledge = ["mcp__jade-knowledge__list_documents", "mcp__jade-knowledge__read_document"]
+    assert list(opts.mcp_servers) == ["jade-technical", "jade-knowledge"]
+    assert opts.allowed_tools == [*technical_driver.ALLOWED, *knowledge]
+    # The project server's other tools are hidden from the model, not merely denied.
+    assert set(opts.disallowed_tools) == set(technical_driver.DISALLOWED)
     for secret in ("JDE_CREDENTIAL_KEY", "JDE_AIS_USERNAME", "JDE_AIS_PASSWORD", "JDE_BOOTSTRAP_ADMIN_PASSWORD"):
         assert opts.env[secret] == ""
     assert "technical-agent subagent" in captured["prompt"]

@@ -168,7 +168,8 @@ def classify(company_id: str, artifact: dict, environment: str) -> dict[str, Any
 # ---------------------------------------------------------------------
 def build_content(*, a: dict, run: dict, revision: int, workspace, objects: list[dict], sources: list[dict],
                   explanation: str, requirement_trace: list[dict], dependencies: list[str], test_plan: list[dict],
-                  missing_evidence: list[str], unsupported: list[str], recovery: str, repair_of: Optional[dict]) -> dict:
+                  missing_evidence: list[str], unsupported: list[str], recovery: str, repair_of: Optional[dict],
+                  document_citations: Optional[list[dict]] = None) -> dict:
     enf = technical_gate.technical_enforcement()
     adapter = (enf["adapters"].get(technical_gate.mode()) or {})
     candidates = []
@@ -194,6 +195,9 @@ def build_content(*, a: dict, run: dict, revision: int, workspace, objects: list
                       "requires_cnc_activation": enf.get("requires_cnc_activation")},
         "explanation": explanation, "requirement_trace": requirement_trace, "test_plan": test_plan,
         "missing_evidence": missing_evidence, "unsupported": unsupported,
+        # Statements resting on a customer document, each marked verified only if
+        # the run's document tools actually returned that section.
+        "document_citations": document_citations or [],
         "lifecycle": ["prepared", "exact implementation approval (a person)",
                       "apply: a developer checks the candidate in through OMW (not active) -- recorded",
                       "build -- recorded", "CNC activation (a CNC; recorded)", "verify: the test plan run in DEV -- recorded"],

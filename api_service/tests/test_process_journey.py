@@ -365,8 +365,10 @@ def test_process_analysis_agent_suggestions_are_validated(client):
     assert done["status"] == "completed", done
     assert [s["node_key"] for s in done["result"]["suggested_processes"]] == ["SYN-5.1.3"]
     assert "4.4.3" in done["result"]["rejected_suggestions"][0]
-    # No subagent in this run, so no Task tool: exactly the process tools.
-    assert set(captured["allowed"]) == set(agent.ALLOWED_TOOLS)
+    # No subagent in this run, so no Task tool: exactly the process tools, plus
+    # the document tools the standard pack's knowledge (the story's documents) needs.
+    assert set(captured["allowed"]) == {*agent.ALLOWED_TOOLS, "mcp__jade-knowledge__list_documents",
+                                        "mcp__jade-knowledge__read_document"}
     assert json.dumps(done["result"]).count(fid) >= 1
 
 

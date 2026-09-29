@@ -68,12 +68,15 @@ def ceiling(role: str) -> tuple[str, ...]:
     info = ROLES.get(role)
     if info is None:
         raise InvalidPack(f"unknown agent role: {role}")
+    # Every role may read the documents its pack references (and the story's
+    # own documents); what it may read is still decided per customer by the
+    # pack's knowledge references and the customer's document policy.
     if role == "technical-agent":
         from ..technical.tools import ALLOWED_TOOLS
-        return tuple(ALLOWED_TOOLS)
+        return (*ALLOWED_TOOLS, *KNOWLEDGE_TOOLS)
     if role == "process-analyst":
         from ..process.agent import ALLOWED_TOOLS as PROCESS_TOOLS
-        return tuple(PROCESS_TOOLS)
+        return (*PROCESS_TOOLS, *KNOWLEDGE_TOOLS)
     return tuple(info["ceiling"])
 
 
@@ -170,7 +173,7 @@ def _template_sources(repo_root: str) -> dict[str, dict]:
             from ..process.agent import PROMPT
             out[role] = {"description": "Refinement process analyst: maps an approved story to the customer's process "
                                         "framework and proposes findings.",
-                         "instructions": PROMPT, "capabilities": list(ceiling(role)), "knowledge": [],
+                         "instructions": PROMPT, "capabilities": list(ceiling(role)), "knowledge": [REQUEST_DOCUMENTS],
                          "source": "code: process/agent.py"}
             continue
         path = os.path.join(repo_root, ".claude", "agents", f"{role}.md")
@@ -178,7 +181,7 @@ def _template_sources(repo_root: str) -> dict[str, dict]:
             continue
         meta, body = _parse_md(path)
         tools = [t.strip() for t in (meta.get("tools") or "").split(",") if t.strip()]
-        knowledge = [REQUEST_DOCUMENTS] if role in ("receive-agent", "improve-agent", "check-agent", "architect") else []
+        knowledge = [REQUEST_DOCUMENTS]
         allowed = set(ceiling(role))
         out[role] = {"description": meta.get("description") or ROLES[role]["label"], "instructions": body,
                      "capabilities": [t for t in tools if t in allowed], "knowledge": knowledge,
