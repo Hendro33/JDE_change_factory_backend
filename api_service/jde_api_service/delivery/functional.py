@@ -1,6 +1,7 @@
 """
-Delivering an approved functional change (a processing-option update) on
-the customer's real JD Edwards system.
+Delivering an approved functional change -- a configuration change set, or
+a single processing-option update -- on the customer's real JD Edwards
+system.
 
   1. record_applied  -- a person applied EXACTLY the approved value in DEV.
      Jade re-runs the whole delivery gate, then reads the value back LIVE
@@ -25,7 +26,7 @@ import json
 import time
 from typing import Any, Optional
 
-from jde_mcp_server import approval, authority, capability_catalog, execution
+from jde_mcp_server import approval, authority, capability_catalog, config_items, execution
 from jde_mcp_server.evidence import capture_evidence
 from jde_mcp_server.scope import check_test_boundary
 
@@ -51,7 +52,13 @@ def _target(record: dict) -> str:
 
 
 def record_applied(change_id: str, *, actor_user_id: str, actor_name: str, evidence_reference: str, note: str = "",
-                   stated_value: Optional[str] = None) -> dict[str, Any]:
+                   stated_value: Optional[str] = None, item_id: Optional[str] = None,
+                   stated_values: Optional[dict] = None, confirmed_as_specified: bool = False) -> dict[str, Any]:
+    peek = approval._load(change_id)
+    if peek is not None and config_items.is_change_set(peek):
+        return record_item_applied(change_id, item_id=item_id, actor_user_id=actor_user_id, actor_name=actor_name,
+                                   evidence_reference=evidence_reference, note=note, stated_value=stated_value,
+                                   stated_values=stated_values, confirmed_as_specified=confirmed_as_specified)
     record, _scope = approval.authorise_functional_delivery(change_id)
     _require_recorder(record["company_id"], actor_user_id, actor_name)
     op = record["operation"]
@@ -105,6 +112,107 @@ def record_applied(change_id: str, *, actor_user_id: str, actor_name: str, evide
             "evidenceReference": reference, "evidenceEntryHash": entry["entry_hash"]}
 
 
+def _same(a, b) -> bool:
+    return str("" if a is None else a).strip() == str("" if b is None else b).strip()
+
+
+def _matches_approved(item: dict, value) -> bool:
+    if item["kind"] == "processing_option":
+        return _same(value, item["value"])
+    if item["kind"] in config_items.ROW_KINDS:
+        return bool((value or {}).get("exists")) and all(
+            _same((value.get("values") or {}).get(f), v) for f, v in item["values"].items())
+    return False
+
+
+def record_item_applied(change_id: str, *, item_id: Optional[str], actor_user_id: str, actor_name: str,
+                        evidence_reference: str, note: str = "", stated_value: Optional[str] = None,
+                        stated_values: Optional[dict] = None, confirmed_as_specified: bool = False) -> dict[str, Any]:
+    """One item of an approved configuration change set, applied in DEV by a
+    person: Jade re-runs the whole delivery gate, reads the item back live
+    where an approved read covers it, and records it only when JD Edwards
+    shows exactly the approved values (or, where it cannot be read, the
+    person states them with evidence). The change counts as applied once
+    every item is recorded."""
+    from .readers import read_item
+
+    record, _scope = approval.authorise_functional_delivery(change_id)
+    _require_recorder(record["company_id"], actor_user_id, actor_name)
+    delivered = record.get("item_delivery") or {}
+    items = config_items.items_of(record)
+    if item_id is None:
+        pending = [i for i in items if i["id"] not in delivered]
+        if not pending:
+            raise DeliveryRefused("every item of this change set is already recorded as applied")
+        item = pending[0]
+    else:
+        item = config_items.item(record, item_id)
+        if item["id"] in delivered:
+            raise DeliveryRefused(f"{item['id']} is already recorded as applied")
+    evidence_reference = (evidence_reference or "").strip()
+    before = (((record.get("binding") or {}).get("before_state") or {}).get("items") or {}).get(item["id"]) or {}
+    before_value = before.get("value") if before.get("known") else None
+    now = read_item(record, item, actor_user_id)
+    what = config_items.label(item)
+    if now.get("known"):
+        if not _matches_approved(item, now["value"]):
+            if before_value is not None and now["value"] == before_value:
+                raise DeliveryRefused(f"JD Edwards still shows the state before the change for {item['id']} ({what}). "
+                                      "Nothing was recorded: apply it in DEV first.")
+            raise DeliveryRefused(f"JD Edwards does not show exactly the approved values for {item['id']} ({what}): it "
+                                  f"shows {now['value']!r}. Nothing was recorded: correct it in DEV to exactly what was "
+                                  "approved (anything else needs its own proposal and approval).")
+        observed, source = now["value"], now.get("source", "live AIS read")
+        reference = evidence_reference or source
+    else:
+        reason = now.get("reason", "not readable")
+        if not evidence_reference:
+            raise DeliveryRefused(f"Jade cannot read {item['id']} back live ({reason}). Record what you see in JDE, "
+                                  "with an evidence reference (a screenshot, export or ticket).")
+        if item["kind"] == "processing_option":
+            if stated_value is None or not _same(stated_value, item["value"]):
+                raise DeliveryRefused(f"state the value you read in JDE for {item['id']}; it must be the approved value "
+                                      f"{item['value']!r} -- nothing was recorded")
+            observed = str(stated_value)
+        elif item["kind"] in config_items.ROW_KINDS:
+            stated = {str(k).upper(): v for k, v in (stated_values or {}).items()}
+            if not all(_same(stated.get(f), v) for f, v in item["values"].items()):
+                raise DeliveryRefused(f"state the values you read in JDE for {item['id']} ({', '.join(item['values'])}); "
+                                      "they must be exactly the approved values -- nothing was recorded")
+            observed = {"exists": True, "values": {f: stated.get(f) for f in item["values"]}}
+        else:
+            if not confirmed_as_specified:
+                raise DeliveryRefused(f"confirm that {item['id']} ({what}) was entered exactly as specified -- nothing "
+                                      "was recorded")
+            observed = {"specification": item["specification"]}
+        source = f"stated by {actor_name} (read in JDE); live read unavailable: {reason}"
+        reference = evidence_reference
+    entry = {"by": actor_name, "user_id": actor_user_id, "observed": observed, "before": before_value, "source": source,
+             "evidence_reference": reference, "note": note, "at": time.time(), "live": bool(now.get("known"))}
+    with execution._locked(change_id):
+        current = approval._load(change_id)
+        done = current.setdefault("item_delivery", {})
+        if item["id"] in done:
+            raise DeliveryRefused(f"{item['id']} was recorded meanwhile")
+        done[item["id"]] = entry
+        approval._save(change_id, current)
+        complete = all(i["id"] in done for i in items)
+    evidence = capture_evidence(record["story_id"], {
+        "event": "item_applied_in_dev", "stage": "delivery", "actor": actor_name, "change_id": change_id,
+        "item_id": item["id"], "detail": f"{item['id']} {what} applied in DEV; {source}; evidence: {reference}",
+        "item": item, "before": before_value, "observed": observed, "source": source, "evidence_reference": reference,
+        "note": note})
+    if complete:
+        execution.record(
+            change_id, execution.WRITE, "applied", revalidate=lambda: approval.authorise_functional_delivery(change_id),
+            detail=f"all {len(items)} configuration items applied in DEV",
+            recorded={"by": actor_name, "user_id": actor_user_id, "items": [i["id"] for i in items], "at": time.time()})
+    return {"outcome": "applied" if complete else "item_applied", "itemId": item["id"], "observed": observed,
+            "observedValue": observed if isinstance(observed, str) else None, "beforeValue": before_value,
+            "source": source, "evidenceReference": reference, "remaining": len(items) - len(
+                (approval._load(change_id).get("item_delivery") or {})), "evidenceEntryHash": evidence["entry_hash"]}
+
+
 def _verification(change_id: str, outcome: dict) -> None:
     with execution._locked(change_id):
         current = approval._load(change_id)
@@ -125,7 +233,9 @@ def run_test(change_id: str, *, actor_user_id: str, actor_name: str) -> dict[str
         from jde_mcp_server.scope import load_company_scope
 
         scope = load_company_scope(rec["company_id"])
-        test = check_test_boundary(scope, name, capability_catalog.require_enforcement(rec["capability_id"]))
+        items = config_items.items_of(rec)
+        test = check_test_boundary(scope, name, capability_catalog.require_enforcement(
+            items[0]["capability_id"] if items else rec["capability_id"]))
         return rec, test
 
     record, test = authorise()

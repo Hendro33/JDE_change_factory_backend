@@ -21,7 +21,7 @@ extraction, knowledge tools).
   |---|---|
   | Functional Analysis | receive-agent, improve-agent, process-analyst |
   | Verification | check-agent; the Technical Agent's *verify* runs |
-  | Architecture | architect |
+  | Architecture | architect, functional-agent (same run: the Architect designs, the Functional Agent proposes the configuration change set) |
   | Technical Build | technical-agent (*prepare* / *execute* runs) |
 
   Only combinations in `connection.RUNTIMES` / `ACTIVITY_MODELS` (reviewed code)

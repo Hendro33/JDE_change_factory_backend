@@ -26,7 +26,8 @@ UNRESTRICTED = {"get_object", "get_version", "get_processing_options"}
 # delivery path (a person delivers, Jade verifies live through discovery).
 JDE_ACTION_TOOLS = {"read_approved_target", "set_processing_option", "run_orchestration"}
 PROJECT_TOOLS = {"capture_evidence", "get_approved_story", "get_capability_status", "get_design_baseline",
-                 "propose_change", "propose_to_backlog", "resolve_without_change", "verify_evidence_chain"}
+                 "get_engagement_scope", "propose_change", "propose_to_backlog", "resolve_without_change",
+                 "verify_evidence_chain"}
 
 
 def _registered_tools() -> set[str]:
@@ -101,7 +102,8 @@ def test_the_architect_runtime_is_denied_every_other_project_tool():
     allowed = {t.rsplit("__", 1)[-1] for t in architecture_driver._ALLOWED_TOOLS if t.startswith("mcp__jde-change-factory__")}
     disallowed = {t.rsplit("__", 1)[-1] for t in architecture_driver._DISALLOWED_TOOLS}
     assert allowed | disallowed == registered and not allowed & disallowed
-    assert allowed == {"get_approved_story", "resolve_without_change", "propose_change"}
+    assert allowed == {"get_approved_story", "resolve_without_change", "propose_change", "get_capability_status",
+                       "get_engagement_scope"}
     assert {"capture_evidence", "get_design_baseline", "propose_to_backlog"} <= disallowed
 
 
@@ -129,7 +131,9 @@ def test_the_architect_is_told_every_catalogue_capability_id():
     prompt = architecture_driver._build_prompt("S-X")
     for cap in capability_catalog.list_capabilities():
         assert cap["capability_id"] in prompt
-    assert '"tool": "set_processing_option"' in prompt
+    assert '"tool": "configuration_change_set"' in prompt
+    # The Architect designs; the Functional Agent proposes the change set.
+    assert "functional-agent" in prompt and architecture_driver.ROLES == ["architect", "functional-agent"]
 
 
 # ---------------------------------------------------------------------
@@ -170,18 +174,22 @@ def test_no_subagent_definition_can_widen_its_drivers_runtime():
 
     drivers = {
         "architect": architecture_driver._ALLOWED_TOOLS,
+        "functional-agent": architecture_driver._ALLOWED_TOOLS,
         "technical-agent": technical_driver.ALLOWED,
         "improve-agent": orchestration_driver._ALLOWED_TOOLS,
     }
     for agent, allowed in drivers.items():
         extra = set(_agent_tools(agent)) - set(allowed)
         assert not extra, (agent, extra)
-    # The functional-agent is not active: it has no driver, read-only tools
-    # and no write or test tool anywhere.
-    assert set(_agent_tools("functional-agent")) == {f"mcp__jde-change-factory__{t}" for t in
-                                                     ("get_design_baseline", "get_capability_status", "verify_evidence_chain")}
-    assert not any(set(_agent_tools("functional-agent")) & set(a) for a in
-                   (architecture_driver._ALLOWED_TOOLS, technical_driver.ALLOWED, conversation_driver._SOLUTION_ALLOWED_TOOLS))
+    # The Functional Agent runs in the solutioning run after the Architect: it
+    # reads DEV and the customer's scope and proposes the change set. The
+    # Architect designs and no longer proposes. Neither can change JD Edwards.
+    functional = set(_agent_tools("functional-agent"))
+    assert "mcp__jde-change-factory__propose_change" in functional
+    assert "mcp__jde-change-factory__get_engagement_scope" in functional
+    assert "mcp__jde-change-factory__propose_change" not in set(_agent_tools("architect"))
+    assert not any("apply" in t or "execute" in t or "write" in t for t in functional)
+    assert not functional & set(technical_driver.ALLOWED)
 
 
 def test_the_technical_driver_builds_its_options_through_the_restricted_runtime(isolated_dirs, monkeypatch):
@@ -229,3 +237,19 @@ def test_the_technical_driver_builds_its_options_through_the_restricted_runtime(
     for secret in ("JDE_CREDENTIAL_KEY", "JDE_AIS_USERNAME", "JDE_AIS_PASSWORD", "JDE_BOOTSTRAP_ADMIN_PASSWORD"):
         assert opts.env[secret] == ""
     assert "technical-agent subagent" in captured["prompt"]
+
+
+def test_agents_get_the_hand_off_tools_in_process_bound_to_their_own_story():
+    """The hand-off tools run inside the API process (never a python3 process
+    started from .mcp.json), with the same names, and refuse another story."""
+    import json as _json
+
+    from jde_api_service.ai import project_tools
+
+    assert set(project_tools.TOOL_NAMES) == PROJECT_TOOLS == _registered_tools()
+    tools = project_tools.ProjectTools(company_id="vdb", story_id="S-OWN")
+    out = tools.call("get_approved_story", tools.get_approved_story, {"story_id": "S-OTHER"})
+    assert out.get("is_error") and "S-OWN only" in _json.loads(out["content"][0]["text"])["error"]
+    unbound = project_tools.ProjectTools(company_id="vdb", story_id=None)
+    out = unbound.call("propose_to_backlog", unbound.propose_to_backlog, {"story_id": "S-OWN"})
+    assert out.get("is_error") and "not working on a story" in out["content"][0]["text"]

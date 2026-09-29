@@ -28,7 +28,7 @@ def _dependencies(record: dict) -> dict:
     b = record.get("binding") or {}
     deps = dict(b.get("depends_on") or {})
     if not deps:  # pending work, not yet bound: what it would depend on
-        deps = {"targets": [binding.functional_target(record)] if (record.get("kind") or "functional") == "functional"
+        deps = {"targets": binding.functional_targets(record) if (record.get("kind") or "functional") == "functional"
                 else list(record.get("depends_on_targets") or []),
                 "artifacts": list(record.get("depends_on_artifacts") or [])}
     return deps

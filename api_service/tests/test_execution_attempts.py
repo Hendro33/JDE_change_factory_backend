@@ -353,6 +353,6 @@ def test_a_capability_without_an_execution_adapter_cannot_be_proposed_as_executa
     _save_scope(client, "vdb", _full_scope())
     _approved_story("S-EX-UNSUPPORTED")
     with pytest.raises(approval.ChangeApprovalError, match="no execution adapter"):
-        approval.propose_change("S-EX-UNSUPPORTED", {"tool": "set_processing_option"}, "udc_value_maintenance")
+        approval.propose_change("S-EX-UNSUPPORTED", {"tool": "set_processing_option"}, "custom_object_text_change")
     with pytest.raises(approval.ChangeApprovalError, match="executes only through"):
         approval.propose_change("S-EX-UNSUPPORTED", {"tool": "run_sql"}, "processing_option_update")

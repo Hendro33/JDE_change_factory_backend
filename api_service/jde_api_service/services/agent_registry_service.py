@@ -33,10 +33,9 @@ _AGENTS_DIR = ".claude/agents"
 # invokes each subagent. Built from each driver's own module-level
 # constants (imported below, never duplicated by hand) so this
 # registry can never silently drift from what a driver actually does.
-# functional-agent is deliberately absent: no driver here invokes it
-# today -- it is still run directly via Claude Code, not orchestrated
-# from this service (see architecture_driver.py's own docstring on
-# what it does and does not automate).
+# The functional-agent runs in the same solutioning run as the architect
+# (architecture_driver): the architect designs, the functional agent
+# specifies and proposes the exact configuration change set.
 def _driver_configs() -> dict[str, AgentRuntimeConfig]:
     from . import architecture_driver, orchestration_driver, review_driver
 
@@ -71,6 +70,7 @@ def _driver_configs() -> dict[str, AgentRuntimeConfig]:
         "improve-agent": orchestration,
         "check-agent": orchestration,
         "architect": architecture,
+        "functional-agent": architecture,
     }
 
 

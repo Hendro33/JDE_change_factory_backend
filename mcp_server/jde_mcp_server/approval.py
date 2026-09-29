@@ -24,7 +24,7 @@ import time
 from typing import Iterable, Optional
 
 from .backlog import require_approved
-from . import authority, capability_catalog, docstore
+from . import authority, capability_catalog, config_items, docstore
 from .scope import (
     check_environment_binding,
     company_for_story,
@@ -123,6 +123,14 @@ def propose_change(story_id: str, operation: dict, capability_id: str, environme
     # The company comes from the story's intake link, never from the
     # caller. An unattributed story cannot even be proposed.
     company_id = company_for_story(story_id)
+    if environment != "DEV":
+        raise ChangeApprovalError(
+            f"'{environment}' is not DEV. All JDE access and execution use "
+            "approved DEV endpoints only -- this is a universal rule, not "
+            "engagement-configurable."
+        )
+    if capability_id == config_items.CHANGE_SET_TOOL or (operation or {}).get("tool") == config_items.CHANGE_SET_TOOL:
+        return _propose_change_set(story_id, company_id, operation, environment)
     cap = capability_catalog.require_capability(capability_id)  # raises CapabilityError if unknown
     require_supported_operation(capability_id, operation)
     if environment != "DEV":
@@ -161,9 +169,62 @@ def propose_change(story_id: str, operation: dict, capability_id: str, environme
     return record
 
 
+def _enforcement_for(capability_id: str) -> dict:
+    try:
+        return capability_catalog.require_enforcement(capability_id)
+    except capability_catalog.CapabilityError as exc:
+        raise config_items.ItemInvalid(f"capability {capability_id!r} cannot be proposed: {exc}") from exc
+
+
+def check_change_set_scope(scope: dict, operation: dict) -> list[dict]:
+    """Every item inside the company's scope, and the named test approved.
+    Raises ScopeViolation (or ChangeApprovalError) naming the first item
+    that is not. Returns the matching scope entries."""
+    from .scope import check_item_scope, check_test_boundary
+
+    entries = []
+    for item in operation["items"]:
+        enforcement = capability_catalog.require_enforcement(item["capability_id"])
+        entries.append(check_item_scope(scope, item, enforcement))
+    if operation.get("test_orchestration"):
+        check_test_boundary(scope, operation["test_orchestration"],
+                            capability_catalog.require_enforcement(operation["items"][0]["capability_id"]))
+    return entries
+
+
+def _propose_change_set(story_id: str, company_id: str, operation: dict, environment: str) -> dict:
+    """A configuration change set: validated against the universal rules and
+    checked against the company's scope NOW, item by item, so people are
+    never asked to approve something the delivery gate would refuse."""
+    try:
+        normalised = config_items.normalise_change_set(operation, _enforcement_for)
+    except config_items.ItemInvalid as exc:
+        raise ChangeApprovalError(f"the configuration change set is not valid: {exc}") from exc
+    for item in normalised["items"]:
+        cap = capability_catalog.require_capability(item["capability_id"])
+        try:
+            capability_catalog.require_deliverable_by_person(item["capability_id"], cap["revision"], environment)
+        except capability_catalog.CapabilityError as exc:
+            raise ChangeApprovalError(f"item {item['id']}: {exc}") from exc
+        item["capability_revision"] = cap["revision"]
+    check_change_set_scope(load_company_scope(company_id), normalised)
+    change_id = f"{story_id}-CH{int(time.time() * 1000)}"
+    record = {
+        "change_id": change_id, "story_id": story_id, "company_id": company_id,
+        "operation": normalised, "change_hash": _hash(normalised), "environment": environment,
+        "capability_id": config_items.CHANGE_SET_TOOL,
+        "capability_revision": capability_catalog.catalog_revision(),
+        "status": "pending", "created_at": time.time(), "approved_by": None, "approved_at": None,
+        "expires_at": None, "approver_authority": None, "decision_note": None,
+        "catalog_revision": capability_catalog.catalog_revision(), "scope_revision": scope_revision(company_id),
+    }
+    if not docstore.insert_new(KIND, change_id, record):
+        raise ChangeApprovalError(f"change {change_id} already exists -- propose it again")
+    return record
+
+
 # ---------------------------------------------------------------------
-# Human-only, exactly like backlog_review.py -- no agent tool wraps
-# these. Approving a story and approving a change are two separate
+# Human-only -- no agent tool wraps these. Approving a story and approving a change are two separate
 # human decisions, and the second one is about a concrete, readable
 # operation, not an abstract request.
 # ---------------------------------------------------------------------
@@ -343,6 +404,16 @@ def authorise_functional_delivery(change_id: str) -> tuple[dict, dict]:
     found = binding.problems(record, read_current=False, require_known_before=False)
     if found:
         raise binding.BindingInvalid(f"change {change_id} is not eligible: " + "; ".join(found))
+    if config_items.is_change_set(record):
+        check_environment_binding(scope, record["environment"])
+        for item in record["operation"]["items"]:
+            try:
+                capability_catalog.require_deliverable_by_person(item["capability_id"], item.get("capability_revision", ""),
+                                                                record["environment"])
+            except capability_catalog.CapabilityError as exc:
+                raise ChangeApprovalError(f"item {item['id']}: {exc}") from exc
+        check_change_set_scope(scope, record["operation"])
+        return record, scope
     capability_id, capability_revision = record.get("capability_id"), record.get("capability_revision")
     if not capability_id or not capability_revision:
         raise ChangeApprovalError(
@@ -429,6 +500,8 @@ def preflight(change_id: str) -> dict:
         return {"change_id": change_id, "executable": False, "mode": "recorded",
                 "checks": [{"check": "Change record exists", "ok": False, "detail": f"no change record {change_id}"}]}
     op = record.get("operation", {})
+    if config_items.is_change_set(record):
+        return _preflight_change_set(record, check, checks)
     check("Story approved (Gate 2)", lambda: backlog.require_approved(record["story_id"]))
     check("Exact change approved, unexpired, same company, approver authority current", lambda: _require_live_approval(change_id))
     # The company's scope is read on its own, so its checks are reported
@@ -474,3 +547,45 @@ def preflight(change_id: str) -> dict:
         "test_state": execution.effective_state(record, execution.TEST),
         "checks": checks,
     }
+
+
+def _preflight_change_set(record: dict, check, checks: list[dict]) -> dict:
+    from . import backlog, execution, scope as scope_module
+
+    change_id = record["change_id"]
+    op = record["operation"]
+    check("Story approved (Gate 2)", lambda: backlog.require_approved(record["story_id"]))
+    check("Change set approved, unexpired, same company, approver authority current",
+          lambda: _require_live_approval(change_id))
+    scope = check("Company scope saved for the story's company",
+                  lambda: load_company_scope(company_for_story(record["story_id"])))
+    scope = scope if isinstance(scope, dict) else None
+    if scope is not None:
+        check("DEV environment bound and isolation confirmed",
+              lambda: scope_module.check_environment_binding(scope, record["environment"]))
+    for item in op.get("items") or []:
+        name = f"{item['id']} {config_items.label(item)}"
+        check(f"{name}: capability may be delivered (not Restricted or Suspended; current catalogue revision)",
+              lambda item=item: capability_catalog.require_deliverable_by_person(
+                  item["capability_id"], item.get("capability_revision", ""), record["environment"]))
+        if scope is not None:
+            check(f"{name}: inside the company's approved scope, category not protected or never-touch",
+                  lambda item=item: scope_module.check_item_scope(
+                      scope, item, capability_catalog.require_enforcement(item["capability_id"])))
+    if scope is not None and op.get("test_orchestration"):
+        check("Test is approved, its mechanism allowed, its side effects permitted",
+              lambda: scope_module.check_test_boundary(
+                  scope, op["test_orchestration"], capability_catalog.require_enforcement(op["items"][0]["capability_id"])))
+    check("No earlier step in flight or of unknown outcome", lambda: execution.require_ready(record, execution.WRITE))
+    if record.get("status") == "approved":
+        from . import binding
+
+        def basis_holds() -> None:
+            found = binding.problems(record, read_current=False, require_known_before=False)
+            if found:
+                raise binding.BindingInvalid("; ".join(found))
+
+        check("Approval basis still holds (design revision, evidence, no invalidation)", basis_holds)
+    return {"change_id": change_id, "mode": "recorded", "executable": all(c["ok"] for c in checks),
+            "write_state": execution.effective_state(record, execution.WRITE),
+            "test_state": execution.effective_state(record, execution.TEST), "checks": checks}

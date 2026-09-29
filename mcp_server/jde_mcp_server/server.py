@@ -2,19 +2,14 @@
 JDE MCP server -- the agents' governed tool set: backlog hand-off, exact-
 change proposals, capability status, design baselines and evidence.
 
-Run it directly for a quick manual check:
+Jade's agents do NOT use this stdio server: they get the same tools in-process,
+bound to their run's story (api_service/jde_api_service/ai/project_tools.py).
+This module remains for developers who want to call the tools from a Claude
+Code session in this repository (.mcp.json):
     python -m jde_mcp_server.server
 
-Or register it with Claude Code via the .mcp.json at the repo root,
-which is already wired to launch this module over stdio.
-
-IMPORTANT: this server exposes tools; it does NOT enforce the human
-approval gate on writes. That gate is a Claude Code / Claude Agent SDK
-PreToolUse hook (Section 8.1), configured separately in
-.claude/hooks/approve_writes.py and wired up in .claude/settings.json.
-Keeping the two separate matches the design: the MCP server describes
-*what JDE can do*, the hook decides *whether this particular call is
-allowed to happen right now*.
+None of these tools writes to JD Edwards; approvals are given by people in
+Jade and enforced by approval.py and the delivery gate.
 """
 
 from __future__ import annotations
@@ -52,8 +47,8 @@ def propose_to_backlog(story_id: str, user_story: str, business_impact: dict, ro
     (Section 3.5, Phase 2). business_impact should carry the five
     criteria from Section 3.6 (financial, operational reach, risk &
     compliance, strategic alignment, urgency), each with the evidence
-    it was traced from. This does NOT approve the story -- nothing
-    downstream can act on it until a human runs backlog_review.py."""
+    it was traced from. This does NOT approve the story -- an Application
+    Manager and the domain's Domain Owner decide in Story Review."""
     return _propose_to_backlog(story_id, user_story, business_impact, rough_complexity_signal, source)
 
 
@@ -95,8 +90,8 @@ def propose_change(story_id: str, operation: dict, capability_id: str, environme
     (the company is taken from the story's intake record, never from
     this call). Returns a
     pending change record with a change_id -- this does NOT approve
-    anything. A human approves it separately via backlog_review.py
-    before set_processing_option will accept the matching change_id."""
+    anything. People approve it separately in Architecture
+    Review; a person then applies it in DEV and Jade verifies it."""
     return _propose_change(story_id, operation, capability_id, environment)
 
 
@@ -139,6 +134,16 @@ def get_capability_status(capability_id: str) -> dict:
 # ---------------------------------------------------------------------
 # Evidence
 # ---------------------------------------------------------------------
+
+@mcp.tool()
+def get_engagement_scope(story_id: str) -> dict:
+    """What the story's company allows to be proposed (read-only): approved
+    versions and configuration, approved tests, never-touch and protected
+    categories. The gate re-checks every item itself."""
+    from .scope import company_for_story, describe_scope
+
+    return describe_scope(company_for_story(story_id))
+
 
 @mcp.tool()
 def capture_evidence(story_id: str, payload: dict) -> dict:

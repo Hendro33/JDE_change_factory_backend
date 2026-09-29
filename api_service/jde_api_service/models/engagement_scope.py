@@ -59,6 +59,55 @@ class ApprovedVersion(ApiModel):
         return _known_category(value)
 
 
+class ApprovedConfiguration(ApiModel):
+    """What this company allows Jade to propose under one configuration
+    capability other than processing options (those are ApprovedVersion):
+    a UDC type ("00/DT"), a set-up table with optional key values
+    ("F40039:DCTO=SW|SX"), or a batch version ("R42565|CIQ0001"); the fields
+    (data dictionary aliases) that may be changed, the actions (add / update)
+    and, per field, the allowed values. The gate refuses anything else."""
+
+    capability_id: str
+    category: str = ""
+    target: str
+    fields: list[str] = []
+    actions: list[Literal["add", "update"]] = []
+    allowed_values: dict[str, list[str]] = {}
+    notes: str = ""
+
+    @field_validator("category")
+    @classmethod
+    def _category(cls, value: str) -> str:
+        return _known_category(value)
+
+    @model_validator(mode="after")
+    def _target(self):
+        from jde_mcp_server import config_items
+
+        try:
+            enforcement = capability_catalog.require_enforcement(self.capability_id)
+        except capability_catalog.CapabilityError as exc:
+            raise ValueError(f"{self.capability_id}: {exc}")
+        kind = enforcement.get("item_kind")
+        if kind == "processing_option":
+            raise ValueError("processing options are listed under approved versions, not approved configuration")
+        try:
+            parsed = config_items.parse_target(kind, self.target)
+        except config_items.ItemInvalid as exc:
+            raise ValueError(str(exc))
+        tables = enforcement.get("tables")
+        if kind == "setup_row" and tables and parsed["table"] not in tables:
+            raise ValueError(f"{self.capability_id} covers {', '.join(tables)} only, not {parsed['table']}")
+        self.fields = [f.strip().upper() for f in self.fields if f.strip()]
+        if kind == "udc_value":
+            bad = [f for f in self.fields if f not in config_items.UDC_FIELDS]
+            if bad:
+                raise ValueError(f"UDC fields {', '.join(bad)} cannot be changed (allowed: "
+                                 f"{', '.join(config_items.UDC_FIELDS)}; the hard-coded flag never)")
+        self.allowed_values = {k.strip().upper(): [v for v in vs if v != ""] for k, vs in self.allowed_values.items()}
+        return self
+
+
 class SpikeExperiment(ApiModel):
     """A bounded DEV validation experiment for a Needs-spike capability.
     Only valid until expires_at; a missing or past expiry blocks it."""
@@ -91,6 +140,10 @@ class SpikeExperiment(ApiModel):
 
 class FunctionalAgentScope(ApiModel):
     approved_versions: list[ApprovedVersion] = []
+    # Everything else the Functional Agent may configure (UDCs, set-up and
+    # constants tables, document types, line types, order activity rules,
+    # batch version data selection and sequencing).
+    approved_configuration: list[ApprovedConfiguration] = []
     spike_experiments: list[SpikeExperiment] = []
     # ENFORCED: option categories (closed list) this company never lets
     # Jade write, on top of those the capability itself protects.

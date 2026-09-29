@@ -457,7 +457,7 @@ def test_a_capability_revised_after_the_proposal_is_not_delivered(client, tmp_pa
     _approved_story("S12-CAPREV")
     change = _propose("S12-CAPREV")
     _approve(change["change_id"])
-    _catalogue_with(tmp_path, monkeypatch, revision="r2")
+    _catalogue_with(tmp_path, monkeypatch, revision="r3")
     with pytest.raises(ChangeApprovalError, match="revision mismatch"):
         _execute("S12-CAPREV", change["change_id"])
 

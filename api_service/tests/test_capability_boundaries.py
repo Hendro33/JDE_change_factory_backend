@@ -90,11 +90,18 @@ def _run_test(change_id: str) -> dict:
 # ---------------------------------------------------------------------
 # Enumeration
 # ---------------------------------------------------------------------
-def test_exactly_one_capability_is_executable():
+def test_the_eight_configuration_capabilities_are_executable():
     from jde_mcp_server import capability_catalog
 
     contracts = capability_catalog.executable_capabilities()
-    assert set(contracts) == {"processing_option_update"}
+    assert set(contracts) == {"processing_option_update", "udc_value_maintenance", "constants_and_setup_master_data",
+                              "document_type_definition", "line_type_definition", "order_activity_status_rules",
+                              "batch_version_data_selection", "batch_version_data_sequencing"}
+    assert {c["item_kind"] for c in contracts.values()} == {
+        "processing_option", "udc_value", "setup_row", "version_data_selection", "version_data_sequencing"}
+    for cid, c in contracts.items():
+        if cid != "processing_option_update":
+            assert c["tool"] == "configuration_change_set", cid
     contract = contracts["processing_option_update"]
     assert contract["tool"] == "set_processing_option"
     assert contract["mechanism"] == "ais_form_service_request"
@@ -111,7 +118,11 @@ def test_a_documented_but_unenforced_capability_cannot_even_be_proposed(client):
     _approved_story("S-CB-DOC")
     op = {"tool": "set_processing_option", "story_id": "S-CB-DOC", "application": "P4210", "version": "CIQ0001",
           "option": "PDOCTYPE", "value": "SO"}
-    with pytest.raises(approval.ChangeApprovalError, match="no enforcement contract"):
+    # custom_object_text_change is delivered by the Technical Agent's package, never proposed here.
+    with pytest.raises(approval.ChangeApprovalError, match="no execution adapter"):
+        approval.propose_change("S-CB-DOC", op, "custom_object_text_change")
+    # A configuration capability is proposed only as an item of a change set.
+    with pytest.raises(approval.ChangeApprovalError, match="executes only through 'configuration_change_set'"):
         approval.propose_change("S-CB-DOC", op, "udc_value_maintenance")
 
 

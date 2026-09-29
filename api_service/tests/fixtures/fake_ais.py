@@ -156,3 +156,16 @@ def apply_in_dev(company: str, application: str, version: str, option: str, valu
     env = environment or DEFAULT_ENVIRONMENTS.get(company, "JDV920")
     with ais_estate.edit(company, env, actor="a person in JDE", reason=f"set {application}|{version} {option}") as e:
         ais_estate.set_processing_option(e, application, version, option, value)
+
+
+def apply_row_in_dev(company: str, table: str, key: dict, values: dict, environment: Optional[str] = None) -> None:
+    """A person adding or updating a configuration row in DEV (a UDC value in
+    F0005, a document type in F40039, ...), as a test action."""
+    env = environment or DEFAULT_ENVIRONMENTS.get(company, "JDV920")
+    with ais_estate.edit(company, env, actor="a person in JDE", reason=f"set {table} {key}") as e:
+        rows = e["tables"].setdefault(table, [])
+        row = next((r for r in rows if all(str(r.get(k)) == str(v) for k, v in key.items())), None)
+        if row is None:
+            rows.append({**key, **values})
+        else:
+            row.update(values)

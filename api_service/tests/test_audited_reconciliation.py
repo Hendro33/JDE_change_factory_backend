@@ -60,7 +60,7 @@ def test_a_write_reconciliation_records_target_observation_actor_time_and_eviden
     assert rec["kind"] == "write_reconciliation"
     assert rec["target"] == {
         "company_id": "vdb", "story_id": "S-AR-AUDIT", "change_id": change["change_id"],
-        "capability_id": "processing_option_update", "capability_revision": "r1",
+        "capability_id": "processing_option_update", "capability_revision": "r2",
         "environment": "DEV", "jde_environment": "JDV920",
         "application": "P4210", "version": "CIQ0001", "option": "PDOCTYPE", "approved_value": "SO",
     }

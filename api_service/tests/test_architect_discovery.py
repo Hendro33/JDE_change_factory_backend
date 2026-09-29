@@ -66,6 +66,8 @@ def _run(monkeypatch, script, *, story=STORY, company="vdb"):
 
     async def fake_query(prompt, options):
         assert "jade-discovery" in options.mcp_servers
+        # The hand-off tools run in-process, and nothing is loaded from settings files.
+        assert "jde-change-factory" in options.mcp_servers and options.setting_sources == []
         assert "mcp__jde-change-factory__get_object" not in options.allowed_tools
         captured["options"] = options
         yield _result(_summary(script(captured["tools"])))

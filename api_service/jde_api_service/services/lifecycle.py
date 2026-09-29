@@ -333,6 +333,16 @@ def _functional_route(change, company_id: str, story_id: str, design: dict, rout
             route=route, delivery_steps=steps,
             open_items=["The capability for this change is Restricted or Suspended."])
     if not ex or ex.write_state != "applied":
+        if len(ec.items) > 1:
+            done = sum(1 for i in ec.items if i.applied)
+            nxt = next((i for i in ec.items if not i.applied), None)
+            return _mk("delivery", "waiting", NextAction(
+                kind="task", summary=(f"Apply the approved configuration in JDE DEV item by item and record each: "
+                                      f"{done} of {len(ec.items)} recorded"
+                                      + (f"; next {nxt.id}: {nxt.label}." if nxt else ".")),
+                owner="product_manager", action="record_applied", tab="delivery",
+                effect="JADE reads each item back live; only exactly the approved values are recorded."),
+                route=route, delivery_steps=steps)
         return _mk("delivery", "waiting", NextAction(
             kind="task", summary="Apply the approved value in JDE DEV, then record it: JADE reads it back live.",
             owner="product_manager", action="record_applied", tab="delivery",

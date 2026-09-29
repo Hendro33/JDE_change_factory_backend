@@ -297,7 +297,9 @@ def record_applied(change_id: str, payload: RecordAppliedInput,
         return delivery.record_applied(record["change_id"], actor_user_id=ctx.identity.id,
                                        actor_name=ctx.identity.display_name,
                                        evidence_reference=payload.evidence_reference, note=payload.note,
-                                       stated_value=payload.stated_value)
+                                       stated_value=payload.stated_value, item_id=payload.item_id,
+                                       stated_values=payload.stated_values,
+                                       confirmed_as_specified=payload.confirmed_as_specified)
     except _DELIVERY_REFUSALS as exc:
         raise _delivery_error(exc)
 

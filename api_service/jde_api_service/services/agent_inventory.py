@@ -28,7 +28,8 @@ PURPOSE = {
     "check-agent": "Checks the story is clear, complete and testable before it goes to review.",
     "process-analyst": "Places the story in the business process framework and finds missing requirements.",
     "architect": "Researches the JD Edwards environment and proposes how the story should be delivered.",
-    "functional-agent": "Applies approved configuration changes in JD Edwards DEV and verifies them.",
+    "functional-agent": "Specifies the exact configuration change set -- UDCs, set-up tables, document and line types, "
+                        "order activity rules, processing options, batch versions -- to the customer's standards.",
     "technical-agent": "Prepares the exact technical package for an approved design; applied only through the gate.",
 }
 

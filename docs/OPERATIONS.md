@@ -187,18 +187,27 @@ Choose `full` only with the customer's written agreement.
 
 **Agent runtime.** Every agent run:
 - is restricted to `Task` as its only built-in tool (`services/agent_runtime.py`);
-- has the credential encryption keys, the database and blob-storage secrets, the SMTP password and the bootstrap password blanked in the agent process, and so also in the project MCP server that process starts. Agents have no way to authenticate to AIS or change JD Edwards;
+- has the credential encryption keys, the database and blob-storage secrets, the SMTP password and the bootstrap password blanked in the agent process. The project tools run in-process, bound to the run's story (`ai/project_tools.py`); no settings or `.mcp.json` are loaded. Agents have no way to authenticate to AIS or change JD Edwards;
 - has every project MCP tool it is not allowed removed from its context.
 
 **Design hand-off.** The hand-off file names the exact change its design revision proposed. `get_design_baseline` returns that change with its current approval state.
 
 ## Recorded delivery
 
-**Functional changes** (processing options). After the exact change is approved:
-- The Application Manager applies exactly the approved value in DEV and records it (`POST /changes/{id}/delivery/applied`).
-  Jade re-checks the approval, scope and authority, and reads the value back live. Anything other than the approved
-  value is refused, never recorded. When the connection cannot read it, the person states the value with an evidence
-  reference, and every record says it was stated, not read.
+**Functional changes** (configuration change sets, `mcp_server/jde_mcp_server/config_items.py`). The Functional
+Agent proposes an ordered set of items under the eight configuration capabilities: UDC values, set-up and constants
+tables, document types (F40039), line types (F40205), order activity rules (F40203), processing options, batch version
+data selection and sequencing. Every item is checked against the universal rules (no deletes, no XJDE/ZJDE versions,
+never the UDC hard-coded flag, no protected categories) and the customer's approved configuration
+(`functional_agent.approved_configuration`: target, fields, add/update, allowed values; set in Governance) when it
+is proposed, when it is approved (including add-versus-exists, read live) and at every delivery step. For the
+customer's approved reads, add key filters (for example `udc_values` 00/DT filtered by DRKY, `table_browse` F40039
+filtered by DCTO) so Jade can read each item back. After the change set is approved:
+- The Application Manager applies the items in DEV, in order, and records each (`POST /changes/{id}/delivery/applied`
+  with `itemId`). Jade re-checks the approval, scope and authority, and reads the item back live. Anything other than
+  the approved values is refused, never recorded. When the connection cannot read an item, the person states the
+  values (`statedValues`) or confirms a batch version's data selection (`confirmedAsSpecified`) with an evidence
+  reference, and every record says it was stated, not read. The change counts as applied when every item is recorded.
 - The approved test Orchestration runs live (`.../delivery/run-test`), or the person records the result with
   evidence (`.../delivery/test-result`). A call whose outcome is unknown (for example a timeout) must be reconciled
   before anything else happens.

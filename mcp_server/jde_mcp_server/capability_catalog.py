@@ -126,6 +126,10 @@ def _validated_enforcement(cap: dict) -> dict:
     problems = []
     if not enf.get("tool"):
         problems.append("tool")
+    from .config_items import KINDS
+
+    if enf.get("item_kind") not in KINDS:
+        problems.append("item_kind")
     if enf.get("mechanism") not in MECHANISMS:
         problems.append("mechanism")
     if not enf.get("target"):
@@ -147,7 +151,9 @@ def require_enforcement(capability_id: str) -> dict:
 
 def executable_capabilities() -> dict[str, dict]:
     """capability_id -> enforcement contract, for every capability that has
-    a complete one. Today: processing_option_update only."""
+    a complete one: the eight configuration capabilities (processing options,
+    batch version data selection and sequencing, UDC values, constants and
+    set-up tables, document types, line types, order activity rules)."""
     out = {}
     for cap in list_capabilities():
         try:

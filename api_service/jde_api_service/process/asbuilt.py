@@ -107,6 +107,18 @@ def _functional(company_id: str, story_id: str, change) -> Optional[dict]:
                     "evidence_reference": applied.get("evidence_reference", ""), "by": applied.get("by")}
     verification = {k: v for k, v in (record.get("verification") or {}).items() if k != "answer"}
     binding = record.get("binding") or {}
+    items = _items_as_built(record)
+    if op.get("tool") == "configuration_change_set":
+        recorded = [i for i in items if i["readback"]]
+        readback = None
+        if recorded:
+            readback = {"value": f"{len(recorded)}/{len(items)} items recorded",
+                        "matches_approved": len(recorded) == len(items) and all(
+                            i["readback"]["matches_approved"] for i in items),
+                        "source": "per item, below", "live": all(i["readback"]["live"] for i in recorded),
+                        "evidence_reference": "; ".join(i["readback"]["evidence_reference"] for i in recorded
+                                                        if i["readback"]["evidence_reference"]),
+                        "by": ", ".join(sorted({str(i["readback"]["by"]) for i in recorded}))}
     return {"exact_change": change.exact_change.model_dump(mode="json"),
             "change_id": record.get("change_id"), "capability_id": record.get("capability_id"),
             "environment": record.get("environment"), "operation": op,
@@ -114,12 +126,55 @@ def _functional(company_id: str, story_id: str, change) -> Optional[dict]:
             "approver_authority": record.get("approver_authority"),
             "binding": {"design": binding.get("design"), "before_state": binding.get("before_state")},
             "invalidations": record.get("invalidations") or [],
-            "attempts": attempts, "readback": readback, "verification": verification,
+            "attempts": attempts, "readback": readback, "verification": verification, "items": items,
+            "summary": op.get("summary") or "",
             "test_orchestration": op.get("test_orchestration") or "",
             "test_note": ("The approved test orchestration ran live on the customer's AIS."
                           if verification.get("source") == "live orchestration" else
                           f"The test was run in DEV and its result recorded by {verification.get('by')} "
                           f"(evidence: {verification.get('evidence_reference')})." if verification else "No test recorded.")}
+
+
+def _items_as_built(record: dict) -> list[dict]:
+    """Every configuration item: what it changes, its value before (read at
+    approval), the approved value, and what was read back when a person
+    recorded it applied -- live, or stated with evidence when AIS cannot
+    read it."""
+    from jde_mcp_server import config_items
+
+    try:
+        items = config_items.items_of(record)
+    except Exception:  # noqa: BLE001 -- an unreadable record is shown without items, never hidden
+        return []
+    before = ((record.get("binding") or {}).get("before_state") or {}).get("items") or {}
+    delivered = record.get("item_delivery") or {}
+    out = []
+    for it in items:
+        approved = config_items.approved_values(it)
+        d = delivered.get(it["id"])
+        rb = None
+        if d:
+            observed = d.get("observed")
+            rb = {"value": observed, "source": d.get("source", ""), "live": bool(d.get("live")),
+                  "evidence_reference": d.get("evidence_reference", ""), "by": d.get("by"), "at": d.get("at"),
+                  "matches_approved": _item_matches(it, approved, observed)}
+        b = before.get(it["id"]) or {}
+        out.append({"id": it["id"], "capability_id": it.get("capability_id"), "kind": it["kind"],
+                    "label": config_items.label(it), "purpose": it.get("purpose", ""),
+                    "before": b.get("value") if b.get("known", True) else None,
+                    "before_note": "" if b.get("known", True) else b.get("reason", ""),
+                    "approved": approved, "readback": rb})
+    return out
+
+
+def _item_matches(it: dict, approved, observed) -> bool:
+    if it["kind"] == "processing_option":
+        return str(observed) == str(approved)
+    if isinstance(approved, dict) and "values" in approved:
+        vals = (observed or {}).get("values") if isinstance(observed, dict) else None
+        return bool(vals is not None and all(str(vals.get(k, "")).strip() == str(v).strip()
+                                             for k, v in approved["values"].items()))
+    return isinstance(observed, dict) and observed.get("specification") == approved.get("specification")
 
 
 def _story_revision(company_id: str, story_id: str) -> Optional[dict]:
@@ -227,7 +282,9 @@ def _checkpoints(src: dict) -> list[dict]:
              and ((func or {}).get("verification") or {}).get("passed") is True,
              (func or {}).get("test_note") or ex.get("test_state") or "not run"),
             ("verified", "Applied value is the approved value", bool(rb) and rb["matches_approved"],
-             (f"{rb['value']!r} ({rb['source']})" if rb else "not recorded")),
+             (f"{rb['value']} ({rb['source']})" if rb and (func or {}).get("items") and
+              func["operation"].get("tool") == "configuration_change_set" else
+              f"{rb['value']!r} ({rb['source']})" if rb else "not recorded")),
         ]
     return [{"id": i, "label": label, "complete": bool(ok), "detail": detail} for i, label, ok, detail in cps]
 
@@ -259,7 +316,15 @@ def _deviations_and_limits(src: dict) -> tuple[list[str], list[str]]:
     if f:
         for inv in f["invalidations"]:
             lim.append(f"Approval invalidation recorded: {inv.get('kind')} -- {inv.get('detail')}")
-        if f["readback"] and not f["readback"].get("live"):
+        if f.get("items") and f["operation"].get("tool") == "configuration_change_set":
+            for i in f["items"]:
+                rb = i["readback"]
+                if rb and not rb["live"]:
+                    lim.append(f"{i['id']} ({i['label']}) could not be read back live; it is as stated by "
+                               f"{rb['by']} (evidence: {rb['evidence_reference']}).")
+                elif rb and not rb["matches_approved"]:
+                    dev.append(f"{i['id']} ({i['label']}) was read back as {rb['value']!r}, not the approved value.")
+        elif f["readback"] and not f["readback"].get("live"):
             lim.append("The applied value could not be read back live; it is as stated by "
                        f"{f['readback'].get('by')} (evidence: {f['readback'].get('evidence_reference')}).")
     b = d["baseline"]
@@ -385,9 +450,22 @@ def markdown(record: dict) -> str:
             L.append(f"- CNC activation of {ca['package_name']} by {ca['by']} ({ca['evidence_reference']})")
     elif f:
         op, bs = f["operation"], (f["binding"] or {}).get("before_state") or {}
-        L.append(f"Exact change {f['change_id']} ({f['capability_id']}), environment {f['environment']}: "
-                 f"`{op.get('tool')}` {op.get('application')}/{op.get('version')} option {op.get('option')}: "
-                 f"{bs.get('value')!r} -> {op.get('value')!r}")
+        if op.get("tool") == "configuration_change_set":
+            L.append(f"Configuration change set {f['change_id']}, environment {f['environment']}: "
+                     f"{f.get('summary') or ''}".rstrip(": "))
+            L += ["", "| Item | Change | Before | Read back after |", "|---|---|---|---|"]
+            for i in f["items"]:
+                rb = i["readback"]
+                after = "not recorded" if not rb else (
+                    f"{_short(rb['value'])} ({'live' if rb['live'] else 'stated, ' + str(rb['evidence_reference'])})"
+                    + ("" if rb["matches_approved"] else " -- DOES NOT match"))
+                before = _short(i["before"]) if i["before"] is not None else (i["before_note"] or "unknown")
+                L.append(f"| {i['id']} | {i['label']} | {before} | {after} |")
+            L.append("")
+        else:
+            L.append(f"Exact change {f['change_id']} ({f['capability_id']}), environment {f['environment']}: "
+                     f"`{op.get('tool')}` {op.get('application')}/{op.get('version')} option {op.get('option')}: "
+                     f"{bs.get('value')!r} -> {op.get('value')!r}")
         ap = f["approval"] or {}
         L.append(f"Approved by {ap.get('approved_by')} at {ap.get('approved_at')} "
                  f"(roles: {', '.join((f.get('approver_authority') or {}).get('roles') or [])})")
@@ -406,8 +484,13 @@ def markdown(record: dict) -> str:
                  f"{'passed' if fv.get('passed') else 'FAILED' if fv else f['exact_change']['execution']['test_state']}. "
                  f"{f['test_note']}")
         L.append("")
-        L.append(f"Applied value: {rb.get('value')!r} -- {'matches' if rb.get('matches_approved') else 'DOES NOT match'} "
-                 f"the approved value ({rb.get('source')})")
+        if f.get("items") and f["operation"].get("tool") == "configuration_change_set":
+            L.append(f"Applied configuration: {rb.get('value') or 'nothing recorded'} -- "
+                     f"{'every item matches' if rb.get('matches_approved') else 'NOT every item matches'} the approved "
+                     "values (see the items above)")
+        else:
+            L.append(f"Applied value: {rb.get('value')!r} -- {'matches' if rb.get('matches_approved') else 'DOES NOT match'} "
+                     f"the approved value ({rb.get('source')})")
     elif v:
         L += ["| Test | Kind | Result |", "|---|---|---|"] + [
             f"| {r['name']} | {r['kind']} | {'passed' if r['passed'] else 'FAILED'} |" for r in v["results"]]
@@ -491,3 +574,13 @@ def finalise(company_id: str, story_id: str, version: int, change, *, actor: str
         conn.execute("UPDATE as_built_records SET markdown = ? WHERE company_id = ? AND story_id = ? AND version = ?",
                      (markdown(rec), company_id, story_id, version))
     return get(company_id, story_id, version)  # type: ignore[return-value]
+
+
+def _short(value) -> str:
+    if isinstance(value, dict):
+        if "values" in value:
+            return ("new row" if not value.get("exists") and not value["values"] else
+                    ", ".join(f"{k}={v!r}" for k, v in value["values"].items()) or "exists")
+        if "specification" in value:
+            return str(value["specification"])
+    return repr(value)

@@ -37,9 +37,9 @@ business_impact fields and rough_complexity_signal (Section 3.6).
 # What you do
 - If every criterion passes: call propose_to_backlog with the story_id,
   user_story, business_impact, rough_complexity_signal and source. This
-  hands the story to Phase 2 (Section 3.5) -- it does NOT approve it.
-  No human sees it until they run backlog_review.py. Report the story
-  as proposed to the backlog, awaiting human review.
+  hands the story to Story Review (Section 3.5) -- it does NOT approve
+  it: an Application Manager places it in a business domain and its
+  Domain Owner approves it. Report the story as proposed for review.
 - If any criterion fails and revision_count < 2: do NOT call
   propose_to_backlog. Set status = "needs_revision", increment
   revision_count, and return the story to the Improve Agent with the

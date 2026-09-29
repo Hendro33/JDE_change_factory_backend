@@ -122,6 +122,43 @@ def _evidence_for(story_id: str) -> list[dict[str, Any]]:
     return evidence.entries(story_id)
 
 
+def _item_views(change_record: dict) -> list:
+    from jde_mcp_server import config_items
+
+    from ..models.change import ConfigurationItemView
+
+    binding = change_record.get("binding") or {}
+    before = binding.get("before_state") or {}
+    per_item = before.get("items") or {}
+    delivered = change_record.get("item_delivery") or {}
+    legacy_applied = (((change_record.get("execution") or {}).get("write") or {}).get("attempts") or [{}])[-1] \
+        if not config_items.is_change_set(change_record) else None
+    out = []
+    for it in config_items.items_of(change_record):
+        if config_items.is_change_set(change_record):
+            state = per_item.get(it["id"]) or {}
+        else:
+            state = before
+        known = bool(state.get("known"))
+        if not binding:
+            note = "read live from JD Edwards when the change is approved"
+        elif known:
+            note = f"read when approved: {state.get('source', 'live read')}"
+        else:
+            note = f"not established at approval: {state.get('reason', 'unknown')}"
+        applied = delivered.get(it["id"])
+        if applied is None and legacy_applied and (legacy_applied.get("recorded") or {}).get("observed_value") is not None:
+            applied = legacy_applied.get("recorded")
+        out.append(ConfigurationItemView(
+            id=it["id"], capability_id=it.get("capability_id"), kind=it["kind"], label=config_items.label(it),
+            target=config_items.target(it), action=it.get("action"), table=it.get("table"), key=it.get("key") or {},
+            values=it.get("values") or {}, application=it.get("application"), version=it.get("version"),
+            option=it.get("option"), value=it.get("value"), specification=it.get("specification"),
+            purpose=it.get("purpose") or "", before=state.get("value") if known else None, before_known=known,
+            before_note=note, applied=applied))
+    return out
+
+
 def _latest_change_record_for(story_id: str) -> Optional[dict[str, Any]]:
     candidates = [c for c in _all_change_records() if c.get("story_id") == story_id]
     if not candidates:
@@ -253,13 +290,18 @@ def _change_from_story(
         capability_id = change_record.get("capability_id")
         capability_status = None
         capability_executable = None
-        if capability_id:
-            cap = capability_catalog.get_capability(capability_id)
-            if cap is not None:
-                capability_status = cap.get("validation", {}).get("status")
-                # Deliverable by a person (the recorded route) unless the
-                # catalogue marks it Restricted or Suspended.
-                capability_executable = capability_status not in capability_catalog.PERSON_DELIVERY_BLOCKED_STATUSES
+        from jde_mcp_server import config_items
+
+        item_caps = [i.get("capability_id") for i in config_items.items_of(change_record)] or [capability_id]
+        statuses = [(capability_catalog.get_capability(c) or {}).get("validation", {}).get("status")
+                    for c in item_caps if c]
+        if statuses and all(statuses):
+            # Deliverable by a person (the recorded route) unless the catalogue
+            # marks a capability Restricted or Suspended; for a change set, the
+            # least deliverable item decides.
+            blocked = [st for st in statuses if st in capability_catalog.PERSON_DELIVERY_BLOCKED_STATUSES]
+            capability_status = blocked[0] if blocked else statuses[0]
+            capability_executable = not blocked
         before = (change_record.get("binding") or {}).get("before_state") or {}
         if before.get("known") and isinstance(before.get("value"), str):
             current_value, current_note = before["value"], f"read when approved: {before.get('source', 'live read')}"
@@ -269,6 +311,8 @@ def _change_from_story(
             current_value, current_note = "", "read live from JD Edwards when the change is approved"
         exact_change = ExactChange(
             tool=op.get("tool", ""),
+            items=_item_views(change_record),
+            summary=str(op.get("summary") or ""),
             current_value=current_value,
             current_value_note=current_note,
             application=op.get("application", ""),

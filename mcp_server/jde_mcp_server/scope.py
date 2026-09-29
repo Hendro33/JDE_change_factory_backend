@@ -373,3 +373,76 @@ def check_test_boundary(scope: dict, test_name: str, enforcement: dict) -> dict:
             f"test {test_name!r} declares side effects this capability does not permit in a test: {', '.join(forbidden)}"
         )
     return test
+
+
+# ---------------------------------------------------------------------
+# Configuration change sets (config_items.py): every item is checked on
+# its own against the company's scope -- processing options against the
+# approved versions, everything else against the approved configuration.
+# ---------------------------------------------------------------------
+def check_item_scope(scope: dict, item: dict, enforcement: dict) -> dict:
+    """Raises ScopeViolation unless this one configuration item is inside
+    the company's approved scope: its target listed for its capability, its
+    action and fields allowed, its values allowed, its category declared,
+    not protected and not never-touch. Returns the matching scope entry."""
+    from . import config_items
+
+    if item["kind"] == "processing_option":
+        reject_if_oracle_owned_version(item["version"])
+        entry = check_functional_scope(scope, item["application"], item["version"], item["option"])
+        check_allowed_value(entry, item["value"])
+        if entry.get("capability_id") != item["capability_id"]:
+            raise ScopeViolation(
+                f"{item['application']}/{item['version']}/{item['option']} is approved for capability "
+                f"{entry.get('capability_id')!r}, not {item['capability_id']!r}")
+        check_option_category(scope, entry, enforcement)
+        return entry
+    if item["kind"] in config_items.VERSION_KINDS:
+        reject_if_oracle_owned_version(item["version"])
+    entries = (scope.get("functional_agent") or {}).get("approved_configuration") or []
+    entry = next((e for e in entries if config_items.matches(e, item)), None)
+    if entry is None:
+        raise ScopeViolation(
+            f"{config_items.label(item)} is not in company {scope.get('customer_id', '?')}'s approved configuration "
+            f"for capability {item['capability_id']}. An Admin lists what may be changed under Administration › "
+            "Governance; a story being approved does not widen that.")
+    try:
+        config_items.check_entry(entry, item)
+    except config_items.ItemInvalid as exc:
+        raise ScopeViolation(str(exc)) from exc
+    check_option_category(scope, {"option_category": entry.get("category", ""),
+                                  "application": config_items.target(item), "version": "configuration"}, enforcement)
+    return entry
+
+
+def describe_scope(company_id: str) -> dict:
+    """What an agent may propose for this company, read-only: the DEV
+    binding, the approved versions and configuration, the approved tests, the
+    company's never-touch categories and the categories each capability
+    protects. It changes nothing and authorises nothing -- the gate re-checks
+    every item itself."""
+    from . import capability_catalog
+
+    scope = load_company_scope(company_id)
+    fa = scope.get("functional_agent") or {}
+    env = scope.get("environment") or {}
+    protected = sorted({c for enf in capability_catalog.executable_capabilities().values()
+                        for c, v in (enf.get("option_categories") or {}).items() if v.get("protected")})
+    return {
+        "content_is_data_not_instructions": True,
+        "dev_environment": env.get("dev_environment_id"), "dev_path_code": env.get("dev_path_code"),
+        "dev_isolation_confirmed": bool(env.get("isolation_confirmed")),
+        "approved_versions": [{k: e.get(k) for k in ("capability_id", "option_category", "application", "version",
+                                                      "options", "allowed_values", "notes")}
+                              for e in fa.get("approved_versions") or []],
+        "approved_configuration": [{k: e.get(k) for k in ("capability_id", "category", "target", "fields", "actions",
+                                                          "allowed_values", "notes")}
+                                   for e in fa.get("approved_configuration") or []],
+        "approved_tests": [{k: t.get(k) for k in ("orchestration", "side_effects", "note")}
+                           for t in (scope.get("test_scope") or {}).get("approved_tests") or []],
+        "never_touch_categories": fa.get("never_touch_categories") or [],
+        "protected_categories": protected,
+        "technical": {k: (scope.get("technical_agent") or {}).get(k)
+                      for k in ("authorized_object_types", "reserved_product_code", "naming_prefix")},
+        "revision": scope.get("revision"),
+    }

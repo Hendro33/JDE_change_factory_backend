@@ -1,10 +1,10 @@
 {
   "_comment": "Functional Agent Capability Catalogue -- design update Section 2/3. Version-controlled source: promote a capability only by editing this file and getting the change reviewed by a designated functional owner AND technical validator (Section 2, 'the agent cannot certify its own capabilities'). Every entry below defaults to needs_spike; nothing here has been declared Validated by this file's authorship alone -- see each entry's validation.technical_validation for exactly what has, and has not, actually been demonstrated.",
-  "catalog_revision": "2026-09-24.1",
+  "catalog_revision": "2026-09-29.1",
   "capabilities": [
     {
       "capability_id": "processing_option_update",
-      "revision": "r1",
+      "revision": "r2",
       "priority": 1,
       "identity": {
         "description": "Update specific, approved processing-option fields on an existing customer-owned version, to a value from an explicit allowed set.",
@@ -68,11 +68,12 @@
       },
       "validation": {
         "status": "needs_spike",
-        "technical_validation": "The gating logic (story approval, exact-change hash binding, Oracle-owned-version rule, engagement scope, approver authority, evidence chain) is enforced before every recorded delivery step. Automated application (an AIS Form Service Request) is not validated on a customer system yet, so an authorised person applies the approved value in DEV and records it; Jade then reads the value back live through the customer's own AIS connection where the connection permits.",
+        "technical_validation": "Proposed as items of a configuration change set, each checked against the universal rules and the company's approved configuration when proposed, approved and delivered. Automated application is not validated on a customer system yet, so an authorised person applies each approved item in DEV and records it; Jade reads it back live through the customer's AIS connection where the connection permits.",
         "policy_restriction": "None beyond the universal exclusions (tax/GL/AAI/security fields, XJDE/ZJDE) -- this capability is not blanket-Restricted, it is Needs spike pending the technical work above",
         "evidence_references": [
-          "mcp_server/jde_mcp_server/approval.py (authorise_functional_delivery)",
-          "api_service/jde_api_service/delivery/ (recorded delivery and live read-back)"
+          "mcp_server/jde_mcp_server/config_items.py (items, universal rules, scope)",
+          "mcp_server/jde_mcp_server/approval.py (propose, approve, authorise_functional_delivery)",
+          "api_service/jde_api_service/delivery/ (recorded delivery and live read-back per item)"
         ],
         "validation_date": null,
         "approver": null,
@@ -83,7 +84,7 @@
         ]
       },
       "enforcement": {
-        "_comment": "What the execution gate enforces for this capability (capability_catalog.require_enforcement). Only a capability with a complete enforcement block can execute; the prose elsewhere in this entry is descriptive and is never enforced.",
+        "_comment": "What the delivery gate enforces for this capability (capability_catalog.require_enforcement). Only a capability with a complete enforcement block can be proposed and delivered; the prose elsewhere in this entry is descriptive and is never enforced. item_kind is the configuration item this capability changes in a configuration change set (jde_mcp_server/config_items.py).",
         "tool": "set_processing_option",
         "mechanism": "ais_form_service_request",
         "target": "one processing option on a customer-owned version (never XJDE/ZJDE), listed in the company's approved versions with a declared option category",
@@ -122,12 +123,13 @@
             "none",
             "creates_dev_transaction"
           ]
-        }
+        },
+        "item_kind": "processing_option"
       }
     },
     {
       "capability_id": "batch_version_data_selection",
-      "revision": "r1",
+      "revision": "r2",
       "priority": 2,
       "identity": {
         "description": "Replace the complete data-selection expression on one approved, non-posting batch/report version.",
@@ -190,19 +192,67 @@
       },
       "validation": {
         "status": "needs_spike",
-        "technical_validation": "No implementation exists. This entry exists to make the capability visible in the prioritised backlog (Section 3), not to claim any working mechanism.",
+        "technical_validation": "Proposed as items of a configuration change set, each checked against the universal rules and the company's approved configuration when proposed, approved and delivered. Automated application is not validated on a customer system yet, so an authorised person applies each approved item in DEV and records it; Jade reads it back live through the customer's AIS connection where the connection permits (saved data selection and sequencing are not exposed by AIS, so the person states it with evidence).",
         "policy_restriction": "None beyond universal exclusions",
-        "evidence_references": [],
+        "evidence_references": [
+          "mcp_server/jde_mcp_server/config_items.py (items, universal rules, scope)",
+          "mcp_server/jde_mcp_server/approval.py (propose, approve, authorise_functional_delivery)",
+          "api_service/jde_api_service/delivery/ (recorded delivery and live read-back per item)"
+        ],
         "validation_date": null,
         "approver": null,
         "revalidation_triggers": [
           "initial feasibility spike completed"
         ]
+      },
+      "enforcement": {
+        "_comment": "What the delivery gate enforces for this capability (capability_catalog.require_enforcement). Only a capability with a complete enforcement block can be proposed and delivered; the prose elsewhere in this entry is descriptive and is never enforced. item_kind is the configuration item this capability changes in a configuration change set (jde_mcp_server/config_items.py).",
+        "tool": "configuration_change_set",
+        "item_kind": "version_data_selection",
+        "mechanism": "ais_form_service_request",
+        "target": "the saved data selection of a customer-owned batch version (never XJDE/ZJDE) listed in the company's approved configuration; posting versions are excluded by the company's scope",
+        "before_state": "stated",
+        "option_categories": {
+          "defaults_and_display": {
+            "protected": false
+          },
+          "document_and_order_types": {
+            "protected": false
+          },
+          "workflow_and_status": {
+            "protected": false
+          },
+          "pricing": {
+            "protected": true
+          },
+          "tax": {
+            "protected": true
+          },
+          "gl_posting_and_aai": {
+            "protected": true
+          },
+          "security_and_authorisation": {
+            "protected": true
+          },
+          "payments_and_banking": {
+            "protected": true
+          },
+          "outbound_integration": {
+            "protected": true
+          }
+        },
+        "test": {
+          "mechanism": "ais_orchestration",
+          "permitted_side_effects": [
+            "none",
+            "creates_dev_transaction"
+          ]
+        }
       }
     },
     {
       "capability_id": "batch_version_data_sequencing",
-      "revision": "r1",
+      "revision": "r2",
       "priority": 3,
       "identity": {
         "description": "Replace the complete data-sequencing (ordered fields, direction, grouping behaviour) on one approved report version.",
@@ -265,19 +315,67 @@
       },
       "validation": {
         "status": "needs_spike",
-        "technical_validation": "No implementation exists.",
+        "technical_validation": "Proposed as items of a configuration change set, each checked against the universal rules and the company's approved configuration when proposed, approved and delivered. Automated application is not validated on a customer system yet, so an authorised person applies each approved item in DEV and records it; Jade reads it back live through the customer's AIS connection where the connection permits (saved data selection and sequencing are not exposed by AIS, so the person states it with evidence).",
         "policy_restriction": "None beyond universal exclusions",
-        "evidence_references": [],
+        "evidence_references": [
+          "mcp_server/jde_mcp_server/config_items.py (items, universal rules, scope)",
+          "mcp_server/jde_mcp_server/approval.py (propose, approve, authorise_functional_delivery)",
+          "api_service/jde_api_service/delivery/ (recorded delivery and live read-back per item)"
+        ],
         "validation_date": null,
         "approver": null,
         "revalidation_triggers": [
           "initial feasibility spike completed"
         ]
+      },
+      "enforcement": {
+        "_comment": "What the delivery gate enforces for this capability (capability_catalog.require_enforcement). Only a capability with a complete enforcement block can be proposed and delivered; the prose elsewhere in this entry is descriptive and is never enforced. item_kind is the configuration item this capability changes in a configuration change set (jde_mcp_server/config_items.py).",
+        "tool": "configuration_change_set",
+        "item_kind": "version_data_sequencing",
+        "mechanism": "ais_form_service_request",
+        "target": "the saved data sequencing of a customer-owned batch version (never XJDE/ZJDE) listed in the company's approved configuration",
+        "before_state": "stated",
+        "option_categories": {
+          "defaults_and_display": {
+            "protected": false
+          },
+          "document_and_order_types": {
+            "protected": false
+          },
+          "workflow_and_status": {
+            "protected": false
+          },
+          "pricing": {
+            "protected": true
+          },
+          "tax": {
+            "protected": true
+          },
+          "gl_posting_and_aai": {
+            "protected": true
+          },
+          "security_and_authorisation": {
+            "protected": true
+          },
+          "payments_and_banking": {
+            "protected": true
+          },
+          "outbound_integration": {
+            "protected": true
+          }
+        },
+        "test": {
+          "mechanism": "ais_orchestration",
+          "permitted_side_effects": [
+            "none",
+            "creates_dev_transaction"
+          ]
+        }
       }
     },
     {
       "capability_id": "udc_value_maintenance",
-      "revision": "r1",
+      "revision": "r2",
       "priority": 4,
       "identity": {
         "description": "Add or update customer-maintained values/descriptions in an explicitly permitted User Defined Code list.",
@@ -341,19 +439,67 @@
       },
       "validation": {
         "status": "needs_spike",
-        "technical_validation": "No implementation exists.",
+        "technical_validation": "Proposed as items of a configuration change set, each checked against the universal rules and the company's approved configuration when proposed, approved and delivered. Automated application is not validated on a customer system yet, so an authorised person applies each approved item in DEV and records it; Jade reads it back live through the customer's AIS connection where the connection permits.",
         "policy_restriction": "Deletion and special-handling changes are excluded from this capability's remit entirely (see near-term exclusions), not merely Restricted pending review",
-        "evidence_references": [],
+        "evidence_references": [
+          "mcp_server/jde_mcp_server/config_items.py (items, universal rules, scope)",
+          "mcp_server/jde_mcp_server/approval.py (propose, approve, authorise_functional_delivery)",
+          "api_service/jde_api_service/delivery/ (recorded delivery and live read-back per item)"
+        ],
         "validation_date": null,
         "approver": null,
         "revalidation_triggers": [
           "initial feasibility spike completed"
         ]
+      },
+      "enforcement": {
+        "_comment": "What the delivery gate enforces for this capability (capability_catalog.require_enforcement). Only a capability with a complete enforcement block can be proposed and delivered; the prose elsewhere in this entry is descriptive and is never enforced. item_kind is the configuration item this capability changes in a configuration change set (jde_mcp_server/config_items.py).",
+        "tool": "configuration_change_set",
+        "item_kind": "udc_value",
+        "mechanism": "ais_form_service_request",
+        "target": "add or update one value of a user defined code type listed in the company's approved configuration: descriptions (DRDL01, DRDL02) and special handling (DRSPHD) only; the hard-coded flag (DRHRDC) is never changed",
+        "before_state": "live",
+        "option_categories": {
+          "defaults_and_display": {
+            "protected": false
+          },
+          "document_and_order_types": {
+            "protected": false
+          },
+          "workflow_and_status": {
+            "protected": false
+          },
+          "pricing": {
+            "protected": true
+          },
+          "tax": {
+            "protected": true
+          },
+          "gl_posting_and_aai": {
+            "protected": true
+          },
+          "security_and_authorisation": {
+            "protected": true
+          },
+          "payments_and_banking": {
+            "protected": true
+          },
+          "outbound_integration": {
+            "protected": true
+          }
+        },
+        "test": {
+          "mechanism": "ais_orchestration",
+          "permitted_side_effects": [
+            "none",
+            "creates_dev_transaction"
+          ]
+        }
       }
     },
     {
       "capability_id": "constants_and_setup_master_data",
-      "revision": "r1",
+      "revision": "r2",
       "priority": 5,
       "identity": {
         "description": "Update one concrete, low-risk constants or setup-master field on an explicit allowlist, chosen from the pilot -- not blanket constants/master-data access.",
@@ -415,20 +561,68 @@
       },
       "validation": {
         "status": "needs_spike",
-        "technical_validation": "No implementation exists, and no concrete field allowlist has even been chosen yet -- this is the least-defined entry in the catalogue on purpose (Section 3 explicitly defers the choice to the pilot backlog).",
+        "technical_validation": "Proposed as items of a configuration change set, each checked against the universal rules and the company's approved configuration when proposed, approved and delivered. Automated application is not validated on a customer system yet, so an authorised person applies each approved item in DEV and records it; Jade reads it back live through the customer's AIS connection where the connection permits.",
         "policy_restriction": "Blanket constants/master-data access is explicitly excluded from any future promotion -- only a narrow, named allowlist can ever be considered",
-        "evidence_references": [],
+        "evidence_references": [
+          "mcp_server/jde_mcp_server/config_items.py (items, universal rules, scope)",
+          "mcp_server/jde_mcp_server/approval.py (propose, approve, authorise_functional_delivery)",
+          "api_service/jde_api_service/delivery/ (recorded delivery and live read-back per item)"
+        ],
         "validation_date": null,
         "approver": null,
         "revalidation_triggers": [
           "a concrete application + field allowlist is chosen from the pilot backlog",
           "initial feasibility spike completed"
         ]
+      },
+      "enforcement": {
+        "_comment": "What the delivery gate enforces for this capability (capability_catalog.require_enforcement). Only a capability with a complete enforcement block can be proposed and delivered; the prose elsewhere in this entry is descriptive and is never enforced. item_kind is the configuration item this capability changes in a configuration change set (jde_mcp_server/config_items.py).",
+        "tool": "configuration_change_set",
+        "item_kind": "setup_row",
+        "mechanism": "ais_form_service_request",
+        "target": "add or update one row of a set-up or constants table the company lists in its approved configuration, only the fields and key values it lists",
+        "before_state": "live",
+        "option_categories": {
+          "defaults_and_display": {
+            "protected": false
+          },
+          "document_and_order_types": {
+            "protected": false
+          },
+          "workflow_and_status": {
+            "protected": false
+          },
+          "pricing": {
+            "protected": true
+          },
+          "tax": {
+            "protected": true
+          },
+          "gl_posting_and_aai": {
+            "protected": true
+          },
+          "security_and_authorisation": {
+            "protected": true
+          },
+          "payments_and_banking": {
+            "protected": true
+          },
+          "outbound_integration": {
+            "protected": true
+          }
+        },
+        "test": {
+          "mechanism": "ais_orchestration",
+          "permitted_side_effects": [
+            "none",
+            "creates_dev_transaction"
+          ]
+        }
       }
     },
     {
       "capability_id": "document_type_definition",
-      "revision": "r1",
+      "revision": "r2",
       "priority": 6,
       "family": "customer_defined_document_and_line_types",
       "identity": {
@@ -491,20 +685,71 @@
       },
       "validation": {
         "status": "needs_spike",
-        "technical_validation": "No implementation exists.",
+        "technical_validation": "Proposed as items of a configuration change set, each checked against the universal rules and the company's approved configuration when proposed, approved and delivered. Automated application is not validated on a customer system yet, so an authorised person applies each approved item in DEV and records it; Jade reads it back live through the customer's AIS connection where the connection permits.",
         "policy_restriction": "None beyond universal exclusions; kept separate from line_type_definition per Section 2's 'each is a separate sub-capability'",
-        "evidence_references": [],
+        "evidence_references": [
+          "mcp_server/jde_mcp_server/config_items.py (items, universal rules, scope)",
+          "mcp_server/jde_mcp_server/approval.py (propose, approve, authorise_functional_delivery)",
+          "api_service/jde_api_service/delivery/ (recorded delivery and live read-back per item)"
+        ],
         "validation_date": null,
         "approver": null,
         "revalidation_triggers": [
           "initial feasibility spike completed",
           "inherited accounting/inventory/tax behaviour enumerated and reviewed"
         ]
+      },
+      "enforcement": {
+        "_comment": "What the delivery gate enforces for this capability (capability_catalog.require_enforcement). Only a capability with a complete enforcement block can be proposed and delivered; the prose elsewhere in this entry is descriptive and is never enforced. item_kind is the configuration item this capability changes in a configuration change set (jde_mcp_server/config_items.py).",
+        "tool": "configuration_change_set",
+        "item_kind": "setup_row",
+        "mechanism": "ais_form_service_request",
+        "target": "add or update one document type in the Document Type Master (F40039), only the fields and document types the company lists",
+        "before_state": "live",
+        "option_categories": {
+          "defaults_and_display": {
+            "protected": false
+          },
+          "document_and_order_types": {
+            "protected": false
+          },
+          "workflow_and_status": {
+            "protected": false
+          },
+          "pricing": {
+            "protected": true
+          },
+          "tax": {
+            "protected": true
+          },
+          "gl_posting_and_aai": {
+            "protected": true
+          },
+          "security_and_authorisation": {
+            "protected": true
+          },
+          "payments_and_banking": {
+            "protected": true
+          },
+          "outbound_integration": {
+            "protected": true
+          }
+        },
+        "test": {
+          "mechanism": "ais_orchestration",
+          "permitted_side_effects": [
+            "none",
+            "creates_dev_transaction"
+          ]
+        },
+        "tables": [
+          "F40039"
+        ]
       }
     },
     {
       "capability_id": "line_type_definition",
-      "revision": "r1",
+      "revision": "r2",
       "priority": 6,
       "family": "customer_defined_document_and_line_types",
       "identity": {
@@ -567,20 +812,71 @@
       },
       "validation": {
         "status": "needs_spike",
-        "technical_validation": "No implementation exists.",
+        "technical_validation": "Proposed as items of a configuration change set, each checked against the universal rules and the company's approved configuration when proposed, approved and delivered. Automated application is not validated on a customer system yet, so an authorised person applies each approved item in DEV and records it; Jade reads it back live through the customer's AIS connection where the connection permits.",
         "policy_restriction": "Unsafe variants (GL-posting or inventory-updating line types outside an approved template's own defaults) remain Restricted even after any future spike -- this entry can be promoted only for the safe subset",
-        "evidence_references": [],
+        "evidence_references": [
+          "mcp_server/jde_mcp_server/config_items.py (items, universal rules, scope)",
+          "mcp_server/jde_mcp_server/approval.py (propose, approve, authorise_functional_delivery)",
+          "api_service/jde_api_service/delivery/ (recorded delivery and live read-back per item)"
+        ],
         "validation_date": null,
         "approver": null,
         "revalidation_triggers": [
           "initial feasibility spike completed",
           "ledger/inventory effect flags enumerated and reviewed"
         ]
+      },
+      "enforcement": {
+        "_comment": "What the delivery gate enforces for this capability (capability_catalog.require_enforcement). Only a capability with a complete enforcement block can be proposed and delivered; the prose elsewhere in this entry is descriptive and is never enforced. item_kind is the configuration item this capability changes in a configuration change set (jde_mcp_server/config_items.py).",
+        "tool": "configuration_change_set",
+        "item_kind": "setup_row",
+        "mechanism": "ais_form_service_request",
+        "target": "add or update one line type in Line Type Control Constants (F40205), only the fields and line types the company lists; ledger and inventory interface flags only if the company explicitly lists them",
+        "before_state": "live",
+        "option_categories": {
+          "defaults_and_display": {
+            "protected": false
+          },
+          "document_and_order_types": {
+            "protected": false
+          },
+          "workflow_and_status": {
+            "protected": false
+          },
+          "pricing": {
+            "protected": true
+          },
+          "tax": {
+            "protected": true
+          },
+          "gl_posting_and_aai": {
+            "protected": true
+          },
+          "security_and_authorisation": {
+            "protected": true
+          },
+          "payments_and_banking": {
+            "protected": true
+          },
+          "outbound_integration": {
+            "protected": true
+          }
+        },
+        "test": {
+          "mechanism": "ais_orchestration",
+          "permitted_side_effects": [
+            "none",
+            "creates_dev_transaction"
+          ]
+        },
+        "tables": [
+          "F40205"
+        ]
       }
     },
     {
       "capability_id": "order_activity_status_rules",
-      "revision": "r1",
+      "revision": "r2",
       "priority": 7,
       "identity": {
         "description": "Configure order activity/status rules for one isolated document-type/line-type combination -- explicit transitions, alternatives, and logging settings.",
@@ -642,14 +938,65 @@
       },
       "validation": {
         "status": "needs_spike",
-        "technical_validation": "No implementation exists. Highest-scrutiny entry in the catalogue by design (Section 3: 'requires multi-step behavioural testing and stronger dependency control').",
+        "technical_validation": "Proposed as items of a configuration change set, each checked against the universal rules and the company's approved configuration when proposed, approved and delivered. Automated application is not validated on a customer system yet, so an authorised person applies each approved item in DEV and records it; Jade reads it back live through the customer's AIS connection where the connection permits.",
         "policy_restriction": "Any combination with existing dependent transactions remains permanently out of this capability's remit, independent of any future validation",
-        "evidence_references": [],
+        "evidence_references": [
+          "mcp_server/jde_mcp_server/config_items.py (items, universal rules, scope)",
+          "mcp_server/jde_mcp_server/approval.py (propose, approve, authorise_functional_delivery)",
+          "api_service/jde_api_service/delivery/ (recorded delivery and live read-back per item)"
+        ],
         "validation_date": null,
         "approver": null,
         "revalidation_triggers": [
           "initial feasibility spike completed",
           "dependency-detection mechanism proven reliable"
+        ]
+      },
+      "enforcement": {
+        "_comment": "What the delivery gate enforces for this capability (capability_catalog.require_enforcement). Only a capability with a complete enforcement block can be proposed and delivered; the prose elsewhere in this entry is descriptive and is never enforced. item_kind is the configuration item this capability changes in a configuration change set (jde_mcp_server/config_items.py).",
+        "tool": "configuration_change_set",
+        "item_kind": "setup_row",
+        "mechanism": "ais_form_service_request",
+        "target": "add or update order activity rules (F40203) for the order types / line types the company lists, only the fields it lists; never a delete",
+        "before_state": "live",
+        "option_categories": {
+          "defaults_and_display": {
+            "protected": false
+          },
+          "document_and_order_types": {
+            "protected": false
+          },
+          "workflow_and_status": {
+            "protected": false
+          },
+          "pricing": {
+            "protected": true
+          },
+          "tax": {
+            "protected": true
+          },
+          "gl_posting_and_aai": {
+            "protected": true
+          },
+          "security_and_authorisation": {
+            "protected": true
+          },
+          "payments_and_banking": {
+            "protected": true
+          },
+          "outbound_integration": {
+            "protected": true
+          }
+        },
+        "test": {
+          "mechanism": "ais_orchestration",
+          "permitted_side_effects": [
+            "none",
+            "creates_dev_transaction"
+          ]
+        },
+        "tables": [
+          "F40203"
         ]
       }
     },
@@ -659,7 +1006,7 @@
       "priority": 9,
       "family": "technical",
       "identity": {
-        "description": "Technical Agent: prepare, apply, build and verify a bounded change to a customer-owned (system code 55-59) development object whose source is available as supported text. Applied ONLY through the simulation adapter today; no live mechanism is qualified.",
+        "description": "Technical Agent: prepare a bounded change to a customer-owned (system code 55-59) development object whose source is available as supported text. People apply it through OMW, build it, have the CNC activate it and verify it, and record each step in Jade.",
         "functional_owner": "<assign: engagement technical lead>",
         "business_domain": "Cross-domain"
       },
@@ -676,16 +1023,16 @@
         ]
       },
       "compatibility": {
-        "application_release": "Not applicable to the simulation",
+        "application_release": "Any release whose C business function source the customer exports",
         "tools_release": "No live mechanism validated on any Tools release",
         "customisations": "The customer's build rules are part of the simulated estate object",
-        "adapter_revision": "jde_simulation_adapter sim-1 (mcp_server/jde_mcp_server/technical_sim.py)"
+        "adapter_revision": "recorded: person_through_omw v1 (mcp_server/jde_mcp_server/technical_gate.py)"
       },
       "execution": {
-        "mechanism": "jade_simulation_adapter (simulation only)",
+        "mechanism": "person_through_omw (recorded): the Technical Agent prepares the package; a developer checks it in through OMW, the objects are built, a CNC activates it; each step is recorded in Jade",
         "input_schema": "An approved implementation package revision (exact content hash)",
         "commit_boundary": "One package revision: apply, build, CNC activation and verification are separate milestones",
-        "expected_side_effects": "In the simulation: the object's checked-in, built and (after the recorded CNC hand-off) active source; the object librarian row names the package"
+        "expected_side_effects": "The object's checked-in, built and (after the recorded CNC activation) active source"
       },
       "scope": {
         "environment_constraint": "DEV only",
@@ -721,11 +1068,11 @@
       },
       "validation": {
         "status": "needs_spike",
-        "technical_validation": "Agent workflow, package preparation, approval binding and the SIMULATION adapter are implemented and tested. No real JDE mechanism (Web OMW, specification tools, import) has been qualified for editing or importing any object type; the live adapter is unavailable by design.",
-        "policy_restriction": "Simulation only. Real objects are Human Implementation until a mechanism is qualified per object type (design Section 7.6).",
+        "technical_validation": "Agent workflow, package preparation from the customer's uploaded source exports, approval binding and the recorded delivery milestones (apply through OMW, build, CNC activation, verification) are implemented and tested. Jade does not apply, build or promote anything itself.",
+        "policy_restriction": "Only C business function source can be prepared as a text change; event rules are described as a specification for a developer. Other object types are Human Implementation.",
         "evidence_references": [
           "api_service/tests/test_technical_*.py",
-          "docs/proof/technical_agent_run/summary.md"
+          "mcp_server/jde_mcp_server/technical_gate.py"
         ],
         "validation_date": null,
         "approver": null,

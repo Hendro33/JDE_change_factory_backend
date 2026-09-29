@@ -16,9 +16,55 @@ from __future__ import annotations
 from jde_mcp_server import binding
 
 
-def read_functional(record: dict) -> dict:
+def read_item(record: dict, item: dict, actor_user_id=None) -> dict:
+    """One configuration item's current state in DEV: {known, value, source}
+    or {known: False, reason}. Never guessed."""
+    from jde_mcp_server import config_items
+
     from . import live
 
+    try:
+        if item["kind"] == "processing_option":
+            v = live.read_processing_option(record["company_id"], record["story_id"], actor_user_id, item["application"],
+                                            item["version"], item["option"])
+            if not v.found:
+                return {"known": False, "reason": v.detail}
+            return {"known": True, "value": v.value, "source": f"live AIS read ({v.observation_id})"}
+        if item["kind"] in config_items.ROW_KINDS:
+            row = live.read_row(record["company_id"], record["story_id"], actor_user_id, item["table"], item["key"],
+                                config_items.read_fields(item))
+            return {"known": True, "value": {"exists": row.exists, "values": row.values if row.exists else {}},
+                    "source": f"live AIS read ({row.observation_id})"}
+        return {"known": False, "reason": "AIS does not expose a batch version's saved data selection or sequencing; "
+                                          "the person applying it states it, with evidence"}
+    except live.LiveUnavailable as exc:
+        return {"known": False, "reason": str(exc)}
+    except Exception as exc:  # noqa: BLE001 -- recorded as unknown, never guessed
+        return {"known": False, "reason": f"the live read failed: {exc}"}
+
+
+def read_change_set(record: dict) -> dict:
+    from jde_mcp_server import config_items
+
+    items = {}
+    for item in config_items.items_of(record):
+        items[item["id"]] = read_item(record, item)
+    known = all(i["known"] for i in items.values())
+    return {"known": known, "value": {k: i["value"] for k, i in items.items() if i["known"]}, "items": items,
+            "target": ", ".join(config_items.target(i) for i in config_items.items_of(record)),
+            "source": "live AIS reads per item" if known else "partly unknown: "
+            + "; ".join(f"{k}: {i['reason']}" for k, i in items.items() if not i["known"])[:900],
+            **({} if known else {"reason": "; ".join(f"{k}: {i['reason']}" for k, i in items.items()
+                                                      if not i["known"])[:900]})}
+
+
+def read_functional(record: dict) -> dict:
+    from jde_mcp_server import config_items
+
+    from . import live
+
+    if config_items.is_change_set(record):
+        return read_change_set(record)
     op = record.get("operation") or {}
     target = f"{op.get('application')}/{op.get('version')}/{op.get('option')}"
     try:

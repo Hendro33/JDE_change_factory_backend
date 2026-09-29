@@ -107,9 +107,10 @@ def test_agents_list_reflects_the_real_md_files(client):
     assert architect["runtime"]["driver"] == "architecture_driver"
     assert architect["runtime"]["maxTurns"] == 40
 
-    # functional-agent has no api_service driver wiring today -- honest, not fabricated.
+    # The Functional Agent runs in the Architect's solutioning run.
     functional = next(a for a in r.json() if a["name"] == "functional-agent")
-    assert functional["runtime"] is None
+    assert functional["runtime"]["driver"] == "architecture_driver"
+    assert "mcp__jde-change-factory__propose_change" in functional["declaredTools"]
 
 
 def test_agent_health_starts_empty(client):

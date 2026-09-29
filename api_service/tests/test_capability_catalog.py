@@ -53,7 +53,7 @@ def test_get_single_capability_exposes_separate_technical_and_policy_fields(clie
     # gating logic is enforced but an automated JDE write is not validated,
     # so a person applies the value and Jade reads it back live; that
     # nuance must survive to the API.
-    assert "gating logic" in validation["technicalValidation"]
+    assert "configuration change set" in validation["technicalValidation"]
     assert "authorised person applies" in validation["technicalValidation"]
     assert "read" in validation["technicalValidation"] and "live" in validation["technicalValidation"]
     assert validation["policyRestriction"]

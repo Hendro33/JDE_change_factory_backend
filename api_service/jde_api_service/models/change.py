@@ -8,7 +8,7 @@ None -- this assembler never fabricates a stage that hasn't happened.
 
 from __future__ import annotations
 
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 
 from .base import ApiModel
 from .lifecycle import Lifecycle
@@ -158,6 +158,33 @@ class ExecutionStatus(ApiModel):
     verification: dict = {}
 
 
+class ConfigurationItemView(ApiModel):
+    """One item of an exact change (a configuration change set, or the one
+    item a single processing-option change is)."""
+
+    id: str
+    capability_id: Optional[str] = None
+    kind: str
+    label: str
+    target: str
+    action: Optional[str] = None
+    table: Optional[str] = None
+    key: dict[str, str] = {}
+    values: dict[str, str] = {}
+    application: Optional[str] = None
+    version: Optional[str] = None
+    option: Optional[str] = None
+    value: Optional[str] = None
+    specification: Optional[str] = None
+    purpose: str = ""
+    # What JDE held when the approval was bound (read live), or why unknown.
+    before: Optional[Any] = None
+    before_known: bool = False
+    before_note: str = ""
+    # The recorded delivery of this item (who, what was read, how), or None.
+    applied: Optional[dict] = None
+
+
 class ExactChange(ApiModel):
     tool: str
     application: str
@@ -168,6 +195,9 @@ class ExactChange(ApiModel):
     current_value: str = ""
     current_value_note: str = ""
     proposed_value: str = ""
+    # Every item of the change, in order (one for a single processing option).
+    items: list[ConfigurationItemView] = []
+    summary: str = ""
     environment: str = "DEV"
     test_orchestration: str = ""
     # Functional Agent design update Section 4: what capability this
@@ -206,6 +236,13 @@ class RecordAppliedInput(ApiModel):
     evidence_reference: str = ""
     note: str = ""
     stated_value: Optional[str] = None
+    # A configuration change set is recorded item by item (the next item when
+    # omitted). stated_values: the field values read in JDE for a row item
+    # that cannot be read live; confirmed_as_specified: a batch version's data
+    # selection / sequencing was entered exactly as specified.
+    item_id: Optional[str] = None
+    stated_values: Optional[dict[str, str]] = None
+    confirmed_as_specified: bool = False
 
 
 class RecordTestResultInput(ApiModel):

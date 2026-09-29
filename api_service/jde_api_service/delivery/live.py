@@ -82,6 +82,56 @@ def read_processing_option(company_id: str, story_id: str, actor_user_id: Option
                      f"read live from {application}|{version} option {option} ({obs})")
 
 
+@dataclass
+class RowValue:
+    exists: bool
+    values: dict[str, Optional[str]]
+    observation_id: Optional[str]
+    detail: str
+
+
+def read_row(company_id: str, story_id: str, actor_user_id: Optional[str], table: str, key: dict[str, str],
+             fields: list[str]) -> RowValue:
+    """One configuration row -- identified by its key fields -- read LIVE
+    through the customer's approved reads: a table browse of that table (its
+    key fields approved as filter fields, the value fields as fields), or,
+    for a user defined code, the approved UDC read of its product code/type.
+    Raises LiveUnavailable when no approved read covers it; never guesses."""
+    grant, reason = discovery_service.grant_for_story(story_id, company_id, agent_run_id=None,
+                                                      actor_user_id=actor_user_id, purpose="delivery_verification")
+    if grant is None:
+        raise LiveUnavailable(f"the JD Edwards connection cannot read it: {reason}")
+    profile = discovery_service.profile_service.load(company_id)
+    limit = min(profile["config"].limits.max_records, capabilities.HARD_MAX_RECORDS) if profile else 1
+    wanted = sorted(set(fields) | set(key))
+    attempts = [("table_browse", table, [{"field": k, "op": "=", "value": v} for k, v in key.items()])]
+    if table == "F0005":
+        attempts.append(("udc_values", f"{key.get('DRSY', '')}/{key.get('DRRT', '')}",
+                         [{"field": "DRKY", "op": "=", "value": key.get("DRKY", "")}]))
+    reasons = []
+    for capability_id, target, filters in attempts:
+        raw: list[dict] = []
+        try:
+            evidence = discovery_service.execute_read(grant, capability_id, target, wanted, filters, max(1, limit),
+                                                      raw_out=raw)
+        except discovery_service.DiscoveryBlocked as exc:
+            reasons.append(f"{capability_id}: {exc}")
+            continue
+        except discovery_service.DiscoveryFailed as exc:
+            raise LiveUnavailable(f"the live read failed: {exc}") from None
+        obs = evidence.get("observation_id")
+        rows = [r for r in raw if all(str(r.get(k, "")).strip() == str(v).strip() for k, v in key.items())]
+        if len(rows) > 1:
+            raise LiveUnavailable(f"{table} returned {len(rows)} rows for key {key}; the key does not identify one row")
+        if not rows:
+            return RowValue(False, {}, obs, f"no {table} row with key {key} ({obs})")
+        row = rows[0]
+        return RowValue(True, {f: (None if row.get(f) is None else str(row.get(f))) for f in fields}, obs,
+                        f"read live from {table} ({obs})")
+    raise LiveUnavailable("the JD Edwards connection cannot read it: no approved read covers this row ("
+                          + "; ".join(reasons) + ")")
+
+
 def run_orchestration(company_id: str, name: str, payload: dict) -> dict[str, Any]:
     """Call one orchestration on the customer's AIS and return its answer.
     Raises LiveUnavailable (nothing sent) or LiveCallFailed."""

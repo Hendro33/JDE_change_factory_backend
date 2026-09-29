@@ -181,7 +181,9 @@ def test_each_run_gets_its_own_key_model_and_config_dir_without_touching_os_envi
         assert s["env"]["CLAUDE_CODE_OAUTH_TOKEN"] == "" and s["env"]["SOME_HOST_SESSION_TOKEN_FILE"] == ""
         assert s["env"]["ANTHROPIC_AUTH_TOKEN"] == "" and s["env"]["JDE_CREDENTIAL_KEY"] == ""
         assert s["env"]["ANTHROPIC_BASE_URL"] == "https://api.anthropic.com"
-        assert "--setting-sources=project" in s["cmd"]
+        # No settings files, hooks, CLAUDE.md or .mcp.json are loaded: the tools are in-process.
+        sources = [c for c in s["cmd"] if c.startswith("--setting-sources")]
+        assert sources == ["--setting-sources="], sources
         # Subagents run inside the run (the CLI defaults to background agents otherwise).
         assert s["env"]["CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"] == "1"
         assert not os.path.exists(s["env"]["CLAUDE_CONFIG_DIR"])  # removed after the run

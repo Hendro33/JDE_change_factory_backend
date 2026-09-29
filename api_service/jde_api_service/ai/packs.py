@@ -39,11 +39,22 @@ KNOWLEDGE_READ = "mcp__jade-knowledge__read_document"
 KNOWLEDGE_TOOLS = (KNOWLEDGE_LIST, KNOWLEDGE_READ)
 REQUEST_DOCUMENTS = "request_documents"  # knowledge ref: the documents attached to the request being worked on
 
+_DISCOVERY_TOOLS = (
+    "mcp__jade-discovery__list_discovery_capabilities", "mcp__jade-discovery__discovery_read",
+    "mcp__jade-discovery__list_baseline_artifacts", "mcp__jade-discovery__read_baseline_artifact",
+    "mcp__jade-discovery__get_process_context",
+)
 _ARCHITECT_TOOLS = (
-    "mcp__jde-change-factory__get_approved_story", "mcp__jade-discovery__list_discovery_capabilities",
-    "mcp__jade-discovery__discovery_read", "mcp__jade-discovery__list_baseline_artifacts",
-    "mcp__jade-discovery__read_baseline_artifact", "mcp__jade-discovery__get_process_context",
+    "mcp__jde-change-factory__get_approved_story", *_DISCOVERY_TOOLS,
+    "mcp__jde-change-factory__get_capability_status", "mcp__jde-change-factory__get_engagement_scope",
     "mcp__jde-change-factory__resolve_without_change", "mcp__jde-change-factory__propose_change",
+)
+# The configuration specialist: researches DEV and the customer's standards,
+# and proposes the exact configuration change set. No terminal "resolve".
+_FUNCTIONAL_TOOLS = (
+    "mcp__jde-change-factory__get_approved_story", *_DISCOVERY_TOOLS,
+    "mcp__jde-change-factory__get_capability_status", "mcp__jde-change-factory__get_engagement_scope",
+    "mcp__jde-change-factory__propose_change",
 )
 
 # role -> label and the MOST a pack may request (reviewed code, not data).
@@ -53,6 +64,7 @@ ROLES: dict[str, dict[str, Any]] = {
     "check-agent": {"label": "Requirements (Check) Agent",
                     "ceiling": ("mcp__jde-change-factory__propose_to_backlog", *KNOWLEDGE_TOOLS)},
     "architect": {"label": "Architect Agent", "ceiling": (*_ARCHITECT_TOOLS, *KNOWLEDGE_TOOLS)},
+    "functional-agent": {"label": "Functional Agent", "ceiling": (*_FUNCTIONAL_TOOLS, *KNOWLEDGE_TOOLS)},
     "technical-agent": {"label": "Technical Agent", "ceiling": None},  # filled from technical/tools.py
     "process-analyst": {"label": "Process Analyst", "ceiling": None},  # filled from process/agent.py
 }

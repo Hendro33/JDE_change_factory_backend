@@ -51,8 +51,24 @@ def _iso(ts: float) -> str:
 # Targets and before-state readers, per kind of change
 # ---------------------------------------------------------------------
 def functional_target(record: dict) -> str:
-    op = record.get("operation") or {}
-    return f"processing_option_values:{str(op.get('application', '')).upper()}|{str(op.get('version', '')).upper()}"
+    targets = functional_targets(record)
+    return targets[0] if targets else ""
+
+
+def functional_targets(record: dict) -> list[str]:
+    """What each item of a functional change depends on, in the discovery
+    read terms a refreshed observation reports ("capability:TARGET")."""
+    from .config_items import items_of
+
+    out: list[str] = []
+    for it in items_of(record):
+        if it["kind"] == "processing_option":
+            out.append(f"processing_option_values:{it['application']}|{it['version']}")
+        elif it["kind"] == "udc_value":
+            out += [f"udc_values:{it['key']['DRSY']}/{it['key']['DRRT']}", "table_browse:F0005"]
+        elif it["kind"] == "setup_row":
+            out.append(f"table_browse:{it['table']}")
+    return sorted(set(out))
 
 
 def _no_reader(kind: str) -> Callable[[dict], dict]:
@@ -125,7 +141,7 @@ def snapshot(record: dict, *, extra_dependencies: Optional[dict] = None) -> dict
                           for a in (*manifest.get("artifacts", []), *manifest.get("documents", []))],
             "design_approval": handoff.get("design_approval"),
         }
-    depends_on = {"targets": [functional_target(record)] if _kind(record) == "functional"
+    depends_on = {"targets": functional_targets(record) if _kind(record) == "functional"
                   else sorted(set(technical_targets(record)) | set(record.get("depends_on_targets") or [])),
                   "artifacts": sorted({a["artifact_id"] for a in (design or {}).get("artifacts", [])}
                                       | set(record.get("depends_on_artifacts") or []))}
@@ -133,6 +149,7 @@ def snapshot(record: dict, *, extra_dependencies: Optional[dict] = None) -> dict
         depends_on[key] = sorted(set(depends_on.get(key, [])) | set(values))
     reader = BEFORE_READERS.get(_kind(record))
     before = reader(record) if reader else {"known": False, "reason": "no before-state reader for this kind"}
+    _check_item_actions(record, before)
     now = time.time()
     return {"design": design, "depends_on": depends_on, "before_state": before, "bound_at": now,
             "bound_at_iso": _iso(now),
@@ -157,6 +174,28 @@ def record_invalidation(change_id: str, *, kind: str, detail: str, source: str) 
         record.setdefault("invalidations", []).append(entry)
         approval._save(change_id, record)
         return entry
+
+
+def _check_item_actions(record: dict, before: dict) -> None:
+    """A change set's "add" must not exist yet and its "update" must exist,
+    where Jade could read the row -- refused at approval, not discovered
+    when the person applies it."""
+    from . import config_items
+
+    if not config_items.is_change_set(record):
+        return
+    wrong = []
+    for item in config_items.items_of(record):
+        state = (before.get("items") or {}).get(item["id"]) or {}
+        if item["kind"] not in config_items.ROW_KINDS or not state.get("known"):
+            continue
+        exists = (state.get("value") or {}).get("exists")
+        if item["action"] == "add" and exists:
+            wrong.append(f"{item['id']} adds {config_items.label(item)} but that row already exists in DEV")
+        if item["action"] == "update" and not exists:
+            wrong.append(f"{item['id']} updates {config_items.label(item)} but that row does not exist in DEV")
+    if wrong:
+        raise BindingInvalid("; ".join(wrong) + " -- the change set does not match DEV; propose it again")
 
 
 # ---------------------------------------------------------------------

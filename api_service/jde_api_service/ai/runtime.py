@@ -43,6 +43,7 @@ from typing import Any, AsyncIterator, Callable, Optional
 from ..persistence.db import connection as db
 from ..services import agent_runtime
 from . import connection as ai_connection
+from . import project_tools
 from . import packs as ai_packs
 from .connection import AiNotConfigured, ResolvedConnection
 
@@ -162,9 +163,11 @@ class ClaudeAgentRuntime:
             permission_mode=spec.permission_mode, allowed_tools=spec.allowed_tools,
             disallowed_tools=spec.disallowed_tools, max_turns=spec.max_turns, max_budget_usd=spec.max_budget_usd,
             model=spec.model, fallback_model=None, agents=agents or None, mcp_servers=dict(spec.tool_servers),
-            # Project settings only (the reviewed hooks in .claude/settings.json);
-            # never the host user's settings or a local override.
-            setting_sources=["project"], **kwargs)
+            # No filesystem settings at all: every tool server is passed in-process
+            # (never a .mcp.json process started with whatever python3 is on the
+            # PATH), and neither the host user's nor the repository's settings,
+            # hooks or CLAUDE.md reach the agents.
+            setting_sources=[], **kwargs)
 
     @staticmethod
     def translate(message) -> RuntimeEvent:
@@ -287,6 +290,11 @@ class AgentRun:
         servers = dict(tool_servers or {})
         if any(t in requested for t in ai_packs.KNOWLEDGE_TOOLS):
             servers["jade-knowledge"] = self._knowledge_server()
+        # The governed hand-off tools run in-process, bound to this run's story.
+        if any(t.startswith(f"mcp__{project_tools.SERVER_NAME}__") for t in allowed) and \
+                project_tools.SERVER_NAME not in servers:
+            servers[project_tools.SERVER_NAME] = project_tools.ProjectTools(
+                company_id=self.company_id, story_id=self.story_id).sdk_server()
         agents = [AgentSpec(name=r, description=self.packs[r].content["description"], prompt=self.packs[r].prompt(),
                             tools=[t for t in self.packs[r].effective_tools(documents_allowed=self.documents_allowed)
                                    if t in driver_allowed],
