@@ -9,7 +9,7 @@ name: CI
 on:
   pull_request:
   push:
-    branches: [main, production-ready, "claude/**"]
+    branches: [main, production-ready, dev, "claude/**"]
   workflow_dispatch:
 
 permissions:
