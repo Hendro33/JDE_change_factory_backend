@@ -32,8 +32,8 @@ from typing import Literal, Optional
 
 from .base import ApiModel
 
-Role = Literal["domain_owner", "product_manager", "admin", "dashboard_viewer", "cnc_operator"]
-ALL_ROLES: tuple[Role, ...] = ("domain_owner", "product_manager", "admin", "dashboard_viewer", "cnc_operator")
+Role = Literal["domain_owner", "product_manager", "admin", "dashboard_viewer", "cnc_operator", "test_manager"]
+ALL_ROLES: tuple[Role, ...] = ("domain_owner", "product_manager", "admin", "dashboard_viewer", "cnc_operator", "test_manager")
 # The CNC operator records a package deployment/activation that a human CNC
 # performed. It is never granted by default: the bootstrap Admin does not
 # hold it, and it must be assigned to a named person explicitly.

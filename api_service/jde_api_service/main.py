@@ -35,6 +35,7 @@ from .routers import (
     session,
     process,
     technical,
+    validation,
 )
 from .persistence.db import db_path, ensure_schema
 from .persistence.revisions import RevisionConflict, RevisionRequired
@@ -118,7 +119,11 @@ async def _lifespan(app: FastAPI):
     if _attachments.cleanup_abandoned():
         logger.info("Deleted abandoned (never submitted) request uploads")
     ensure_bootstrap_admin()
+    from .validation.worker import Worker
+    worker = Worker().start() if os.environ.get("JDE_VALIDATION_WORKER", "true").lower() == "true" else None
     yield
+    if worker:
+        worker.close()
     from jde_mcp_server import docstore as _docstore
 
     _docstore.close_pools()
@@ -181,6 +186,7 @@ app.include_router(jde_execution.router)
 app.include_router(technical.router)
 app.include_router(process.router)
 app.include_router(ai.router)
+app.include_router(validation.router)
 
 
 @app.exception_handler(RevisionConflict)

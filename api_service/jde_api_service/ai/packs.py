@@ -59,6 +59,12 @@ _FUNCTIONAL_TOOLS = (
 
 # role -> label and the MOST a pack may request (reviewed code, not data).
 ROLES: dict[str, dict[str, Any]] = {
+    "test-designer": {"label": "Test Design Agent", "ceiling": KNOWLEDGE_TOOLS},
+    "regression-analyst": {"label": "Regression Scope Agent", "ceiling": KNOWLEDGE_TOOLS},
+    "test-executor": {"label": "Test Execution Agent", "ceiling": KNOWLEDGE_TOOLS},
+    "result-assessor": {"label": "Result Assessment Agent", "ceiling": KNOWLEDGE_TOOLS},
+    "validation-summariser": {"label": "Validation Summary Agent", "ceiling": KNOWLEDGE_TOOLS},
+
     "receive-agent": {"label": "Receive Agent", "ceiling": KNOWLEDGE_TOOLS},
     "improve-agent": {"label": "Improve Agent", "ceiling": KNOWLEDGE_TOOLS},
     "check-agent": {"label": "Requirements (Check) Agent",

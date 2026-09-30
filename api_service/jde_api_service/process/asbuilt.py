@@ -193,6 +193,7 @@ def gather(company_id: str, story_id: str, change) -> dict:
     tech = _technical(company_id, story_id) if route in TECHNICAL_ROUTES else None
     func = _functional(company_id, story_id, change) if route not in TECHNICAL_ROUTES else None
     us = change.user_story.model_dump(mode="json") if change and change.user_story else None
+    from ..validation.service import story_handoff
     return {
         "story": {"story_id": story_id, "title": change.title if change else story_id,
                   "business_domain_id": change.business_domain_id if change else None,
@@ -204,6 +205,7 @@ def gather(company_id: str, story_id: str, change) -> dict:
                     # against (the story lifecycle treats the decision as not applicable).
                     "framework_active": _framework_active(company_id)},
         "story_revision": _story_revision(company_id, story_id),
+        "validation": story_handoff(company_id, story_id),
         "design": _design(company_id, story_id, change), "route": route,
         "implementation": {"technical": tech, "functional": func},
     }
@@ -286,6 +288,9 @@ def _checkpoints(src: dict) -> list[dict]:
               func["operation"].get("tool") == "configuration_change_set" else
               f"{rb['value']!r} ({rb['source']})" if rb else "not recorded")),
         ]
+    cps += [("validation_" + v["plan_id"], "Validation release decision: " + v["title"], v["release_current"],
+             "Current Application Manager approval" if v["release_current"] else "Review current validation and release handoff")
+            for v in src.get("validation", [])]
     return [{"id": i, "label": label, "complete": bool(ok), "detail": detail} for i, label, ok, detail in cps]
 
 
@@ -362,7 +367,7 @@ def build(company_id: str, story_id: str, change) -> dict:
     checkpoints = _checkpoints(src)
     dev, lim = _deviations_and_limits(src)
     content = {"story": src["story"], "story_revision": src["story_revision"], "process": src["process"], "design": src["design"], "route": src["route"],
-               "implementation": src["implementation"], "checkpoints": checkpoints,
+               "implementation": src["implementation"], "validation": src.get("validation", []), "checkpoints": checkpoints,
                "all_checkpoints_complete": all(c["complete"] for c in checkpoints),
                "deviations": dev, "limitations": lim,
                "delivery_mode": "recorded"}
@@ -565,6 +570,9 @@ def finalise(company_id: str, story_id: str, version: int, change, *, actor: str
         raise AsBuiltRefused("required delivery checkpoints are not complete: " + "; ".join(missing))
     now = _now()
     with connection(immediate=True) as conn:
+        from ..validation.service import story_handoff
+        if any(not v["release_current"] for v in story_handoff(company_id, story_id)):
+            raise AsBuiltRefused("Validation or release authority changed; review the current validation handoff")
         cur = conn.execute("UPDATE as_built_records SET status = 'final', finalised_by = ?, finalised_at = ? "
                            "WHERE company_id = ? AND story_id = ? AND version = ? AND status = 'draft'",
                            (actor, now, company_id, story_id, version))

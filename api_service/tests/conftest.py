@@ -50,6 +50,7 @@ def isolated_dirs(tmp_path, monkeypatch):
     service's own data (change requests, customer links, the SQLite
     database) and mcp_server's stores (backlog, changes, evidence) --
     no test can see another test's or a developer's real local data."""
+    monkeypatch.setenv("JDE_VALIDATION_WORKER", "false")
     import dataclasses
 
     from jde_api_service.config import settings as api_settings
