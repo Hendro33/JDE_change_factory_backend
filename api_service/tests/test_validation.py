@@ -268,3 +268,10 @@ def test_design_agent_creates_reviewable_drafts_not_passed_tests(client,setup,mo
     scenario=s.get('scenarios',finished['result']['result']['created_scenario_ids'][0],'vdb')
     assert s.version(scenario)['status']=='draft'
     assert s.rows('runs','vdb')==[]
+
+def test_blank_assertions_cannot_create_vacuous_passes():
+    from pydantic import ValidationError
+    from jde_api_service.validation.models import Step
+    for assertion,expected in [('contains',''),('contains','   '),('equals',None)]:
+        with pytest.raises(ValidationError):
+            Step(id='s',action='Check',expected='A real value',assertion=assertion,expected_value=expected)

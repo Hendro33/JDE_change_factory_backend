@@ -87,6 +87,14 @@ class Step(Input):
     mutates: bool = False
     wait_seconds: int = Field(default=0, ge=0, le=30)
 
+    @model_validator(mode="after")
+    def meaningful_assertion(self):
+        if self.assertion == "contains" and (self.expected_value is None or not str(self.expected_value).strip()):
+            raise ValueError("A contains assertion needs a non-empty expected value")
+        if self.assertion == "equals" and self.expected_value is None:
+            raise ValueError("An equality assertion needs an explicit expected value")
+        return self
+
 
 class Scenario(Input):
     revision: int = 0
