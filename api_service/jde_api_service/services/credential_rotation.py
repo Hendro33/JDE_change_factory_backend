@@ -40,4 +40,15 @@ def reencrypt_all() -> dict[str, int]:
                 conn.execute(f"UPDATE {table} SET {secret_col} = ? WHERE {key_col} = ?",  # noqa: S608
                              (credential_crypto.encrypt(plaintext), row["k"]))
                 rewritten[table] = rewritten.get(table, 0) + 1
+    from ..validation import service as validation
+    with connection(immediate=True):
+        for env in validation.store("environments").list_all():
+            secret = env.get("credential")
+            if secret and credential_crypto.needs_reencryption(secret):
+                try:
+                    env["credential"] = credential_crypto.encrypt(credential_crypto.decrypt(secret))
+                except credential_crypto.CredentialUnreadable:
+                    continue
+                validation.store("environments").put(env["id"], env)
+                rewritten["validation_environments"] = rewritten.get("validation_environments", 0) + 1
     return rewritten

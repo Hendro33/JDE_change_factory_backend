@@ -176,6 +176,10 @@ def _active_work(locations: dict[str, str]) -> list[str]:
         for kind in (execution.WRITE, execution.TEST):
             if ((rec.get("execution") or {}).get(kind) or {}).get("state") == "in_progress":
                 active.append(f"JDE {kind} attempt on {rec['change_id']}")
+    from ..validation import service as validation
+    for kind in ("runs", "agent_jobs"):
+        active.extend("validation " + r["id"] for r in validation.store(kind).list_all()
+                      if r["status"] in ("running", "preflight", "stop_requested"))
     return active
 
 

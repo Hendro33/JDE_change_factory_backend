@@ -14,6 +14,12 @@ from .company_settings_service import CompanySettingsService, StoredSetting
 
 KEY = "agent_settings"
 AGENT_LABELS = {
+    "test-designer": "Test Design Agent",
+    "regression-analyst": "Regression Scope Agent",
+    "test-executor": "Test Execution Agent",
+    "result-assessor": "Result Assessment Agent",
+    "validation-summariser": "Validation Summary Agent",
+
     "receive-agent": "Receive Agent",
     "improve-agent": "Improve Agent",
     "check-agent": "Requirements Agent",

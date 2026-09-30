@@ -18,11 +18,23 @@ from typing import Optional
 from ..models.base import ApiModel
 
 GROUPS = {
+    "test-designer": "Validation",
+    "regression-analyst": "Validation",
+    "test-executor": "Validation",
+    "result-assessor": "Validation",
+    "validation-summariser": "Validation",
+
     "receive-agent": "Requirements", "improve-agent": "Requirements", "check-agent": "Requirements",
     "process-analyst": "Requirements", "architect": "Solution", "functional-agent": "Delivery",
     "technical-agent": "Delivery",
 }
 PURPOSE = {
+    "test-designer": "Proposes traceable acceptance, negative and boundary scenarios as reviewable drafts.",
+    "regression-analyst": "Recommends approved reusable scenarios and identifies regression coverage gaps.",
+    "test-executor": "Identifies controls for approved browser test steps within enforced environment policy.",
+    "result-assessor": "Assesses recorded observations and identifies ambiguity or missing evidence.",
+    "validation-summariser": "Summarises coverage and residual risk for Test Manager review.",
+
     "receive-agent": "Turns every incoming request into Jade's standard requirement shape.",
     "improve-agent": "Adds business context, acceptance criteria, rules, assumptions and a test script.",
     "check-agent": "Checks the story is clear, complete and testable before it goes to review.",

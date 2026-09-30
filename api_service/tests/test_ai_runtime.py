@@ -406,7 +406,7 @@ def test_activity_overrides_are_validated_and_only_supported_models_are_offered(
     _configure_via_api(client)
     view = client.get("/admin/ai/connection", headers=headers("vdb")).json()
     assert view["runtime"] == "claude-agent-sdk" and {a["id"] for a in view["activities"]} == {
-        "functional_analysis", "verification", "architecture", "technical_build"}
+        "functional_analysis", "verification", "architecture", "technical_build", "validation"}
     body = {"model": "claude-sonnet-5", "enabled": True, "documentPolicy": "metadata_only", "limits": {},
             "expectedRevision": view["revision"]}
     for bad in ({"architecture": "gpt-5"}, {"planning": "claude-opus-5"}):

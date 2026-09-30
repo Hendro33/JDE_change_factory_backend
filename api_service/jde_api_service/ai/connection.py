@@ -73,6 +73,7 @@ EVALUATION = {m: "runtime verified with a test provider; not yet evaluated again
 
 # Agent activities (what the customer assigns models to) -> Jade's agent roles.
 ACTIVITIES: dict[str, dict[str, Any]] = {
+    "validation": {"label": "Validation", "roles": ('test-designer', 'regression-analyst', 'test-executor', 'result-assessor', 'validation-summariser')},
     "functional_analysis": {"label": "Functional Analysis",
                             "roles": ("receive-agent", "improve-agent", "process-analyst")},
     "verification": {"label": "Verification", "roles": ("check-agent",),
