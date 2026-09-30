@@ -275,3 +275,20 @@ def test_blank_assertions_cannot_create_vacuous_passes():
     for assertion,expected in [('contains',''),('contains','   '),('equals',None)]:
         with pytest.raises(ValidationError):
             Step(id='s',action='Check',expected='A real value',assertion=assertion,expected_value=expected)
+
+def test_withdrawn_plan_releases_story_handoff_and_refuses_execution(client,setup):
+    env,scenario,plan,dep,_=setup
+    assert s.story_handoff('vdb','ST1') and not s.story_handoff('vdb','ST1')[0]['release_current']
+    assert client.post('/validation/plans/'+plan['id']+'/retire',headers=H,json={'revision':plan['revision']}).status_code==422
+    run=start(client,setup)
+    active=client.post('/validation/plans/'+plan['id']+'/retire',headers=H,json={'revision':plan['revision'],'note':'Raised in error'})
+    assert active.status_code==409
+    post(client,'/runs/'+run['id']+'/stop',{'revision':run['revision']})
+    retired=post(client,'/plans/'+plan['id']+'/retire',{'revision':plan['revision'],'note':'Raised in error'})
+    assert retired['retired'] and retired['versions'] == plan['versions']
+    assert s.story_handoff('vdb','ST1')==[]
+    assert all(x['plan_id']!=plan['id'] for x in client.get('/validation',headers=H).json()['summaries'])
+    refused=client.post('/validation/runs',headers=H,json={'plan_id':plan['id'],'version':1,'environment_id':env['id'],'deployment_id':dep['id'],'idempotency_key':'after-withdrawal'})
+    assert refused.status_code==409
+    revived=client.put('/validation/plans/'+plan['id'],headers=H,json={**s.version(plan)['body'],'revision':retired['revision']}).json()
+    assert not revived['retired'] and len(s.story_handoff('vdb','ST1'))==1

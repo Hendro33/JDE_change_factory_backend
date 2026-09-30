@@ -171,6 +171,7 @@ def approve(ctx, kind, key, payload):
         if policy(ctx.customer_id)["require_independent_review"] and v["created_by"] == ctx.identity.id:
             raise HTTPException(403, "A different Test Manager must approve this draft")
         if kind == "plans":
+            assert_active_plan(record)
             validate_plan(ctx.customer_id, m.Plan(**v["body"]))
             if v["source_hash"] != current_source_hash(ctx.customer_id, v["body"]["story_ids"]):
                 raise HTTPException(409, "Source changed. Save and review a new plan version before approval")
@@ -192,6 +193,31 @@ def retire_scenario(ctx, key, payload):
         store("scenarios").put(key, record)
         audit(ctx.customer_id, ctx.identity.id, "scenario_retired", key, payload.note)
         return record
+
+
+def retire_plan(ctx, key, payload):
+    """Withdraws a plan that will not be executed, so it no longer holds its stories' as-built record.
+
+    Versions, runs, evidence and decisions are kept. Saving a new draft version reactivates the plan.
+    """
+    with connection(immediate=True):
+        require_current_role(ctx, "test_manager")
+        record = get("plans", key, ctx.customer_id)
+        check_revision(record, payload.revision)
+        if not payload.note:
+            raise HTTPException(422, "Give the reason for withdrawing this plan")
+        if any(r["plan_id"] == key and r["status"] in ACTIVE for r in rows("runs", ctx.customer_id)):
+            raise HTTPException(409, "Stop the plan's active runs before withdrawing it")
+        record.update(retired=True, retirement={"actor": ctx.identity.id, "at": now(), "note": payload.note},
+                      revision=record["revision"] + 1)
+        store("plans").put(key, record)
+        audit(ctx.customer_id, ctx.identity.id, "plan_retired", key, payload.note)
+        return record
+
+
+def assert_active_plan(record):
+    if record.get("retired"):
+        raise HTTPException(409, "This plan has been withdrawn. Save a new draft version to use it again")
 
 
 def validate_plan(company, payload):
@@ -233,6 +259,7 @@ def save_plan(ctx, payload, key=None):
                                 "source_hash": digest(src), "hash": digest([body, snapshots, src]),
                                 "created_by": ctx.identity.id, "created_at": now()})
         old["revision"] += 1
+        old["retired"] = False
         store("plans").put(old["id"], old)
         audit(ctx.customer_id, ctx.identity.id, "plan_version_created", old["id"])
         return old
@@ -273,6 +300,7 @@ def start(ctx, payload):
                 raise HTTPException(409, "Operation ID was already used for another request")
             return existing
         plan_record = get("plans", payload.plan_id, ctx.customer_id)
+        assert_active_plan(plan_record)
         p = version(plan_record, payload.version)
         if payload.version != len(plan_record["versions"]):
             raise HTTPException(409, "Use the current approved plan version")
@@ -590,6 +618,7 @@ def signoff(ctx, plan_id, payload):
 def release(ctx, payload):
     with connection(immediate=True):
         require_current_role(ctx, "product_manager")
+        assert_active_plan(get("plans", payload.plan_id, ctx.customer_id))
         s = summary(ctx.customer_id, payload.plan_id, payload.version)
         if s["coverage_hash"] != payload.coverage_hash:
             raise HTTPException(409, "Validation changed. Review the current recommendation")
@@ -611,7 +640,9 @@ def approve_production(ctx, payload):
         require_current_role(ctx, "product_manager")
         env = get("environments", payload.environment_id, ctx.customer_id)
         dep = get("deployments", payload.deployment_id, ctx.customer_id)
-        plan = version(get("plans", payload.plan_id, ctx.customer_id), payload.version)
+        plan_record = get("plans", payload.plan_id, ctx.customer_id)
+        assert_active_plan(plan_record)
+        plan = version(plan_record, payload.version)
         assert_current_plan(ctx.customer_id, plan)
         if env["stage"] != "PROD" or dep["environment_id"] != env["id"] or env["id"] not in plan["body"]["environment_ids"]:
             raise HTTPException(422, "Select the production deployment and approved smoke plan")
@@ -630,7 +661,7 @@ def dashboard(ctx):
             "environments": [public_environment(e) for e in rows("environments", ctx.customer_id)],
             "deployments": rows("deployments", ctx.customer_id), "defects": rows("defects", ctx.customer_id),
             "releases": rows("releases", ctx.customer_id), "production_approvals": rows("production_approvals", ctx.customer_id),
-            "summaries": [summary(ctx.customer_id, p["id"]) for p in plans],
+            "summaries": [summary(ctx.customer_id, p["id"]) for p in plans if not p.get("retired")],
             "agent_jobs": rows("agent_jobs", ctx.customer_id),
             "permissions": {"manage": "test_manager" in ctx.roles, "release": "product_manager" in ctx.roles,
                             "admin": "admin" in ctx.roles}}
@@ -641,7 +672,7 @@ def story_handoff(company, story_id):
     handoffs = []
     for plan in rows("plans", company):
         v = version(plan)
-        if story_id not in v["body"]["story_ids"]:
+        if plan.get("retired") or story_id not in v["body"]["story_ids"]:
             continue
         result = summary(company, plan["id"])
         decisions = [r for r in rows("releases", company) if r["plan_id"] == plan["id"]]

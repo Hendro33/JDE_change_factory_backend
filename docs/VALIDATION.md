@@ -31,7 +31,7 @@ Failed assertions can create internal defects. Failed retests create new linked 
 
 Dashboard filters cover plan/story/domain/process text, connected application, environment, owner/creator and plan-version date. Customer scope is selected by the existing global customer selector. Reports export a ZIP containing a readable index, full versioned metadata and SHA-256-verified evidence. Evidence export remains limited to authorised users.
 
-When a story has a validation plan, its existing as-built record includes the validation handoff and cannot be finalised without a current Application Manager release approval. Stories without a new validation plan retain their existing workflow.
+When a story has a validation plan, its existing as-built record includes the validation handoff and cannot be finalised without a current Application Manager release approval. Stories without a new validation plan retain their existing workflow. A Test Manager can withdraw a plan that was raised in error or is no longer needed (Plans → Withdraw this plan, with a reason, once no run of it is active). Its versions, runs, evidence and decisions are kept, but it no longer holds its stories' as-built records, cannot be approved, run or released, and leaves the dashboard; saving a new draft version reactivates it.
 
 ## Persistence and execution
 

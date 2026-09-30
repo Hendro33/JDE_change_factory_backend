@@ -129,6 +129,11 @@ def approve_plan(key: str, payload: m.Revision, ctx: AuthContext = Depends(manag
     return s.approve(ctx, "plans", key, payload)
 
 
+@router.post("/plans/{key}/retire")
+def retire_plan(key: str, payload: m.Revision, ctx: AuthContext = Depends(manage)):
+    return s.retire_plan(ctx, key, payload)
+
+
 @router.get("/plans/{key}/summary")
 def summary(key: str, version: int | None = None, ctx: AuthContext = Depends(read)):
     return s.summary(ctx.customer_id, key, version)
