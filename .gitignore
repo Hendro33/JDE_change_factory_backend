@@ -32,3 +32,13 @@ mock_jde_state.json
 # Local preview data and throwaway demo credentials (scripts/run_local_preview.sh)
 .preview-data/
 .jade-data/
+
+# Local secrets and hand-over material: never committed.
+wt/
+.preview-data*/
+.jade-data/
+credentials.env
+*.env
+!.env.example
+*.bundle
+_claude_tmp/
