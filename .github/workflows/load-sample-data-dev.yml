@@ -1,0 +1,114 @@
+name: Load Hoogwegt sample data into DEV
+
+# Loads the Hoogwegt Arnhem sample customer (jde_api_service.sample_data.hoogwegt)
+# into Jade DEV once. It waits until DEV runs the image built from this commit,
+# then runs the loader as a temporary Container Apps Job made from the API app's
+# own definition (same image, settings, secrets and network), and removes the
+# job afterwards. The loader refuses if the customer already exists, so running
+# this again changes nothing. Runs by hand, or when this file changes on dev.
+on:
+  workflow_dispatch:
+  push:
+    branches: [dev]
+    paths: [.github/workflows/load-sample-data-dev.yml]
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  RG: jade-dev
+  APP: jade-dev-api
+  JOB: jade-dev-sample-data
+  ADMIN_EMAIL: h.hams@consultiq.nl
+
+jobs:
+  load:
+    if: github.ref == 'refs/heads/dev'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Wait until DEV runs this commit's image
+        run: |
+          want="ghcr.io/hendro33/jde_change_factory_backend:dev-$GITHUB_SHA"
+          for i in $(seq 1 60); do
+            have=$(az containerapp show -g $RG -n $APP --query "properties.template.containers[0].image" -o tsv)
+            [ "$have" = "$want" ] && { echo "DEV runs $have"; exit 0; }
+            echo "DEV runs $have; waiting for $want"; sleep 30
+          done
+          echo "::error::DEV did not move to this commit's image in time"; exit 1
+
+      - name: Create the one-off job from the API app's definition
+        run: |
+          az containerapp show -g $RG -n $APP -o json > app.json
+          az containerapp secret list -g $RG -n $APP --show-values -o json > secrets.json
+          python3 - <<'EOF'
+          import json, os
+          app = json.load(open("app.json"))
+          secrets = json.load(open("secrets.json"))
+          for s in secrets:
+              if s.get("value"):
+                  print(f"::add-mask::{s['value']}")
+          props = app["properties"]
+          container = dict(props["template"]["containers"][0])
+          container.pop("probes", None)
+          container["name"] = "loader"
+          container["command"] = ["python", "-m", "jde_api_service.sample_data.hoogwegt"]
+          container["args"] = ["--admin-email", os.environ["ADMIN_EMAIL"]]
+          env = [e for e in container.get("env", []) if e["name"] != "JDE_VALIDATION_WORKER"]
+          container["env"] = env + [{"name": "JDE_VALIDATION_WORKER", "value": "false"}]
+          job = {
+              "location": app["location"],
+              "identity": app.get("identity"),
+              "properties": {
+                  "environmentId": props.get("environmentId") or props["managedEnvironmentId"],
+                  "workloadProfileName": props.get("workloadProfileName"),
+                  "configuration": {
+                      "triggerType": "Manual", "replicaTimeout": 1800, "replicaRetryLimit": 0,
+                      "manualTriggerConfig": {"parallelism": 1, "replicaCompletionCount": 1},
+                      "secrets": [{k: v for k, v in s.items() if k in ("name", "value", "keyVaultUrl", "identity")}
+                                  for s in secrets],
+                      "registries": props["configuration"].get("registries") or [],
+                  },
+                  "template": {"containers": [container]},
+              },
+          }
+          if not job["identity"] or job["identity"].get("type") in (None, "None"):
+              job.pop("identity")
+          json.dump(job, open("job.json", "w"))
+          print("job: image", container["image"], "| env", len(env) + 1, "| secrets", len(secrets))
+          EOF
+          az containerapp job delete -g $RG -n $JOB --yes 2>/dev/null || true
+          az rest --method put \
+            --url "https://management.azure.com/subscriptions/${{ vars.AZURE_SUBSCRIPTION_ID }}/resourceGroups/$RG/providers/Microsoft.App/jobs/$JOB?api-version=2024-03-01" \
+            --body @job.json -o none
+          rm -f app.json secrets.json job.json
+
+      - name: Run the loader
+        run: |
+          execution=$(az containerapp job start -g $RG -n $JOB --query name -o tsv)
+          echo "execution: $execution"
+          for i in $(seq 1 80); do
+            status=$(az containerapp job execution show -g $RG -n $JOB --job-execution-name "$execution" \
+                     --query properties.status -o tsv)
+            echo "status: $status"
+            case "$status" in Succeeded|Failed|Stopped|Degraded) break;; esac
+            sleep 15
+          done
+          echo "--- loader output ---"
+          az containerapp job logs show -g $RG -n $JOB --execution "$execution" --container loader \
+            --format text 2>/dev/null || echo "(log stream unavailable; see Log Analytics jade-dev-logs)"
+          [ "$status" = "Succeeded" ]
+
+      - name: Remove the job
+        if: always()
+        run: az containerapp job delete -g $RG -n $JOB --yes 2>/dev/null || true
