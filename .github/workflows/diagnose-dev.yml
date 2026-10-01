@@ -32,7 +32,7 @@ jobs:
       - name: Backend Container App
         continue-on-error: true
         run: |
-          az containerapp show -g jade-dev -n jade-dev-api --query "{fqdn:properties.configuration.ingress.fqdn, customDomains:properties.configuration.ingress.customDomains, image:properties.template.containers[0].image, running:properties.runningStatus}" -o json
+          az containerapp show -g jade-dev -n jade-dev-api --query "{fqdn:properties.configuration.ingress.fqdn, customDomains:properties.configuration.ingress.customDomains, domainVerificationId:properties.customDomainVerificationId, image:properties.template.containers[0].image, running:properties.runningStatus}" -o json
           echo "--- settings (secret values hidden) ---"
           az containerapp show -g jade-dev -n jade-dev-api --query "properties.template.containers[0].env" -o json | python3 -c '
           import json, sys
