@@ -43,6 +43,15 @@ jobs:
               name = e["name"]
               print(name, "=", value)'
 
+      - name: Where the backend's secrets are stored (names only, never values)
+        continue-on-error: true
+        run: |
+          az containerapp secret list -g jade-dev -n jade-dev-api --query "[].{name:name, keyVaultUrl:keyVaultUrl, identity:identity}" -o table
+          echo "--- which secret each setting uses ---"
+          az containerapp show -g jade-dev -n jade-dev-api --query "properties.template.containers[0].env[?secretRef].{setting:name, secret:secretRef}" -o table
+          echo "--- Key Vaults in the resource group ---"
+          az keyvault list -g jade-dev --query "[].{name:name, url:properties.vaultUri, rbac:properties.enableRbacAuthorization}" -o table || true
+
       - name: Frontend Static Web App
         continue-on-error: true
         run: |
