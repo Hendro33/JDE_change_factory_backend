@@ -3,9 +3,12 @@ name: Diagnose Azure DEV
 # Read-only: reports how Jade DEV is wired (addresses, custom domains, DNS,
 # CORS/cookie settings, whether a setup account is configured) without
 # changing anything in Azure. Secret values are never printed, only whether
-# they are set. Run by hand from the Actions tab.
+# they are set. Runs by hand, or when this file changes on dev.
 on:
   workflow_dispatch:
+  push:
+    branches: [dev]
+    paths: [.github/workflows/diagnose-dev.yml]
 
 permissions:
   contents: read
