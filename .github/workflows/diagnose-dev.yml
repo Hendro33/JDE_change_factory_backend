@@ -1,0 +1,60 @@
+name: Diagnose Azure DEV
+
+# Read-only: reports how Jade DEV is wired (addresses, custom domains, DNS,
+# CORS/cookie settings, whether a setup account is configured) without
+# changing anything in Azure. Secret values are never printed, only whether
+# they are set. Run by hand from the Actions tab.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  diagnose:
+    if: github.ref == 'refs/heads/dev'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Backend Container App
+        run: |
+          az containerapp show -g jade-dev -n jade-dev-api --query "{fqdn:properties.configuration.ingress.fqdn, customDomains:properties.configuration.ingress.customDomains, image:properties.template.containers[0].image, running:properties.runningStatus}" -o json
+          echo "--- settings (secret values hidden) ---"
+          az containerapp show -g jade-dev -n jade-dev-api --query "properties.template.containers[0].env" -o json | python3 -c '
+          import json, sys
+          shown = {"JDE_API_ALLOWED_ORIGINS", "JDE_PUBLIC_URL", "JDE_COOKIE_DOMAIN", "JDE_COOKIE_SAMESITE", "JDE_COOKIE_SECURE",
+                   "JDE_TRUST_PROXY_HEADERS", "JDE_BOOTSTRAP_ADMIN_EMAIL", "JDE_BOOTSTRAP_CUSTOMER_NAME", "JDE_VALIDATION_WORKER"}
+          for e in json.load(sys.stdin):
+              value = e.get("value") if e["name"] in shown else ("<secret ref>" if e.get("secretRef") else "<set>")
+              print(f"{e[\"name\"]} = {value}")'
+
+      - name: Frontend Static Web App
+        run: |
+          az staticwebapp show -g jade-dev -n jade-dev-web --query "{defaultHostname:defaultHostname, customDomains:customDomains}" -o json
+          az staticwebapp hostname list -g jade-dev -n jade-dev-web -o table || true
+
+      - name: Reachability from the internet
+        env:
+          API_URL: ${{ vars.JADE_DEV_API_URL }}
+        run: |
+          fqdn=$(az containerapp show -g jade-dev -n jade-dev-api --query properties.configuration.ingress.fqdn -o tsv)
+          web=$(az staticwebapp show -g jade-dev -n jade-dev-web --query defaultHostname -o tsv)
+          host=$(echo "$API_URL" | sed -E 's#https?://([^/]+).*#\1#')
+          echo "Frontend is built against: $API_URL"
+          echo "--- DNS for $host ---"; dig +short CNAME "$host"; dig +short A "$host"; dig +short TXT "asuid.$host"
+          for url in "https://$fqdn/health" "$API_URL/health"; do
+            echo "--- GET $url ---"; curl -sS -m 20 -o /dev/null -w "HTTP %{http_code}\n" "$url" || true
+          done
+          for origin in "https://$web" "https://jade-dev.consultiq.nl"; do
+            echo "--- CORS preflight from $origin to $API_URL/auth/login ---"
+            curl -sS -m 20 -o /dev/null -D - -X OPTIONS "$API_URL/auth/login" -H "Origin: $origin" \
+              -H "Access-Control-Request-Method: POST" -H "Access-Control-Request-Headers: content-type" \
+              | grep -iE "^HTTP|access-control-allow-(origin|credentials)" || echo "(no response)"
+          done
