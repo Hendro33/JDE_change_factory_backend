@@ -1,0 +1,87 @@
+name: Bind Jade DEV domains
+
+# Attaches jade-dev.consultiq.nl to the frontend Static Web App and
+# api.jade-dev.consultiq.nl to the backend Container App (with a free managed
+# certificate), once their DNS records are visible. Safe to re-run: names
+# already attached are left as they are. Runs by hand, or when this file
+# changes on dev.
+on:
+  workflow_dispatch:
+  push:
+    branches: [dev]
+    paths: [.github/workflows/bind-domains-dev.yml]
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  RG: jade-dev
+  WEB_APP: jade-dev-web
+  WEB_HOST: jade-dev.consultiq.nl
+  API_APP: jade-dev-api
+  API_HOST: api.jade-dev.consultiq.nl
+
+jobs:
+  bind:
+    if: github.ref == 'refs/heads/dev'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check the DNS records are visible
+        run: |
+          ok=true
+          echo "$WEB_HOST CNAME: $(dig +short CNAME $WEB_HOST @1.1.1.1)"
+          echo "$API_HOST CNAME: $(dig +short CNAME $API_HOST @1.1.1.1)"
+          echo "asuid.$API_HOST TXT: $(dig +short TXT asuid.$API_HOST @1.1.1.1)"
+          [ -n "$(dig +short CNAME $WEB_HOST @1.1.1.1)" ] || { echo "::error::$WEB_HOST has no CNAME yet"; ok=false; }
+          [ -n "$(dig +short CNAME $API_HOST @1.1.1.1)" ] || { echo "::error::$API_HOST has no CNAME yet"; ok=false; }
+          [ -n "$(dig +short TXT asuid.$API_HOST @1.1.1.1)" ] || { echo "::error::asuid.$API_HOST has no TXT yet"; ok=false; }
+          $ok
+
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Attach the backend name with a managed certificate
+        run: |
+          if az containerapp hostname list -g $RG -n $API_APP --query "[?name=='$API_HOST' && bindingType=='SniEnabled']" -o tsv | grep -q .; then
+            echo "$API_HOST is already attached with a certificate"; exit 0
+          fi
+          az containerapp hostname list -g $RG -n $API_APP --query "[?name=='$API_HOST']" -o tsv | grep -q . \
+            || az containerapp hostname add -g $RG -n $API_APP --hostname $API_HOST -o none
+          envname=$(az containerapp show -g $RG -n $API_APP --query properties.managedEnvironmentId -o tsv | sed 's#.*/##')
+          az containerapp hostname bind -g $RG -n $API_APP --hostname $API_HOST \
+            --environment "$envname" --validation-method CNAME -o none
+          az containerapp hostname list -g $RG -n $API_APP -o table
+
+      - name: Attach the frontend name
+        run: |
+          az staticwebapp hostname set -g $RG -n $WEB_APP --hostname $WEB_HOST --no-wait -o none || true
+          for i in $(seq 1 40); do
+            status=$(az staticwebapp hostname show -g $RG -n $WEB_APP --hostname $WEB_HOST --query status -o tsv 2>/dev/null)
+            echo "$WEB_HOST: ${status:-pending}"
+            [ "$status" = "Ready" ] && break
+            [ "$status" = "Failed" ] && { az staticwebapp hostname show -g $RG -n $WEB_APP --hostname $WEB_HOST -o json; exit 1; }
+            sleep 20
+          done
+          [ "$status" = "Ready" ]
+
+      - name: Check both addresses answer
+        run: |
+          for url in "https://$API_HOST/health" "https://$WEB_HOST/"; do
+            for i in $(seq 1 20); do
+              code=$(curl -s -m 20 -o /dev/null -w "%{http_code}" "$url")
+              [ "$code" = 200 ] && break; sleep 15
+            done
+            echo "$url -> HTTP $code"
+          done
+          echo "--- CORS preflight from https://$WEB_HOST ---"
+          curl -sS -m 20 -o /dev/null -D - -X OPTIONS "https://$API_HOST/auth/login" -H "Origin: https://$WEB_HOST" \
+            -H "Access-Control-Request-Method: POST" -H "Access-Control-Request-Headers: content-type" \
+            | grep -iE "^HTTP|access-control-allow-(origin|credentials)"
