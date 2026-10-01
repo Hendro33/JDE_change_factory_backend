@@ -46,6 +46,7 @@ jobs:
         run: |
           fqdn=$(az containerapp show -g jade-dev -n jade-dev-api --query properties.configuration.ingress.fqdn -o tsv)
           web=$(az staticwebapp show -g jade-dev -n jade-dev-web --query defaultHostname -o tsv)
+          API_URL="${API_URL:-https://api.jade-dev.consultiq.nl}"
           host=$(echo "$API_URL" | sed -E 's#https?://([^/]+).*#\1#')
           echo "Frontend is built against: $API_URL"
           echo "--- DNS for $host ---"; dig +short CNAME "$host"; dig +short A "$host"; dig +short TXT "asuid.$host"
