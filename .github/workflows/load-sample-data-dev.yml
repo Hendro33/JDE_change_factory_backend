@@ -82,8 +82,12 @@ jobs:
                   "template": {"containers": [container]},
               },
           }
-          if not job["identity"] or job["identity"].get("type") in (None, "None"):
-              job.pop("identity")
+          # The loader needs the database only. A system-assigned identity cannot be copied (it
+          # belongs to the app); user-assigned identities are attached as they are.
+          identity = job.pop("identity") or {}
+          assigned = identity.get("userAssignedIdentities") or {}
+          if assigned:
+              job["identity"] = {"type": "UserAssigned", "userAssignedIdentities": {k: {} for k in assigned}}
           json.dump(job, open("job.json", "w"))
           print("job: image", container["image"], "| env", len(env) + 1, "| secrets", len(secrets))
           EOF
