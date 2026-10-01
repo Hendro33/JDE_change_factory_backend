@@ -19,6 +19,9 @@ jobs:
     if: github.ref == 'refs/heads/dev'
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: azure/login@v2
         with:
@@ -27,6 +30,7 @@ jobs:
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
 
       - name: Backend Container App
+        continue-on-error: true
         run: |
           az containerapp show -g jade-dev -n jade-dev-api --query "{fqdn:properties.configuration.ingress.fqdn, customDomains:properties.configuration.ingress.customDomains, image:properties.template.containers[0].image, running:properties.runningStatus}" -o json
           echo "--- settings (secret values hidden) ---"
@@ -36,14 +40,17 @@ jobs:
                    "JDE_TRUST_PROXY_HEADERS", "JDE_BOOTSTRAP_ADMIN_EMAIL", "JDE_BOOTSTRAP_CUSTOMER_NAME", "JDE_VALIDATION_WORKER"}
           for e in json.load(sys.stdin):
               value = e.get("value") if e["name"] in shown else ("<secret ref>" if e.get("secretRef") else "<set>")
-              print(f"{e[\"name\"]} = {value}")'
+              name = e["name"]
+              print(name, "=", value)'
 
       - name: Frontend Static Web App
+        continue-on-error: true
         run: |
           az staticwebapp show -g jade-dev -n jade-dev-web --query "{defaultHostname:defaultHostname, customDomains:customDomains}" -o json
           az staticwebapp hostname list -g jade-dev -n jade-dev-web -o table || true
 
       - name: Reachability from the internet
+        continue-on-error: true
         env:
           API_URL: ${{ vars.JADE_DEV_API_URL }}
         run: |
