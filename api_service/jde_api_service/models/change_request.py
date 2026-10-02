@@ -47,7 +47,11 @@ class ChangeRequest(ApiModel):
     raw_content: str
     attachments: list[Attachment] = []
     requester: str
-    status: Literal["received", "handed_off", "duplicate", "rejected_at_intake"] = "received"
+    status: Literal["received", "handed_off", "duplicate", "rejected_at_intake", "withdrawn"] = "received"
+    # Set when a person withdraws the request before it became a story.
+    withdrawn_reason: str = ""
+    withdrawn_by: str = ""
+    withdrawn_at: Optional[str] = None
     # Free-form context carried verbatim from the source connector (e.g.
     # Jira's Request Type / Work Type / Priority) -- imported for display
     # only. Nothing in this service reads these values to decide routing

@@ -93,7 +93,11 @@ class JiraGateway(Protocol):
 
     def set_field(self, *, base_url: str, issue_key: str, field_id: str, value: str) -> None: ...
 
-    def add_comment(self, *, base_url: str, issue_key: str, body: str) -> None: ...
+    def add_comment(self, *, base_url: str, issue_key: str, body: str, internal: bool = False) -> None: ...
+
+    def own_account_id(self, *, base_url: str) -> str: ...
+
+    def assign_issue(self, *, base_url: str, issue_key: str, account_id: str) -> None: ...
 
     def find_transition_id(self, *, base_url: str, issue_key: str, target_status_name: str) -> Optional[str]: ...
 
@@ -159,7 +163,9 @@ class JiraHttpGateway:
         jade_id_field: str, request_type_field: str = "",
     ) -> list[JiraIssueSummary]:
         jql = f'project = "{_jql_quote(project_key)}" AND status = "{_jql_quote(status_name)}" ORDER BY created ASC'
-        fields = ["summary", "description", "reporter", "created", "issuetype", "priority", jade_id_field]
+        fields = ["summary", "description", "reporter", "created", "issuetype", "priority"]
+        if jade_id_field:
+            fields.append(jade_id_field)
         if request_type_field:
             fields.append(request_type_field)
 
@@ -181,8 +187,20 @@ class JiraHttpGateway:
     def set_field(self, *, base_url: str, issue_key: str, field_id: str, value: str) -> None:
         self._put(base_url, f"/rest/api/3/issue/{issue_key}", json={"fields": {field_id: value}})
 
-    def add_comment(self, *, base_url: str, issue_key: str, body: str) -> None:
-        self._post(base_url, f"/rest/api/3/issue/{issue_key}/comment", json={"body": _adf_paragraph(body)})
+    def add_comment(self, *, base_url: str, issue_key: str, body: str, internal: bool = False) -> None:
+        payload: dict = {"body": _adf_paragraph(body)}
+        if internal:
+            # Jira Service Management's internal note (agents only); other
+            # Jira projects ignore the property.
+            payload["properties"] = [{"key": "sd.public.comment", "value": {"internal": True}}]
+        self._post(base_url, f"/rest/api/3/issue/{issue_key}/comment", json=payload)
+
+    def own_account_id(self, *, base_url: str) -> str:
+        """The account Jade connects with (the API token's owner)."""
+        return self._get(base_url, "/rest/api/3/myself").json()["accountId"]
+
+    def assign_issue(self, *, base_url: str, issue_key: str, account_id: str) -> None:
+        self._put(base_url, f"/rest/api/3/issue/{issue_key}/assignee", json={"accountId": account_id})
 
     def find_transition_id(self, *, base_url: str, issue_key: str, target_status_name: str) -> Optional[str]:
         resp = self._get(base_url, f"/rest/api/3/issue/{issue_key}/transitions")

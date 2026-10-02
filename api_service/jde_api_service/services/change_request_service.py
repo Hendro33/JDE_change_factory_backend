@@ -138,3 +138,16 @@ class ChangeRequestService:
     def get(self, request_id: str) -> ChangeRequest | None:
         doc = self._store.get(request_id)
         return ChangeRequest.model_validate(doc) if doc else None
+
+    def withdraw(self, request_id: str, *, reason: str, actor: str) -> ChangeRequest:
+        """Takes a request off the list before it became a story. The record
+        is kept (with who, when and why); a Jira ticket it came from is not
+        imported again."""
+        with self._store.locked():
+            doc = self._store.get(request_id)
+            if doc is None:
+                raise KeyError(request_id)
+            doc.update(status="withdrawn", withdrawn_reason=reason, withdrawn_by=actor,
+                       withdrawn_at=datetime.now(timezone.utc).isoformat())
+            self._store.put(request_id, doc)
+        return ChangeRequest.model_validate(doc)

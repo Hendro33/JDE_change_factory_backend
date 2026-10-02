@@ -172,3 +172,22 @@ def test_a_refused_request_carries_jiras_own_reason():
     assert "HTTP 400" in message and "not on the appropriate screen" in message and "edit screen" in message
     assert "secret-token" not in message
     assert exc.value.response.status_code == 400
+
+
+def test_internal_note_and_assignment_use_the_service_desk_api_shapes():
+    seen = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append((request.method, request.url.path, json.loads(request.content) if request.content else None))
+        if request.url.path == "/rest/api/3/myself":
+            return httpx.Response(200, json={"accountId": "acc-1", "displayName": "Jade"})
+        return httpx.Response(204 if request.method == "PUT" else 201, json={})
+
+    gateway = _gateway(httpx.MockTransport(handler))
+    base = "https://example.atlassian.net"
+    gateway.add_comment(base_url=base, issue_key="CON-1", body="Accepted", internal=True)
+    assert gateway.own_account_id(base_url=base) == "acc-1"
+    gateway.assign_issue(base_url=base, issue_key="CON-1", account_id="acc-1")
+    comment = seen[0][2]
+    assert comment["properties"] == [{"key": "sd.public.comment", "value": {"internal": True}}]
+    assert seen[2] == ("PUT", "/rest/api/3/issue/CON-1/assignee", {"accountId": "acc-1"})

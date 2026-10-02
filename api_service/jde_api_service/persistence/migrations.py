@@ -829,4 +829,14 @@ MIGRATIONS: list[tuple[int, str]] = [
         CREATE INDEX idx_jde_execution_audit_company ON jde_execution_audit(company_id, id);
         """,
     ),
+    (
+        17,
+        """
+        -- Jira hand-off follows the service desk's own workflow: the ticket is
+        -- assigned to the account Jade connects with and gets an internal note
+        -- (or a reply to the customer); the Jade ID field becomes optional.
+        ALTER TABLE jira_integrations ADD COLUMN assign_to_jade INTEGER NOT NULL DEFAULT 1;
+        ALTER TABLE jira_integrations ADD COLUMN comment_visibility TEXT NOT NULL DEFAULT 'internal';
+        """,
+    ),
 ]
