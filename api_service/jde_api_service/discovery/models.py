@@ -319,6 +319,9 @@ class JdeProfileView(ApiModel):
     prerequisites: list[dict[str, Any]] = []
     readiness: list[dict[str, Any]] = []
     ready: bool = False
+    # One plain status from the last checks: state (connected, network_unavailable,
+    # certificate_problem, authentication_failed, environment_mismatch, not_tested), label, detail.
+    connection_status: dict[str, str] = {"state": "not_tested", "label": "Not tested", "detail": ""}
     # The uploaded certificate in use (subject, names, validity, fingerprints), if any.
     certificate: Optional[dict[str, Any]] = None
     # Whether the saved password was entered for the current address and certificate.
