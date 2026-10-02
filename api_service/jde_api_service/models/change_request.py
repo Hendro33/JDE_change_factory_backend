@@ -16,7 +16,7 @@ from enum import Enum
 from typing import Literal, Optional
 
 from .base import ApiModel
-from .change import ChangeSource
+from .change import ChangeSource, ChangeType, Priority
 
 
 class ChangeRequestSourceType(str, Enum):
@@ -70,3 +70,6 @@ class ChangeRequestCreate(ApiModel):
     # Pending uploads (POST /change-requests/attachments) to link to the new
     # request; each must belong to this customer and this user.
     attachment_ids: list[str] = []
+    # Optional business classification chosen when the request is raised.
+    priority: Optional[Priority] = None
+    change_type: Optional[ChangeType] = None

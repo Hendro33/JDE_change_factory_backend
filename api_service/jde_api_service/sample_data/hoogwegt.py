@@ -25,7 +25,10 @@ Run once per installation, by hand:
     python -m jde_api_service.sample_data.hoogwegt --admin-email you@example.com
 
 `--admin-email` is an existing user who is given every role on the new
-customer so they can see it. The run refuses if the customer already exists.
+customer so they can see it. Run again on an installation that already has
+the customer, it only adds what later versions of the data set introduced
+and is still missing (currently: priority and change type), never
+overwriting what a person changed.
 """
 
 from __future__ import annotations
@@ -345,6 +348,31 @@ REQUESTS = [
          story=None, route=None),
 ]
 
+# Priority and change type, as the Application Manager classified each request at triage.
+CLASSIFICATION = {
+    "CR-HW-001": ("High", "Enhancement"), "CR-HW-002": ("Low", "Enhancement"),
+    "CR-HW-003": ("Medium", "Defect"), "CR-HW-004": ("Medium", "Enhancement"),
+    "CR-HW-005": ("Urgent", "Defect"), "CR-HW-006": ("Medium", "Enhancement"),
+    "CR-HW-007": ("High", "New Functionality"), "CR-HW-008": ("Low", "Defect"),
+    "CR-HW-009": ("High", "New Functionality"), "CR-HW-010": ("Medium", "Enhancement"),
+    "CR-HW-011": ("Low", "Other"), "CR-HW-012": ("Medium", "New Functionality"),
+    "CR-HW-013": ("High", "New Functionality"), "CR-HW-014": ("Medium", "Enhancement"),
+    "CR-HW-015": ("Low", "Enhancement"), "CR-HW-016": ("Urgent", "New Functionality"),
+    "CR-HW-017": ("Low", "Enhancement"), "CR-HW-018": ("Medium", "Defect"),
+    "CR-HW-019": ("Medium", "New Functionality"), "CR-HW-020": ("High", "New Functionality"),
+}
+
+
+def _classify(story_id: str, am: dict, *, only_if_unset: bool = False) -> None:
+    from ..services import classification_service
+
+    if only_if_unset and (classification_service.get(story_id) or {}).get("revision"):
+        return
+    priority, change_type = CLASSIFICATION[story_id]
+    classification_service.set_classification(story_id, COMPANY_ID, priority=priority, change_type=change_type,
+                                              actor_id=am["id"], actor=am["name"], expected_revision=None)
+
+
 _ORDER = ["request", "needs_input", "unassigned", "do_review", "am_decision", "solutioning", "decided",
           "exact_pending", "approved", "applied", "tested", "done"]
 
@@ -641,6 +669,7 @@ def _seed_request(spec: dict, people: dict[str, dict], now: datetime) -> None:
         if spec["source"] == "Business" else ChangeRequestSourceType.TOPDESK,
         business_source=spec["source"], source_reference=spec["ref"], title=spec["title"], raw_content=spec["raw"],
         requester=spec["requester"], request_id=sid, received_at=datetime.fromtimestamp(time.time(), timezone.utc))
+    _classify(sid, am)
     if not _at_least(stage, "needs_input"):
         return
 
@@ -751,15 +780,21 @@ def load(admin_email: str) -> list[tuple[str, str, str]]:
     """Creates the data set; returns (story, phase, health) for every request."""
     from ..persistence.db import connection, ensure_schema
     from ..services import auth_service
-    from ..services.registry import get_change_service
 
     ensure_schema()
     admin = auth_service.get_user_by_email(admin_email)
     if admin is None:
         raise SystemExit(f"No user with e-mail {admin_email}. Sign in to Jade once, then run this again.")
     with connection() as conn:
-        if conn.execute("SELECT 1 FROM companies WHERE id = ?", (COMPANY_ID,)).fetchone():
-            raise SystemExit(f"Customer {COMPANY['name']} ({COMPANY_ID}) already exists; nothing was changed.")
+        exists = conn.execute("SELECT 1 FROM companies WHERE id = ?", (COMPANY_ID,)).fetchone() is not None
+    if exists:
+        # Already loaded: only add what later versions of this data set introduced and that is
+        # still missing (priority and change type). Nothing a person changed is overwritten.
+        am = {"id": PEOPLE["am"][0], "name": PEOPLE["am"][1]}
+        for spec in REQUESTS:
+            _classify(spec["id"], am, only_if_unset=True)
+        print(f"Customer {COMPANY['name']} ({COMPANY_ID}) already exists: only missing classifications were added.")
+        return _phases()
 
     _create_customer(admin.id)
     people = _create_people(admin.id)
@@ -768,6 +803,12 @@ def load(admin_email: str) -> list[tuple[str, str, str]]:
     with simulated_clock():
         for spec in sorted(REQUESTS, key=lambda s: -s["days_ago"]):
             _seed_request(spec, people, now)
+
+    return _phases()
+
+
+def _phases() -> list[tuple[str, str, str]]:
+    from ..services.registry import get_change_service
 
     service = get_change_service()
     out = []

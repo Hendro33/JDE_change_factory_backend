@@ -22,7 +22,7 @@ LifecycleState = Literal[
     "EXECUTING", "TESTING", "VALIDATED", "CNC_HANDOFF", "CLOSED", "FAILED",
 ]
 
-Priority = Literal["High", "Medium", "Low"]
+Priority = Literal["Low", "Medium", "High", "Urgent"]
 Complexity = Literal["Low", "Medium", "High", "Unknown"]
 
 # "Clarification Required": the evidence contradicts the story, or a business
@@ -32,7 +32,7 @@ ImplementationRoute = Literal[
     "Functional Agent", "Technical Agent", "Mixed", "Human Implementation", "Resolve without Change",
     "Clarification Required",
 ]
-ChangeType = Literal["Configuration", "Functional Change", "Technical Change", "Investigation", "Other"]
+ChangeType = Literal["Defect", "Enhancement", "New Functionality", "Other"]
 
 
 class BusinessImpact(ApiModel):
@@ -341,6 +341,11 @@ class Change(ApiModel):
     change_type: ChangeType = "Other"
     state: LifecycleState
     priority: Priority = "Medium"
+    # Who last set the priority / change type (services/classification_service.py);
+    # revision 0 means neither was set and the defaults above apply.
+    classification_revision: int = 0
+    classified_by: Optional[str] = None
+    classified_at: Optional[str] = None
     complexity_signal: Complexity = "Unknown"
     business_impact: BusinessImpact = BusinessImpact()
     created_at: str
