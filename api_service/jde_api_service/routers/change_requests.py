@@ -45,6 +45,27 @@ def create_change_request(
     return created
 
 
+class WithdrawRequests(ApiModel):
+    ids: list[str]
+    reason: str
+
+
+@router.post("/change-requests/withdraw")
+def withdraw_change_requests(payload: WithdrawRequests, ctx: AuthContext = Depends(require_write_access)) -> dict:
+    """Takes requests that have not become a story yet off the list (kept
+    on record with who, when and why). A Jira ticket it came from stays
+    as it is in Jira and is not imported again."""
+    reason = payload.reason.strip()
+    if not reason:
+        raise HTTPException(status_code=422, detail="Give a reason for withdrawing.")
+    if not payload.ids or len(payload.ids) > 200:
+        raise HTTPException(status_code=422, detail="Select between 1 and 200 requests.")
+    from ..services.registry import get_change_service
+
+    return get_change_service().withdraw_requests(payload.ids, ctx.customer_id, reason=reason[:500],
+                                                  actor=ctx.identity.display_name)
+
+
 # -- Documents on a request -----------------------------------------------------------
 class AttachmentUpload(ApiModel):
     filename: str

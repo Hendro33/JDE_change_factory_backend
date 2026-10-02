@@ -549,7 +549,7 @@ class ChangeService:
         requests = [
             _change_from_request(cr, self._run_for(cr.id))
             for cr in self._change_requests.list_for_customer(customer_id)
-            if cr.id not in promoted_ids
+            if cr.id not in promoted_ids and cr.status != "withdrawn"
         ]
         return [_with_lifecycle(c) for c in sorted(stories + requests, key=lambda c: c.updated_at, reverse=True)]
 
@@ -558,7 +558,12 @@ class ChangeService:
         # ChangeRequest (the normal post-orchestration state).
         for record in _all_backlog_records():
             if record["story_id"] == change_id:
-                if self._links.customer_for(change_id) != customer_id:
+                owner = self._links.customer_for(change_id)
+                if owner is None:
+                    # Never handed over by a passing run (e.g. a record the
+                    # Check Agent did not write): the request still stands.
+                    break
+                if owner != customer_id:
                     return None
                 origin = self._change_requests.get(change_id)
                 return _with_lifecycle(_change_from_story(
@@ -568,10 +573,30 @@ class ChangeService:
 
         if change_id.startswith("CR-"):
             cr = self._change_requests.get(change_id)
-            if cr is None or cr.customer_id != customer_id:
+            if cr is None or cr.customer_id != customer_id or cr.status == "withdrawn":
                 return None
             return _with_lifecycle(_change_from_request(cr, self._run_for(change_id)))
         return None
+
+    def withdraw_requests(self, ids: list[str], customer_id: str, *, reason: str, actor: str) -> dict:
+        """Withdraws requests that have not become a story yet. Each id is
+        handled on its own; the answer says what happened to every one."""
+        withdrawn, refused = [], []
+        for request_id in dict.fromkeys(ids):
+            cr = self._change_requests.get(request_id)
+            if cr is None or cr.customer_id != customer_id or cr.status == "withdrawn":
+                refused.append({"id": request_id, "reason": "no such open request"})
+                continue
+            if self._links.customer_for(request_id) is not None:
+                refused.append({"id": request_id, "reason": "it is already a user story"})
+                continue
+            run = self._run_for(request_id)
+            if run is not None and run.stage in ("receiving", "improving", "checking"):
+                refused.append({"id": request_id, "reason": "JADE's analysis is running on it"})
+                continue
+            self._change_requests.withdraw(request_id, reason=reason, actor=actor)
+            withdrawn.append(request_id)
+        return {"withdrawn": withdrawn, "refused": refused}
 
     def backlog_for_customer(self, customer_id: str) -> list[Change]:
         from . import classification_service

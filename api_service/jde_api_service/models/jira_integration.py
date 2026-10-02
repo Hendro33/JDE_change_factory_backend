@@ -34,7 +34,7 @@ Design summary (see the architecture assessment this implements):
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Literal, Optional
 
 from .base import ApiModel
 
@@ -60,6 +60,12 @@ class JiraIntegrationConfig(ApiModel):
     # simply not captured; Work Type and Priority (both standard Jira
     # fields) are always captured regardless of this setting.
     request_type_field: str = ""
+    # On pickup Jade assigns the ticket to the Jira account it connects
+    # with, as a person moving it to the post-pickup status would.
+    assign_to_jade: bool = True
+    # The acceptance note: "internal" (agents only) or "public" (a reply
+    # the customer sees, in Jira Service Management).
+    comment_visibility: Literal["internal", "public"] = "internal"
     # 0 = never saved; see persistence/revisions.py.
     revision: int = 0
     updated_at: Optional[str] = None
@@ -67,7 +73,9 @@ class JiraIntegrationConfig(ApiModel):
     updated_by: Optional[str] = None
 
     def is_configured(self) -> bool:
-        return bool(self.base_url and self.project_key and self.pickup_status and self.post_pickup_status and self.jade_id_field)
+        # The Jade ID field is optional: without it Jade still accepts the
+        # ticket by moving it on and leaving a note with the Jade ID.
+        return bool(self.base_url and self.project_key and self.pickup_status and self.post_pickup_status)
 
 
 class JiraIntegrationConfigUpdate(ApiModel):
@@ -75,8 +83,10 @@ class JiraIntegrationConfigUpdate(ApiModel):
     project_key: str
     pickup_status: str
     post_pickup_status: str
-    jade_id_field: str
+    jade_id_field: str = ""
     request_type_field: str = ""
+    assign_to_jade: bool = True
+    comment_visibility: Literal["internal", "public"] = "internal"
     # The revision the client loaded; required once a config exists.
     # Any client-sent updatedBy is ignored -- the actor is the session.
     expected_revision: Optional[int] = None
@@ -152,3 +162,5 @@ class JiraSyncResult(ApiModel):
     imported: list[str] = []
     updated_in_jira: list[str] = []
     errors: list[JiraSyncError] = []
+    # Tickets still in the pickup status whose request was withdrawn in Jade.
+    skipped_withdrawn: list[str] = []

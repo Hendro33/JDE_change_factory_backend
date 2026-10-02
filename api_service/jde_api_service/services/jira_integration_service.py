@@ -30,6 +30,7 @@ def _from_row(row) -> JiraIntegrationConfig:
         pickup_status=row["pickup_status"], post_pickup_status=row["post_pickup_status"],
         jade_id_field=row["jade_id_field"], request_type_field=row["request_type_field"],
         revision=row["revision"], updated_at=row["updated_at"], updated_by=row["updated_by"],
+        assign_to_jade=bool(row["assign_to_jade"]), comment_visibility=row["comment_visibility"] or "internal",
     )
 
 
@@ -63,22 +64,27 @@ class JiraIntegrationService:
                 post_pickup_status=payload.post_pickup_status,
                 jade_id_field=payload.jade_id_field,
                 request_type_field=payload.request_type_field,
+                assign_to_jade=payload.assign_to_jade,
+                comment_visibility=payload.comment_visibility,
                 revision=revision,
                 updated_at=_now(),
                 updated_by=actor,
             )
             conn.execute(
                 "INSERT INTO jira_integrations (company_id, base_url, project_key, pickup_status, "
-                "post_pickup_status, jade_id_field, request_type_field, updated_at, updated_by, revision) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "post_pickup_status, jade_id_field, request_type_field, updated_at, updated_by, revision, "
+                "assign_to_jade, comment_visibility) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT(company_id) DO UPDATE SET base_url=excluded.base_url, project_key=excluded.project_key, "
                 "pickup_status=excluded.pickup_status, post_pickup_status=excluded.post_pickup_status, "
                 "jade_id_field=excluded.jade_id_field, request_type_field=excluded.request_type_field, "
-                "updated_at=excluded.updated_at, updated_by=excluded.updated_by, revision=excluded.revision",
+                "updated_at=excluded.updated_at, updated_by=excluded.updated_by, revision=excluded.revision, "
+                "assign_to_jade=excluded.assign_to_jade, comment_visibility=excluded.comment_visibility",
                 (
                     customer_id, config.base_url, config.project_key, config.pickup_status,
                     config.post_pickup_status, config.jade_id_field, config.request_type_field,
                     config.updated_at, config.updated_by, config.revision,
+                    int(config.assign_to_jade), config.comment_visibility,
                 ),
             )
         return config

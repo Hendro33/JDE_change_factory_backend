@@ -204,6 +204,11 @@ def runs(ctx: AuthContext = Depends(require_customer_access)) -> list[dict]:
     return ai_runtime.list_runs(ctx.customer_id)
 
 
+@router.get("/admin/ai/spend")
+def spend(ctx: AuthContext = Depends(require_customer_access)) -> dict:
+    return ai_runtime.spend_summary(ctx.customer_id)
+
+
 @router.get("/admin/ai/health")
 def health(ctx: AuthContext = Depends(require_customer_access)) -> dict:
     return {"roles": ai_runtime.health(ctx.customer_id), "runtime": ai_runtime.ADAPTER.name,

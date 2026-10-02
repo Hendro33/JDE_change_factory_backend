@@ -26,6 +26,8 @@ class _MockIssueState:
     metadata: dict[str, str] = field(default_factory=dict)
     fields: dict[str, str] = field(default_factory=dict)
     comments: list[str] = field(default_factory=list)
+    internal_comments: list[str] = field(default_factory=list)
+    assignee: Optional[str] = None
 
 
 def _default_mock_seed() -> list[_MockIssueState]:
@@ -87,7 +89,7 @@ class FakeJiraGateway:
             JiraIssueSummary(
                 key=i.key, id=i.id, summary=i.summary, description=i.description,
                 reporter=i.reporter, created=i.created, metadata=dict(i.metadata),
-                jade_id_field_value=i.fields.get(jade_id_field),
+                jade_id_field_value=i.fields.get(jade_id_field) if jade_id_field else None,
             )
             for i in self._issues.values()
             if i.status == status_name
@@ -96,8 +98,16 @@ class FakeJiraGateway:
     def set_field(self, *, base_url: str, issue_key: str, field_id: str, value: str) -> None:
         self._issues[issue_key].fields[field_id] = value
 
-    def add_comment(self, *, base_url: str, issue_key: str, body: str) -> None:
+    def add_comment(self, *, base_url: str, issue_key: str, body: str, internal: bool = False) -> None:
         self._issues[issue_key].comments.append(body)
+        if internal:
+            self._issues[issue_key].internal_comments.append(body)
+
+    def own_account_id(self, *, base_url: str) -> str:
+        return "jade-account"
+
+    def assign_issue(self, *, base_url: str, issue_key: str, account_id: str) -> None:
+        self._issues[issue_key].assignee = account_id
 
     def find_transition_id(self, *, base_url: str, issue_key: str, target_status_name: str) -> Optional[str]:
         # Every status is reachable in the mock -- id just encodes the

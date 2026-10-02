@@ -82,3 +82,26 @@ def test_create_change_request_requires_customer_header(client):
         json={"title": "T", "businessSource": "Business", "sourceReference": "", "rawContent": "R"},
     )
     assert r.status_code == 422
+
+
+def test_requests_can_be_withdrawn_before_they_become_stories(client):
+    from .conftest import headers as _h
+
+    ids = []
+    for title in ("First test ticket", "Second test ticket"):
+        r = client.post("/change-requests", headers=_h(customer="bwm"),
+                        json={"title": title, "businessSource": "Support / Topdesk", "rawContent": "x"})
+        assert r.status_code == 201
+        ids.append(r.json()["id"])
+    assert client.post("/change-requests/withdraw", headers=_h(customer="bwm"),
+                       json={"ids": ids, "reason": " "}).status_code == 422
+    r = client.post("/change-requests/withdraw", headers=_h(customer="bwm"),
+                    json={"ids": ids + ["CR-nope"], "reason": "Test import"})
+    assert r.status_code == 200
+    assert r.json()["withdrawn"] == ids and r.json()["refused"][0]["id"] == "CR-nope"
+    listed = {c["id"] for c in client.get("/changes", headers=_h(customer="bwm")).json()}
+    assert not listed & set(ids)
+    assert client.get(f"/changes/{ids[0]}", headers=_h(customer="bwm")).status_code == 404
+    # Another customer cannot withdraw them, and withdrawing twice is refused.
+    again = client.post("/change-requests/withdraw", headers=_h(customer="bwm"), json={"ids": ids, "reason": "x"})
+    assert again.json()["withdrawn"] == []

@@ -275,17 +275,23 @@ def test_retry_after_transition_failure_does_not_repost_comment(isolated_dirs):
     assert first.imported == ["CR-JIRA-XX-3"]
     assert first.updated_in_jira == []
     assert len(first.errors) == 1
-    assert gateway._issues["XX-3"].fields["customfield_1"] == "CR-JIRA-XX-3"
-    assert len(gateway._issues["XX-3"].comments) == 1
-    assert gateway._issues["XX-3"].status == "Ready for Jade"  # never transitioned
+    # Nothing is changed in Jira until the ticket can actually move on.
+    assert gateway._issues["XX-3"].fields == {}
+    assert gateway._issues["XX-3"].comments == []
+    assert gateway._issues["XX-3"].status == "Ready for Jade"
 
     second = sync.sync_for_customer("cust1")
     assert second.imported == []  # not re-created
     assert second.updated_in_jira == ["XX-3"]
     assert second.errors == []
-    # The field short-circuit must have skipped a second comment.
-    assert len(gateway._issues["XX-3"].comments) == 1
+    assert gateway._issues["XX-3"].comments == ["Jade has accepted this request. Jade Change ID: CR-JIRA-XX-3"]
+    assert gateway._issues["XX-3"].internal_comments == gateway._issues["XX-3"].comments
+    assert gateway._issues["XX-3"].assignee == "jade-account"
+    assert gateway._issues["XX-3"].fields["customfield_1"] == "CR-JIRA-XX-3"
     assert gateway._issues["XX-3"].status == "Jade - In Progress"
+
+    third = sync.sync_for_customer("cust1")  # it left the pickup status: nothing more happens
+    assert (third.considered, len(gateway._issues["XX-3"].comments)) == (0, 1)
 
 
 def test_source_metadata_is_imported_but_never_used_for_routing(isolated_dirs):
@@ -549,3 +555,68 @@ def test_admin_role_guards_the_config_routes_but_not_status_or_sync(viewer_clien
     # specifically (403), not the admin-role check (which would also be 403,
     # but for a different reason) -- see require_write_access's own docstring.
     assert viewer_client.post("/admin/jira-integration/sync", headers=bare).status_code == 403
+
+
+def test_a_failed_write_back_still_reports_the_import(isolated_dirs):
+    class _RefusingGateway(FakeJiraGateway):
+        def set_field(self, **kwargs):
+            raise RuntimeError("Jira refused PUT /rest/api/3/issue/XX-4 (HTTP 400): field not on screen")
+
+    gateway = _RefusingGateway(seed=[_issue("XX-4", status="Ready for Jade")])
+    change_requests, integrations, sync = _services(isolated_dirs, gateway)
+    integrations.upsert(
+        "cust1",
+        JiraIntegrationConfigUpdate(
+            base_url="https://example.atlassian.net", project_key="XX",
+            pickup_status="Ready for Jade", post_pickup_status="Jade - In Progress",
+            jade_id_field="customfield_1",
+        ),
+        actor="Tester",
+    )
+
+    result = sync.sync_for_customer("cust1")
+    assert result.imported == ["CR-JIRA-XX-4"]
+    assert result.updated_in_jira == ["XX-4"]
+    assert len(result.errors) == 1
+    assert "could not fill the Jade Change ID field" in result.errors[0].message
+    assert "field not on screen" in result.errors[0].message
+    assert change_requests.get("CR-JIRA-XX-4") is not None
+    assert gateway._issues["XX-4"].status == "Jade - In Progress"
+    assert len(gateway._issues["XX-4"].comments) == 1
+
+
+def _configure(integrations, **overrides):
+    values = dict(base_url="https://example.atlassian.net", project_key="XX", pickup_status="Ready for Jade",
+                  post_pickup_status="Jade - In Progress")
+    values.update(overrides)
+    integrations.upsert("cust1", JiraIntegrationConfigUpdate(**values), actor="Tester")
+
+
+def test_the_hand_off_works_without_a_jade_id_field_and_can_reply_publicly_without_assigning(isolated_dirs):
+    gateway = FakeJiraGateway(seed=[_issue("XX-5", status="Ready for Jade")])
+    change_requests, integrations, sync = _services(isolated_dirs, gateway)
+    _configure(integrations, assign_to_jade=False, comment_visibility="public")
+    assert integrations.get_for_customer("cust1").is_configured()
+
+    result = sync.sync_for_customer("cust1")
+    assert (result.imported, result.updated_in_jira, result.errors) == (["CR-JIRA-XX-5"], ["XX-5"], [])
+    issue = gateway._issues["XX-5"]
+    assert issue.fields == {} and issue.assignee is None
+    assert len(issue.comments) == 1 and issue.internal_comments == []
+    saved = integrations.get_for_customer("cust1")
+    assert (saved.assign_to_jade, saved.comment_visibility) == (False, "public")
+
+
+def test_a_withdrawn_request_is_left_alone_in_jira(isolated_dirs):
+    gateway = FakeJiraGateway(seed=[_issue("XX-6", status="Ready for Jade")])
+    change_requests, integrations, sync = _services(isolated_dirs, gateway)
+    _configure(integrations, post_pickup_status="Not reachable")
+    gateway.find_transition_id = lambda **kw: None  # stays in the pickup status
+    assert sync.sync_for_customer("cust1").imported == ["CR-JIRA-XX-6"]
+    change_requests.withdraw("CR-JIRA-XX-6", reason="test ticket", actor="Tester")
+
+    again = sync.sync_for_customer("cust1")
+    assert (again.imported, again.updated_in_jira, again.errors) == ([], [], [])
+    assert again.skipped_withdrawn == ["XX-6"]
+    assert change_requests.get("CR-JIRA-XX-6").status == "withdrawn"
+    assert gateway._issues["XX-6"].comments == [] and gateway._issues["XX-6"].assignee is None

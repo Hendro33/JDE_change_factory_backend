@@ -261,6 +261,41 @@ def test_the_monthly_budget_blocks_further_runs(isolated_dirs):
         runtime.prepare("vdb", ["improve-agent"])
 
 
+
+def test_workspace_spend_is_totalled_per_day_week_and_month(isolated_dirs):
+    from datetime import datetime, timezone
+
+    from jde_api_service.ai import runtime
+    from jde_api_service.persistence.db import connection as db
+
+    from . import _ai
+
+    _ai.configure("vdb")
+    now = datetime(2026, 10, 9, 15, 0, tzinfo=timezone.utc)
+    rows = [("a", "vdb", "orchestration_driver", "completed", 0.5, "2026-10-09T08:00:00+00:00", '{"durationMs": 60000}'),
+            ("b", "vdb", "review_driver", "failed", 0.25, "2026-10-05T08:00:00+00:00", '{"durationMs": 120000}'),
+            ("c", "vdb", "orchestration_driver", "completed", 1.0, "2026-10-01T08:00:00+00:00", None),
+            ("d", "vdb", "orchestration_driver", "completed", 4.0, "2026-09-30T08:00:00+00:00", None),
+            ("e", "other", "orchestration_driver", "completed", 9.0, "2026-10-09T08:00:00+00:00", None)]
+    with db(immediate=True) as conn:
+        conn.executemany("INSERT INTO ai_runs (run_id, company_id, driver, roles, status, cost_usd, started_at, usage) "
+                         "VALUES (?, ?, ?, '[]', ?, ?, ?, ?)", rows)
+    s = runtime.spend_summary("vdb", now=now)
+    assert (s["today"]["costUsd"], s["today"]["runs"]) == (0.5, 1)
+    assert (s["week"]["costUsd"], s["week"]["runs"], s["week"]["failed"]) == (0.75, 2, 1)
+    assert (s["month"]["costUsd"], s["month"]["runs"]) == (1.75, 3)
+    assert s["week"]["avgDurationMs"] == 90000
+    assert len(s["daily"]) == 14 and s["daily"][-1] == {"date": "2026-10-09", "costUsd": 0.5, "runs": 1}
+    assert sum(d["costUsd"] for d in s["daily"]) == 5.75  # Sep 30 is in the 14 days, not the month
+    assert s["monthByDriver"][0] == {"driver": "orchestration_driver", "costUsd": 1.5, "runs": 2}
+    assert s["monthlyBudgetUsd"] is not None
+
+
+def test_the_spend_endpoint_is_scoped_to_the_customer(client):
+    r = client.get("/admin/ai/spend", headers=headers("vdb"))
+    assert r.status_code == 200
+    assert r.json()["month"]["runs"] == 0
+
 # -- Start-up Packs ---------------------------------------------------------------------------
 def _published(client, pack_id, customer="vdb"):
     p = next(p for p in client.get("/admin/ai/packs", headers=headers(customer)).json()["packs"] if p["packId"] == pack_id)

@@ -191,13 +191,26 @@ async def run_enhancement(
         roles = list(_SUBAGENT_TO_STAGE)
         async with runtime.agent_run(company_id=customer_id, driver="orchestration_driver", roles=roles,
                                      story_id=story_id) as ai_run:
+            # Only the Check Agent may hand a story to the backlog: the quality
+            # gate cannot be skipped by the orchestrating session doing it itself.
             options = ai_run.options(cwd=repo_root, permission_mode=PERMISSION_MODE, allowed_tools=_ALLOWED_TOOLS,
-                                     max_turns=MAX_TURNS, subagents=roles)
+                                     max_turns=MAX_TURNS, subagents=roles,
+                                     owned_tools={"mcp__jde-change-factory__propose_to_backlog": ["check-agent"]})
             prompt = _build_prompt(story_id, source, raw_content) + ai_run.context_prompt()
 
+            seen_starts: set[str] = set()
+            ran: list[str] = []
             async for event in ai_run.stream(prompt, options):
                 if event.kind == "subagent_started":
+                    # The delegation call and the task-start frame report the
+                    # same start; count it once.
+                    key = event.data.get("tool_use_id")
+                    if key and key in seen_starts:
+                        continue
+                    if key:
+                        seen_starts.add(key)
                     subagent_type = event.data.get("name")
+                    ran.append(subagent_type)
                     stage = _SUBAGENT_TO_STAGE.get(subagent_type)
                     if stage:
                         run_service.set_stage(request_id, stage)
@@ -242,6 +255,16 @@ async def run_enhancement(
         rough_complexity_signal = _coerce_enum(
             summary.get("rough_complexity_signal"), {"Low", "Medium", "High", "Unknown"}, "Unknown"
         )
+        failed_criteria = list(summary.get("failed_criteria") or [])
+        if check_outcome == "proposed_to_backlog":
+            # Trust the record, not the summary: only the Check Agent can write it.
+            from jde_mcp_server import backlog as _backlog
+
+            if "check-agent" not in ran or _backlog._load(summary.get("story_id") or story_id) is None:  # noqa: SLF001
+                check_outcome = "needs_human_input"
+                us_raw["quality_status"] = "needs_human_input"
+                failed_criteria.append("The Check Agent did not pass the story to the backlog in this run "
+                                       f"(agents that ran: {', '.join(dict.fromkeys(ran)) or 'none recorded'}).")
         backlog_story_id = None
         if check_outcome == "proposed_to_backlog":
             backlog_story_id = summary.get("story_id") or story_id
@@ -259,7 +282,7 @@ async def run_enhancement(
             business_impact=_business_impact_from_summary(summary),
             rough_complexity_signal=rough_complexity_signal,
             check_outcome=check_outcome,
-            failed_criteria=list(summary.get("failed_criteria") or []),
+            failed_criteria=failed_criteria,
             backlog_story_id=backlog_story_id,
         )
         for run_id in started_run_ids:

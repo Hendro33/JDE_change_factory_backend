@@ -114,6 +114,9 @@ class RunSpec:
     agents: list[AgentSpec]
     tool_servers: dict[str, Any]
     system_prompt_append: Optional[str] = None
+    # Tools only the named subagents may call (never the main agent or another
+    # subagent), e.g. propose_to_backlog belongs to the Check Agent alone.
+    owned_tools: dict[str, list[str]] = field(default_factory=dict)
 
 
 @dataclass
@@ -156,6 +159,9 @@ class ClaudeAgentRuntime:
                                               model=a.model or spec.model, maxTurns=a.max_turns, background=False)
                   for a in spec.agents}
         kwargs: dict[str, Any] = {}
+        if spec.owned_tools:
+            kwargs["hooks"] = {"PreToolUse": [sdk.HookMatcher(matcher=tool, hooks=[_owner_guard(tool, owners)])
+                                              for tool, owners in spec.owned_tools.items()]}
         if spec.system_prompt_append:
             kwargs["system_prompt"] = {"type": "preset", "preset": "claude_code", "append": spec.system_prompt_append}
         return sdk.ClaudeAgentOptions(
@@ -171,27 +177,63 @@ class ClaudeAgentRuntime:
 
     @staticmethod
     def translate(message) -> RuntimeEvent:
+        return ClaudeAgentRuntime.translate_all(message)[0]
+
+    @staticmethod
+    def translate_all(message) -> list[RuntimeEvent]:
+        """Every event one SDK message carries. A subagent start is recognised
+        from the delegation call itself (a Task/Agent tool use naming the
+        subagent) and from the task-start frame (a SystemMessage subclass in
+        current SDKs); both carry the tool_use_id, so a driver counts a start
+        once."""
         kind = type(message).__name__
-        if kind == "SystemMessage":
+        if kind == "AssistantMessage":
+            starts = []
+            for block in getattr(message, "content", None) or []:
+                tool_input = getattr(block, "input", None)
+                if getattr(block, "name", None) in ("Task", "Agent") and isinstance(tool_input, dict) \
+                        and tool_input.get("subagent_type"):
+                    starts.append(RuntimeEvent("subagent_started", {"name": tool_input["subagent_type"],
+                                                                    "tool_use_id": getattr(block, "id", None)}, message))
+            return starts or [RuntimeEvent("other", {}, message)]
+        if kind != "ResultMessage" and getattr(message, "subtype", None) is not None and hasattr(message, "data"):
             data = getattr(message, "data", None) or {}
             sub = getattr(message, "subtype", "")
             if sub == "init":
-                return RuntimeEvent("init", {"model": data.get("model"), "credential_source": data.get("apiKeySource"),
-                                             "runtime_version": data.get("claude_code_version")}, message)
-            if sub == "task_started":
-                return RuntimeEvent("subagent_started", {"name": data.get("subagent_type")}, message)
-        elif kind == "ResultMessage":
-            return RuntimeEvent("result", {
+                return [RuntimeEvent("init", {"model": data.get("model"), "credential_source": data.get("apiKeySource"),
+                                              "runtime_version": data.get("claude_code_version")}, message)]
+            if sub == "task_started" and data.get("subagent_type"):
+                return [RuntimeEvent("subagent_started", {
+                    "name": data.get("subagent_type"),
+                    "tool_use_id": getattr(message, "tool_use_id", None) or data.get("tool_use_id")}, message)]
+            return [RuntimeEvent("other", {}, message)]
+        if kind == "ResultMessage":
+            return [RuntimeEvent("result", {
                 "is_error": bool(getattr(message, "is_error", False)), "text": getattr(message, "result", None),
                 "usage": getattr(message, "usage", None), "model_usage": getattr(message, "model_usage", None),
                 "cost_usd": getattr(message, "total_cost_usd", None), "num_turns": getattr(message, "num_turns", None),
-                "duration_ms": getattr(message, "duration_ms", None)}, message)
-        return RuntimeEvent("other", {}, message)
+                "duration_ms": getattr(message, "duration_ms", None)}, message)]
+        return [RuntimeEvent("other", {}, message)]
 
     def stream(self, prompt: str, options, query: Optional[Callable] = None):
         import claude_agent_sdk as sdk
 
         return (query or sdk.query)(prompt=prompt, options=options)
+
+
+def _owner_guard(tool: str, owners: list[str]):
+    """A PreToolUse hook: only the named subagents may call `tool`. The CLI
+    reports agent_type when a hook fires inside a subagent; on the main
+    thread it is absent, so the main agent is refused too."""
+    async def guard(input_data, tool_use_id, context):
+        caller = (input_data or {}).get("agent_type")
+        if caller in owners:
+            return {}
+        return {"hookSpecificOutput": {
+            "hookEventName": "PreToolUse", "permissionDecision": "deny",
+            "permissionDecisionReason": (f"{tool} may only be called by {', '.join(owners)}; "
+                                         f"delegate this step to {owners[0]} instead of doing it yourself.")}}
+    return guard
 
 
 ADAPTER = ClaudeAgentRuntime()
@@ -271,14 +313,17 @@ class AgentRun:
     def options(self, *, cwd: str, permission_mode: str, allowed_tools: list[str], max_turns: int,
                 disallowed_tools: Optional[list[str]] = None, tool_servers: Optional[dict] = None,
                 subagents: Optional[list[str]] = None, top_level: Optional[str] = None,
-                top_level_in_system_prompt: bool = True, granted_tools: Optional[list[str]] = None):
+                top_level_in_system_prompt: bool = True, granted_tools: Optional[list[str]] = None,
+                owned_tools: Optional[dict[str, list[str]]] = None):
         """subagents: roles reached via Task (each defined from its pack);
         top_level: a role whose pack instructions become the main agent's
         system prompt. A tool is available only if the driver allows it AND
         a pack of this run requests it within its role's ceiling.
         granted_tools: tools the driver itself grants for this run whatever
         the pack requests -- only an executor's tools, bound to one approved
-        item of one approved change (executors/browser.py)."""
+        item of one approved change (executors/browser.py).
+        owned_tools: tool -> the subagents that alone may call it; any other
+        caller (the main agent included) is refused by a PreToolUse hook."""
         roles = list(subagents or []) + ([top_level] if top_level else [])
         requested = {t for r in roles for t in self.packs[r].effective_tools(documents_allowed=self.documents_allowed)}
         driver_allowed = set(allowed_tools) | set(ai_packs.KNOWLEDGE_TOOLS)
@@ -314,26 +359,28 @@ class AgentRun:
             max_turns=min(x for x in (max_turns, int(limits.get("max_turns") or max_turns), pack_turns) if x),
             max_budget_usd=float(limits.get("max_usd_per_run") or ai_connection.DEFAULT_LIMITS["max_usd_per_run"]),
             agents=agents, tool_servers=servers,
-            system_prompt_append=self.packs[top_level].prompt() if top_level and top_level_in_system_prompt else None)
+            system_prompt_append=self.packs[top_level].prompt() if top_level and top_level_in_system_prompt else None,
+            owned_tools={t: list(o) for t, o in (owned_tools or {}).items() if t in allowed})
         return self.adapter.build_options(spec)
 
     # Streaming -------------------------------------------------------------------------
     async def stream(self, prompt: str, options, query: Optional[Callable] = None) -> AsyncIterator[RuntimeEvent]:
         async for message in self.adapter.stream(prompt, options, query):
-            event = self.adapter.translate(message)
-            if event.kind == "init":
-                self.reported_model = event.data.get("model")
-                self.runtime_version = event.data.get("runtime_version")
-                self.credential_source = event.data.get("credential_source")
-                if self.credential_source != EXPECTED_KEY_SOURCE:
-                    raise RuntimeMismatch(f"the agent runtime reported credential source {self.credential_source!r}, "
-                                          "not this customer's API key; the run was stopped before any model request")
-                if not (self.reported_model or "").startswith(self.main_model):
-                    raise RuntimeMismatch(f"the agent runtime selected model {self.reported_model!r}, not the "
-                                          f"configured {self.main_model}; the run was stopped")
-            elif event.kind == "result":
-                self.result = event.data
-            yield event
+            translate_all = getattr(self.adapter, "translate_all", None)
+            for event in (translate_all(message) if translate_all else [self.adapter.translate(message)]):
+                if event.kind == "init":
+                    self.reported_model = event.data.get("model")
+                    self.runtime_version = event.data.get("runtime_version")
+                    self.credential_source = event.data.get("credential_source")
+                    if self.credential_source != EXPECTED_KEY_SOURCE:
+                        raise RuntimeMismatch(f"the agent runtime reported credential source {self.credential_source!r}, "
+                                              "not this customer's API key; the run was stopped before any model request")
+                    if not (self.reported_model or "").startswith(self.main_model):
+                        raise RuntimeMismatch(f"the agent runtime selected model {self.reported_model!r}, not the "
+                                              f"configured {self.main_model}; the run was stopped")
+                elif event.kind == "result":
+                    self.result = event.data
+                yield event
 
     # Record ------------------------------------------------------------------------------
     def _insert(self, initiated_by: Optional[str]) -> None:
@@ -525,6 +572,53 @@ def health(company_id: str) -> list[dict]:
         })
     return out
 
+
+
+def spend_summary(company_id: str, now: Optional[datetime] = None) -> dict:
+    """Workspace totals for the Agents & AI page: estimated cost and runs for
+    today, the last 7 days and this calendar month (the period the monthly
+    budget counts), plus a 14-day daily series. All periods are UTC."""
+    from datetime import timedelta
+
+    now = now or datetime.now(timezone.utc)
+    today = now.strftime("%Y-%m-%d")
+    week_start = (now - timedelta(days=6)).strftime("%Y-%m-%d")
+    month_start = now.strftime("%Y-%m-01")
+    series_start = (now - timedelta(days=13)).strftime("%Y-%m-%d")
+    since = min(month_start, series_start)
+    with db() as conn:
+        rows = conn.execute("SELECT driver, status, cost_usd, usage, started_at FROM ai_runs "
+                            "WHERE company_id = ? AND started_at >= ?", (company_id, since)).fetchall()
+
+    def period(start: str) -> dict:
+        mine = [r for r in rows if r["started_at"][:10] >= start]
+        done = [r for r in mine if r["status"] in ("completed", "failed")]
+        durations = [json.loads(r["usage"]).get("durationMs") for r in done if r["usage"]]
+        durations = [d for d in durations if d]
+        return {"from": start, "costUsd": round(sum(r["cost_usd"] or 0 for r in mine), 4), "runs": len(mine),
+                "completed": sum(r["status"] == "completed" for r in mine),
+                "failed": sum(r["status"] == "failed" for r in mine),
+                "blocked": sum(r["status"] == "blocked" for r in mine),
+                "running": sum(r["status"] == "running" for r in mine),
+                "avgDurationMs": round(sum(durations) / len(durations)) if durations else None}
+
+    daily = []
+    for i in range(13, -1, -1):
+        day = (now - timedelta(days=i)).strftime("%Y-%m-%d")
+        mine = [r for r in rows if r["started_at"][:10] == day]
+        daily.append({"date": day, "costUsd": round(sum(r["cost_usd"] or 0 for r in mine), 4), "runs": len(mine)})
+    by_driver: dict[str, dict] = {}
+    for r in rows:
+        if r["started_at"][:10] >= month_start:
+            d = by_driver.setdefault(r["driver"], {"driver": r["driver"], "costUsd": 0.0, "runs": 0})
+            d["costUsd"] = round(d["costUsd"] + (r["cost_usd"] or 0), 4)
+            d["runs"] += 1
+    view = ai_connection.view(company_id)
+    budget = (view.get("limits") or ai_connection.DEFAULT_LIMITS).get("monthly_usd")
+    return {"today": period(today), "week": period(week_start), "month": period(month_start),
+            "daily": daily, "monthByDriver": sorted(by_driver.values(), key=lambda d: -d["costUsd"]),
+            "monthlyBudgetUsd": budget, "currency": "USD",
+            "costBasis": "estimated from the token usage each run reported, at list prices"}
 
 def require_ready(company_id: Optional[str], roles: list[str], *, driver: str, story_id: Optional[str] = None,
                   initiated_by: Optional[str] = None) -> None:

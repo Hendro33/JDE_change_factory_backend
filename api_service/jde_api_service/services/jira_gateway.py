@@ -93,7 +93,11 @@ class JiraGateway(Protocol):
 
     def set_field(self, *, base_url: str, issue_key: str, field_id: str, value: str) -> None: ...
 
-    def add_comment(self, *, base_url: str, issue_key: str, body: str) -> None: ...
+    def add_comment(self, *, base_url: str, issue_key: str, body: str, internal: bool = False) -> None: ...
+
+    def own_account_id(self, *, base_url: str) -> str: ...
+
+    def assign_issue(self, *, base_url: str, issue_key: str, account_id: str) -> None: ...
 
     def find_transition_id(self, *, base_url: str, issue_key: str, target_status_name: str) -> Optional[str]: ...
 
@@ -146,26 +150,22 @@ class JiraHttpGateway:
         return (self._email, self._api_token)
 
     def _get(self, base_url: str, path: str, **kwargs) -> httpx.Response:
-        resp = self._http.get(f"{base_url}{path}", auth=self._auth(), **kwargs)
-        resp.raise_for_status()
-        return resp
+        return _checked(self._http.get(f"{base_url}{path}", auth=self._auth(), **kwargs))
 
     def _post(self, base_url: str, path: str, **kwargs) -> httpx.Response:
-        resp = self._http.post(f"{base_url}{path}", auth=self._auth(), **kwargs)
-        resp.raise_for_status()
-        return resp
+        return _checked(self._http.post(f"{base_url}{path}", auth=self._auth(), **kwargs))
 
     def _put(self, base_url: str, path: str, **kwargs) -> httpx.Response:
-        resp = self._http.put(f"{base_url}{path}", auth=self._auth(), **kwargs)
-        resp.raise_for_status()
-        return resp
+        return _checked(self._http.put(f"{base_url}{path}", auth=self._auth(), **kwargs))
 
     def search_issues_in_status(
         self, *, base_url: str, project_key: str, status_name: str,
         jade_id_field: str, request_type_field: str = "",
     ) -> list[JiraIssueSummary]:
         jql = f'project = "{_jql_quote(project_key)}" AND status = "{_jql_quote(status_name)}" ORDER BY created ASC'
-        fields = ["summary", "description", "reporter", "created", "issuetype", "priority", jade_id_field]
+        fields = ["summary", "description", "reporter", "created", "issuetype", "priority"]
+        if jade_id_field:
+            fields.append(jade_id_field)
         if request_type_field:
             fields.append(request_type_field)
 
@@ -187,8 +187,20 @@ class JiraHttpGateway:
     def set_field(self, *, base_url: str, issue_key: str, field_id: str, value: str) -> None:
         self._put(base_url, f"/rest/api/3/issue/{issue_key}", json={"fields": {field_id: value}})
 
-    def add_comment(self, *, base_url: str, issue_key: str, body: str) -> None:
-        self._post(base_url, f"/rest/api/3/issue/{issue_key}/comment", json={"body": _adf_paragraph(body)})
+    def add_comment(self, *, base_url: str, issue_key: str, body: str, internal: bool = False) -> None:
+        payload: dict = {"body": _adf_paragraph(body)}
+        if internal:
+            # Jira Service Management's internal note (agents only); other
+            # Jira projects ignore the property.
+            payload["properties"] = [{"key": "sd.public.comment", "value": {"internal": True}}]
+        self._post(base_url, f"/rest/api/3/issue/{issue_key}/comment", json=payload)
+
+    def own_account_id(self, *, base_url: str) -> str:
+        """The account Jade connects with (the API token's owner)."""
+        return self._get(base_url, "/rest/api/3/myself").json()["accountId"]
+
+    def assign_issue(self, *, base_url: str, issue_key: str, account_id: str) -> None:
+        self._put(base_url, f"/rest/api/3/issue/{issue_key}/assignee", json={"accountId": account_id})
 
     def find_transition_id(self, *, base_url: str, issue_key: str, target_status_name: str) -> Optional[str]:
         resp = self._get(base_url, f"/rest/api/3/issue/{issue_key}/transitions")
@@ -212,6 +224,35 @@ class JiraHttpGateway:
                 if name and name not in names:
                     names.append(name)
         return names
+
+
+def _jira_reason(resp: httpx.Response) -> str:
+    """Jira's own explanation of a refused request (errorMessages and
+    per-field errors), never the credential."""
+    try:
+        data = resp.json() or {}
+    except ValueError:
+        return ""
+    if not isinstance(data, dict):
+        return ""
+    parts = [str(m) for m in data.get("errorMessages") or []]
+    parts += [f"{k}: {v}" for k, v in (data.get("errors") or {}).items()]
+    return "; ".join(parts)[:500]
+
+
+def _checked(resp: httpx.Response) -> httpx.Response:
+    """raise_for_status, with Jira's reason added to the message."""
+    if resp.status_code >= 400:
+        reason = _jira_reason(resp)
+        method, path = resp.request.method, resp.request.url.path
+        message = f"Jira refused {method} {path} (HTTP {resp.status_code})"
+        if reason:
+            message += f": {reason}"
+            if "cannot be set" in reason and "screen" in reason:
+                message += (" -- add this field to the edit screen of the project's work types in Jira "
+                            "(the API can only set fields that are on that screen)")
+        raise httpx.HTTPStatusError(message, request=resp.request, response=resp)
+    return resp
 
 
 def _explain_request_error(exc: httpx.RequestError) -> str:
