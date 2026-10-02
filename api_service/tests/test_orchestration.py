@@ -234,3 +234,59 @@ def test_enhance_requires_the_change_request_to_belong_to_the_caller(client, mon
 def test_enhance_unknown_change_id_is_404(client):
     r = client.post("/changes/CR-does-not-exist/enhance", headers=headers(customer="bwm"))
     assert r.status_code == 404
+
+
+async def _fake_query_check_skipped(*, prompt, options):
+    # The orchestrating session writes the backlog record itself and claims
+    # a pass; the Check Agent never ran.
+    story_id = _story_id_from_prompt(prompt)
+    summary = _summary_for(story_id)
+    yield _sys("receive-agent")
+    yield _sys("improve-agent")
+    backlog.propose_to_backlog(story_id, summary["user_story"]["statement"], summary["business_impact"],
+                               summary["rough_complexity_signal"], source="Support / Topdesk, Topdesk T001")
+    yield _result(f"```json\n{json.dumps(summary)}\n```")
+
+
+def test_a_pass_without_the_check_agent_is_not_trusted(client, monkeypatch):
+    monkeypatch.setattr(sdk, "query", _fake_query_check_skipped)
+    request_id = _seed_t001(client)
+
+    assert client.post(f"/changes/{request_id}/enhance", headers=headers(customer="bwm")).status_code == 202
+
+    change = client.get(f"/changes/{request_id}", headers=headers(customer="bwm")).json()
+    assert change["processingStage"] == "done"
+    assert change["state"] == "REFINING"
+    assert change["userStory"]["qualityStatus"] == "needs_human_input"
+    assert not any(c["id"] == request_id for c in client.get("/backlog", headers=headers(customer="bwm")).json())
+
+
+def test_only_the_check_agent_may_propose_to_the_backlog():
+    import asyncio
+
+    from jde_api_service.ai.runtime import _owner_guard
+
+    guard = _owner_guard("mcp__jde-change-factory__propose_to_backlog", ["check-agent"])
+    denied = asyncio.run(guard({"tool_name": "x"}, "t1", None))
+    assert denied["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert "check-agent" in denied["hookSpecificOutput"]["permissionDecisionReason"]
+    assert asyncio.run(guard({"agent_type": "improve-agent"}, "t2", None))["hookSpecificOutput"][
+        "permissionDecision"] == "deny"
+    assert asyncio.run(guard({"agent_type": "check-agent"}, "t3", None)) == {}
+
+
+def test_subagent_starts_are_recognised_from_the_delegation_call_and_the_task_frame():
+    from jde_api_service.ai.runtime import ClaudeAgentRuntime
+
+    call = sdk.AssistantMessage(content=[
+        sdk.TextBlock(text="Handing over to the Check Agent."),
+        sdk.ToolUseBlock(id="tu-1", name="Task", input={"subagent_type": "check-agent", "prompt": "check"}),
+    ], model="m")
+    assert [(e.kind, e.data) for e in ClaudeAgentRuntime.translate_all(call)] == [
+        ("subagent_started", {"name": "check-agent", "tool_use_id": "tu-1"})]
+
+    frame = sdk.TaskStartedMessage(subtype="task_started", data={"subagent_type": "check-agent"}, task_id="k",
+                                   description="check", uuid="u", session_id="s", tool_use_id="tu-1")
+    events = ClaudeAgentRuntime.translate_all(frame)
+    assert [(e.kind, e.data["name"], e.data["tool_use_id"]) for e in events] == [
+        ("subagent_started", "check-agent", "tu-1")]

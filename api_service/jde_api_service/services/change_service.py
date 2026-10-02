@@ -558,7 +558,12 @@ class ChangeService:
         # ChangeRequest (the normal post-orchestration state).
         for record in _all_backlog_records():
             if record["story_id"] == change_id:
-                if self._links.customer_for(change_id) != customer_id:
+                owner = self._links.customer_for(change_id)
+                if owner is None:
+                    # Never handed over by a passing run (e.g. a record the
+                    # Check Agent did not write): the request still stands.
+                    break
+                if owner != customer_id:
                     return None
                 origin = self._change_requests.get(change_id)
                 return _with_lifecycle(_change_from_story(
