@@ -4,8 +4,10 @@ name: Load Hoogwegt sample data into DEV
 # into Jade DEV once. It waits until DEV runs the image built from this commit,
 # then runs the loader as a temporary Container Apps Job made from the API app's
 # own definition (same image, settings, secrets and network), and removes the
-# job afterwards. The loader refuses if the customer already exists, so running
-# this again changes nothing. Runs by hand, or when this file changes on dev.
+# job afterwards. Run again when the customer already exists, the loader only
+# adds what newer versions of the data set introduced and is still missing
+# (e.g. priority and change type), never overwriting what a person changed.
+# Runs by hand, or when this file changes on dev.
 on:
   workflow_dispatch:
   push:

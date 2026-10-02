@@ -36,6 +36,12 @@ def create_change_request(
     )
     if payload.attachment_ids:
         attachments.link(ctx.customer_id, created.id, payload.attachment_ids, user_id=ctx.identity.id)
+    if payload.priority or payload.change_type:
+        from ..services import classification_service
+
+        classification_service.set_classification(
+            created.id, ctx.customer_id, priority=payload.priority, change_type=payload.change_type,
+            actor_id=ctx.identity.id, actor=ctx.identity.display_name, expected_revision=None)
     return created
 
 

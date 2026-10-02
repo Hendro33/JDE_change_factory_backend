@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-from typing import Literal
+from typing import Literal, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 
 from ..config import settings
 from ..dependencies import AuthContext, require_customer_access, require_write_access
-from ..models.change import Change
+from ..models.base import ApiModel
+from ..models.change import Change, ChangeType, Priority
 from ..models.metrics import ActivityEntry, FactoryMetrics
 from ..models.work import MyWork
 from ..services.orchestration_driver import run_enhancement
@@ -19,6 +20,32 @@ from ..services.registry import (
 )
 
 router = APIRouter(tags=["changes"])
+
+
+class ClassificationInput(ApiModel):
+    priority: Optional[Priority] = None
+    change_type: Optional[ChangeType] = None
+    # The classificationRevision the caller loaded (0 when none was set yet).
+    expected_revision: int
+
+
+@router.put("/changes/{change_id}/classification", response_model=Change)
+def set_classification(change_id: str, payload: ClassificationInput,
+                       ctx: AuthContext = Depends(require_write_access)) -> Change:
+    """Sets the story's priority and/or change type. Any member who may
+    write (not a viewer) can set them; the history records who and when.
+    Neither value takes part in any approval or lifecycle decision."""
+    from ..services import classification_service
+
+    if get_change_service().get_for_customer(change_id, ctx.customer_id) is None:
+        raise HTTPException(status_code=404, detail=f"no such change: {change_id}")
+    try:
+        classification_service.set_classification(
+            change_id, ctx.customer_id, priority=payload.priority, change_type=payload.change_type,
+            actor_id=ctx.identity.id, actor=ctx.identity.display_name, expected_revision=payload.expected_revision)
+    except classification_service.ClassificationConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+    return get_change_service().get_for_customer(change_id, ctx.customer_id)
 
 
 @router.get("/changes", response_model=list[Change])
