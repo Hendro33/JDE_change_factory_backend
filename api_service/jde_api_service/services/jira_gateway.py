@@ -146,19 +146,13 @@ class JiraHttpGateway:
         return (self._email, self._api_token)
 
     def _get(self, base_url: str, path: str, **kwargs) -> httpx.Response:
-        resp = self._http.get(f"{base_url}{path}", auth=self._auth(), **kwargs)
-        resp.raise_for_status()
-        return resp
+        return _checked(self._http.get(f"{base_url}{path}", auth=self._auth(), **kwargs))
 
     def _post(self, base_url: str, path: str, **kwargs) -> httpx.Response:
-        resp = self._http.post(f"{base_url}{path}", auth=self._auth(), **kwargs)
-        resp.raise_for_status()
-        return resp
+        return _checked(self._http.post(f"{base_url}{path}", auth=self._auth(), **kwargs))
 
     def _put(self, base_url: str, path: str, **kwargs) -> httpx.Response:
-        resp = self._http.put(f"{base_url}{path}", auth=self._auth(), **kwargs)
-        resp.raise_for_status()
-        return resp
+        return _checked(self._http.put(f"{base_url}{path}", auth=self._auth(), **kwargs))
 
     def search_issues_in_status(
         self, *, base_url: str, project_key: str, status_name: str,
@@ -212,6 +206,35 @@ class JiraHttpGateway:
                 if name and name not in names:
                     names.append(name)
         return names
+
+
+def _jira_reason(resp: httpx.Response) -> str:
+    """Jira's own explanation of a refused request (errorMessages and
+    per-field errors), never the credential."""
+    try:
+        data = resp.json() or {}
+    except ValueError:
+        return ""
+    if not isinstance(data, dict):
+        return ""
+    parts = [str(m) for m in data.get("errorMessages") or []]
+    parts += [f"{k}: {v}" for k, v in (data.get("errors") or {}).items()]
+    return "; ".join(parts)[:500]
+
+
+def _checked(resp: httpx.Response) -> httpx.Response:
+    """raise_for_status, with Jira's reason added to the message."""
+    if resp.status_code >= 400:
+        reason = _jira_reason(resp)
+        method, path = resp.request.method, resp.request.url.path
+        message = f"Jira refused {method} {path} (HTTP {resp.status_code})"
+        if reason:
+            message += f": {reason}"
+            if "cannot be set" in reason and "screen" in reason:
+                message += (" -- add this field to the edit screen of the project's work types in Jira "
+                            "(the API can only set fields that are on that screen)")
+        raise httpx.HTTPStatusError(message, request=resp.request, response=resp)
+    return resp
 
 
 def _explain_request_error(exc: httpx.RequestError) -> str:

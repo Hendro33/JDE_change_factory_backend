@@ -549,3 +549,29 @@ def test_admin_role_guards_the_config_routes_but_not_status_or_sync(viewer_clien
     # specifically (403), not the admin-role check (which would also be 403,
     # but for a different reason) -- see require_write_access's own docstring.
     assert viewer_client.post("/admin/jira-integration/sync", headers=bare).status_code == 403
+
+
+def test_a_failed_write_back_still_reports_the_import(isolated_dirs):
+    class _RefusingGateway(FakeJiraGateway):
+        def set_field(self, **kwargs):
+            raise RuntimeError("Jira refused PUT /rest/api/3/issue/XX-4 (HTTP 400): field not on screen")
+
+    gateway = _RefusingGateway(seed=[_issue("XX-4", status="Ready for Jade")])
+    change_requests, integrations, sync = _services(isolated_dirs, gateway)
+    integrations.upsert(
+        "cust1",
+        JiraIntegrationConfigUpdate(
+            base_url="https://example.atlassian.net", project_key="XX",
+            pickup_status="Ready for Jade", post_pickup_status="Jade - In Progress",
+            jade_id_field="customfield_1",
+        ),
+        actor="Tester",
+    )
+
+    result = sync.sync_for_customer("cust1")
+    assert result.imported == ["CR-JIRA-XX-4"]
+    assert result.updated_in_jira == []
+    assert len(result.errors) == 1
+    assert "imported into Jade as CR-JIRA-XX-4" in result.errors[0].message
+    assert "field not on screen" in result.errors[0].message
+    assert change_requests.get("CR-JIRA-XX-4") is not None

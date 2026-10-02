@@ -157,3 +157,18 @@ def test_live_gateway_refuses_without_credentials():
     gateway = JiraHttpGateway(transport=httpx.MockTransport(handler))
     with pytest.raises(RuntimeError, match="no Jira credentials"):
         gateway.set_field(base_url="https://x.atlassian.net", issue_key="CON-1", field_id="customfield_1", value="x")
+
+
+def test_a_refused_request_carries_jiras_own_reason():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(400, json={"errorMessages": [], "errors": {
+            "customfield_10057": "Field 'customfield_10057' cannot be set. It is not on the appropriate screen, or unknown."}})
+
+    gateway = _gateway(httpx.MockTransport(handler))
+    with pytest.raises(httpx.HTTPStatusError) as exc:
+        gateway.set_field(base_url="https://example.atlassian.net", issue_key="CON-1",
+                          field_id="customfield_10057", value="CR-JIRA-CON-1")
+    message = str(exc.value)
+    assert "HTTP 400" in message and "not on the appropriate screen" in message and "edit screen" in message
+    assert "secret-token" not in message
+    assert exc.value.response.status_code == 400

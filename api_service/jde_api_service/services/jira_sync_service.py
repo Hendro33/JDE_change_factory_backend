@@ -102,6 +102,13 @@ class JiraSyncService:
             self._change_requests.create_from_jira(issue, customer_id, request_id=stable_id)
             is_new = True
 
+        try:
+            return self._write_back(config, issue, stable_id, is_new)
+        except Exception as exc:  # noqa: BLE001 -- the request is in Jade; only the Jira write-back failed
+            return _OneResult(change_request_id=stable_id, is_new=is_new, write_back_completed=False,
+                              error=f"imported into Jade as {stable_id}, but updating the Jira ticket failed: {exc}")
+
+    def _write_back(self, config: JiraIntegrationConfig, issue, stable_id: str, is_new: bool) -> "_OneResult":
         # Idempotency short-circuit for the write-back itself: if the
         # Jade id is already on the ticket, field-set and comment were
         # already done on a prior run (the transition must have failed
