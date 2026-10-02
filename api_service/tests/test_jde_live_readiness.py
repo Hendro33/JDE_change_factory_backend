@@ -349,3 +349,34 @@ def test_readiness_needs_the_dedicated_account_and_network_restriction(client, m
     view = client.get("/admin/jde/profile", headers=H).json()
     assert view["ready"], [(g["id"], [i for i in g["items"] if i["required"] and not i["satisfied"]]) for g in view["readiness"]]
     assert client.post("/admin/jde/enable", headers=H, json={"expectedRevision": view["revision"]}).status_code == 200
+
+
+def test_an_isolated_trial_can_accept_the_network_exception_and_only_a_trial(client):
+    from ._discovery import profile_body
+
+    def network_item():
+        view = client.get("/admin/jde/profile", headers=H).json()
+        group = next(g for g in view["readiness"] if g["id"] == "network_restriction")
+        return next(i for i in group["items"] if i["id"] == "source_restriction")
+
+    unrestricted = {"backendSourceAddress": "", "restrictedToSource": False, "evidence": "", "evidenceArtifactIds": []}
+    save_profile(client, connectionMode="live", networkRestriction=unrestricted)
+    assert network_item()["satisfied"] is False
+
+    exception = {"backendSourceAddress": "", "restrictedToSource": False, "evidence": "", "evidenceArtifactIds": [],
+                 "trialException": True, "trialExceptionReason": "ConsultIQ OCI trial, no customer data"}
+    # Not for a development (customer) environment, and never without a reason.
+    current = client.get("/admin/jde/profile", headers=H).json()["revision"]
+    refused = client.put("/admin/jde/profile", headers=H, json={**profile_body("vdb", connectionMode="live",
+                         networkRestriction=exception), "expectedRevision": current})
+    assert refused.status_code == 422 and "isolated trial" in refused.text
+    no_reason = client.put("/admin/jde/profile", headers=H, json={**profile_body(
+        "vdb", connectionMode="live", environmentPurpose="isolated_trial", trialApprovalReference="Trial approved by HH",
+        networkRestriction={**exception, "trialExceptionReason": ""}), "expectedRevision": current})
+    assert no_reason.status_code == 422 and "reason" in no_reason.text
+
+    save_profile(client, connectionMode="live", environmentPurpose="isolated_trial",
+                 trialApprovalReference="Trial approved by HH", networkRestriction=exception)
+    item = network_item()
+    assert item["satisfied"] is True and item["kind"] == "accepted_exception"
+    assert "accepted trial exception" in item["detail"] and "no customer data" in item["detail"]

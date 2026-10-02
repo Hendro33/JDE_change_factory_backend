@@ -500,11 +500,17 @@ def readiness(profile: dict) -> tuple[list[dict], bool]:
               config.privilege_confirmed and config.privilege_statement.strip(),
               config.privilege_statement.strip() or "not confirmed", required=not live),
     ]
+    restricted = bool(nr.restricted_to_source and nr.backend_source_address.strip()
+                      and (nr.evidence.strip() or nr.evidence_artifact_ids))
+    trial_exception = (not restricted and nr.trial_exception and config.environment_purpose == "isolated_trial"
+                       and bool(nr.trial_exception_reason.strip()))
     network = [
-        _item("source_restriction", "AIS access restricted to the backend's source address", "customer_attestation",
-              (not live) or (nr.restricted_to_source and nr.backend_source_address.strip()
-                             and (nr.evidence.strip() or nr.evidence_artifact_ids)),
-              (f"{nr.backend_source_address or 'no source address'}: {nr.evidence or 'no evidence'}" if live else na),
+        _item("source_restriction", "AIS access restricted to the backend's source address",
+              "accepted_exception" if trial_exception else "customer_attestation",
+              (not live) or restricted or trial_exception,
+              (f"accepted trial exception (by {profile.get('updated_by') or 'an Admin'}): {nr.trial_exception_reason}"
+               if trial_exception else
+               f"{nr.backend_source_address or 'no source address'}: {nr.evidence or 'no evidence'}") if live else na,
               required=live),
         _item("routing_isolation", "Network route and data isolation confirmed by the customer/CNC", "customer_attestation",
               config.routing_isolation_confirmed and config.isolation_evidence.strip(),
