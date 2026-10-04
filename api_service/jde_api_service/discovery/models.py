@@ -145,6 +145,11 @@ class NetworkRestriction(ApiModel):
     restricted_to_source: bool = False
     evidence: str = Field(default="", max_length=1000)
     evidence_artifact_ids: list[str] = Field(default_factory=list, max_length=10)
+    # Isolated trial environments only: the Admin accepts, with a reason, that
+    # AIS is not restricted to Jade's source address. Recorded on the profile
+    # revision (who and when) and shown as an accepted exception, never as met.
+    trial_exception: bool = False
+    trial_exception_reason: str = Field(default="", max_length=500)
 
 
 class JdeProfileConfig(ApiModel):
@@ -247,6 +252,15 @@ class JdeProfileConfig(ApiModel):
         return v
 
     @model_validator(mode="after")
+    def _network_exception_only_for_trials(self) -> "JdeProfileConfig":
+        nr = self.network_restriction
+        if nr.trial_exception and self.environment_purpose != "isolated_trial":
+            raise ValueError("the network-restriction exception is only available for an isolated trial environment")
+        if nr.trial_exception and len(nr.trial_exception_reason.strip()) < 5:
+            raise ValueError("give a reason for accepting the network-restriction exception")
+        return self
+
+    @model_validator(mode="after")
     def _trial_needs_approval(self) -> "JdeProfileConfig":
         if self.environment_purpose == "isolated_trial" and len(self.trial_approval_reference.strip()) < 5:
             raise ValueError("an isolated trial environment needs the reference to the customer's approval for this trial")
@@ -319,6 +333,9 @@ class JdeProfileView(ApiModel):
     prerequisites: list[dict[str, Any]] = []
     readiness: list[dict[str, Any]] = []
     ready: bool = False
+    # One plain status from the last checks: state (connected, network_unavailable,
+    # certificate_problem, authentication_failed, environment_mismatch, not_tested), label, detail.
+    connection_status: dict[str, str] = {"state": "not_tested", "label": "Not tested", "detail": ""}
     # The uploaded certificate in use (subject, names, validity, fingerprints), if any.
     certificate: Optional[dict[str, Any]] = None
     # Whether the saved password was entered for the current address and certificate.

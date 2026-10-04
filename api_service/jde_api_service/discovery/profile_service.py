@@ -216,6 +216,37 @@ def health(profile: dict) -> dict[str, CheckResult]:
     return {name: _current(profile["health"].get(name), profile) for name in HEALTH_CHECKS}
 
 
+def connection_status(checks: dict[str, CheckResult]) -> dict[str, str]:
+    """One plain status for the Administrator, from the last Test Connection
+    and sample read: connected, network unavailable, certificate problem,
+    authentication failed, environment mismatch, or not tested (yet / since
+    the settings changed). Never contacts JDE itself."""
+    reach, auth, env, read = (checks.get(k) or CheckResult() for k in HEALTH_CHECKS)
+
+    def out(state: str, label: str, detail: str = "") -> dict[str, str]:
+        return {"state": state, "label": label, "detail": detail}
+
+    if reach.state == "unknown":
+        return out("not_tested", "Not tested", "Press Test Connection to check the network, certificate and sign-in.")
+    if reach.state == "stale":
+        return out("not_tested", "Not tested since the settings changed", "Press Test Connection again.")
+    if reach.state == "failed":
+        if reach.detail.startswith("TLS") or "certificate" in reach.detail.lower():
+            return out("certificate_problem", "Certificate problem", reach.detail)
+        return out("network_unavailable", "Network unavailable", reach.detail)
+    if auth.state == "failed":
+        return out("authentication_failed", "Authentication failed", auth.detail)
+    if auth.state != "ok":
+        return out("not_tested", "Reachable, sign-in not tested", reach.detail)
+    if env.state == "failed":
+        return out("environment_mismatch", "Connected, environment not verified", env.detail)
+    if read.state == "ok":
+        return out("connected", "Connected", "AIS reached over verified TLS, signed in, and a read-only request succeeded.")
+    if read.state == "failed":
+        return out("connected", "Connected, sample read failed", read.detail)
+    return out("connected", "Connected", "AIS reached over verified TLS and signed in. Next: run the approved sample read.")
+
+
 def capability_status(profile: Optional[dict], capability_id: str) -> tuple[str, str]:
     cap = capabilities.get(capability_id)
     if cap is None:
@@ -469,11 +500,17 @@ def readiness(profile: dict) -> tuple[list[dict], bool]:
               config.privilege_confirmed and config.privilege_statement.strip(),
               config.privilege_statement.strip() or "not confirmed", required=not live),
     ]
+    restricted = bool(nr.restricted_to_source and nr.backend_source_address.strip()
+                      and (nr.evidence.strip() or nr.evidence_artifact_ids))
+    trial_exception = (not restricted and nr.trial_exception and config.environment_purpose == "isolated_trial"
+                       and bool(nr.trial_exception_reason.strip()))
     network = [
-        _item("source_restriction", "AIS access restricted to the backend's source address", "customer_attestation",
-              (not live) or (nr.restricted_to_source and nr.backend_source_address.strip()
-                             and (nr.evidence.strip() or nr.evidence_artifact_ids)),
-              (f"{nr.backend_source_address or 'no source address'}: {nr.evidence or 'no evidence'}" if live else na),
+        _item("source_restriction", "AIS access restricted to the backend's source address",
+              "accepted_exception" if trial_exception else "customer_attestation",
+              (not live) or restricted or trial_exception,
+              (f"accepted trial exception (by {profile.get('updated_by') or 'an Admin'}): {nr.trial_exception_reason}"
+               if trial_exception else
+               f"{nr.backend_source_address or 'no source address'}: {nr.evidence or 'no evidence'}") if live else na,
               required=live),
         _item("routing_isolation", "Network route and data isolation confirmed by the customer/CNC", "customer_attestation",
               config.routing_isolation_confirmed and config.isolation_evidence.strip(),
@@ -581,6 +618,7 @@ def view(company_id: str) -> JdeProfileView:
         prerequisites=prerequisites(profile), server_prerequisites=server_prerequisites(config, company_id),
         certificate=_certificate_view(company_id, config), credential_bound=credential_bound(profile),
         readiness=readiness(profile)[0], ready=readiness(profile)[1],
+        connection_status=connection_status(health(profile)),
         **_static_view_parts(config),
     )
 
