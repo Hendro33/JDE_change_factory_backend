@@ -195,7 +195,15 @@ def credential_bound(profile: dict) -> bool:
     config: JdeProfileConfig = profile["config"]
     if config.connection_mode != "live" or not profile.get("credential_secret"):
         return True
-    return profile.get("credential_destination") == destination(config)
+    return same_server(profile.get("credential_destination"), destination(config))
+
+
+def same_server(saved: Optional[str], current: str) -> bool:
+    """A saved password stays valid for the same scheme, host and port. A new
+    or replaced certificate for that server does not require re-entering it:
+    the certificate decides whether Jade trusts the server, not which
+    passwords it may send there."""
+    return bool(saved) and saved.split("#", 1)[0] == current.split("#", 1)[0]
 
 
 def record_check(company_id: str, check: str, state: str, detail: str, *, capability_id: Optional[str] = None,

@@ -145,6 +145,12 @@ def _profile_destination(company_id: str) -> str:
     return profile_service.destination(profile["config"]) if profile else ""
 
 
+def _same(saved, current: str) -> bool:
+    from ..discovery.profile_service import same_server
+
+    return same_server(saved, current)
+
+
 def _profile_material(company_id: str) -> dict:
     from ..discovery import profile_service
 
@@ -268,7 +274,7 @@ def browser_credential(company_id: str) -> tuple[str, str]:
     user when one is saved, otherwise the DEV write user."""
     s = load(company_id)
     if s and s.get("browser_secret"):
-        if s.get("browser_destination") != _profile_destination(company_id):
+        if not _same(s.get("browser_destination"), _profile_destination(company_id)):
             raise credential_crypto.CredentialUnreadable(
                 "the browser user's password was entered for a different AIS address or certificate; re-enter it")
         return s["browser_username"], credential_crypto.decrypt(s["browser_secret"])
@@ -291,7 +297,7 @@ def browser_credential_storage(s: Optional[dict]) -> str:
         credential_crypto.decrypt(s["browser_secret"])
     except credential_crypto.CredentialUnreadable:
         return "unreadable"
-    if s.get("browser_destination") != _profile_destination(s["company_id"]):
+    if not _same(s.get("browser_destination"), _profile_destination(s["company_id"])):
         return "entered for a different AIS address or certificate -- re-enter it"
     return "encrypted"
 
@@ -302,7 +308,7 @@ def write_credential(company_id: str) -> tuple[str, str]:
     s = load(company_id)
     if not s or not s.get("credential_secret"):
         raise credential_crypto.CredentialUnreadable("no DEV write user is saved for this customer")
-    if s.get("credential_destination") != _profile_destination(company_id):
+    if not _same(s.get("credential_destination"), _profile_destination(company_id)):
         raise credential_crypto.CredentialUnreadable(
             "the write user's password was entered for a different AIS address or certificate; re-enter it")
     return s["credential_username"], credential_crypto.decrypt(s["credential_secret"])
@@ -315,7 +321,7 @@ def credential_storage(s: Optional[dict]) -> str:
         credential_crypto.decrypt(s["credential_secret"])
     except credential_crypto.CredentialUnreadable:
         return "unreadable"
-    if s.get("credential_destination") != _profile_destination(s["company_id"]):
+    if not _same(s.get("credential_destination"), _profile_destination(s["company_id"])):
         return "entered for a different AIS address or certificate -- re-enter it"
     return "encrypted"
 

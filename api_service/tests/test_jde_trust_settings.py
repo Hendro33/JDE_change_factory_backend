@@ -95,3 +95,13 @@ def test_a_saved_password_only_goes_to_the_address_and_certificate_it_was_entere
     # Entered again for the new address: usable.
     save_credential(client)
     assert client.get("/admin/jde/profile", headers=H).json()["credentialBound"]
+
+
+def test_a_new_certificate_for_the_same_server_keeps_the_saved_passwords():
+    from jde_api_service.discovery.profile_service import same_server
+
+    saved = "https://141.144.202.25:7077#ca=default"
+    assert same_server(saved, "https://141.144.202.25:7077#ca=" + "a" * 64)
+    assert not same_server(saved, "https://141.144.202.26:7077#ca=default")
+    assert not same_server(saved, "https://141.144.202.25:8443#ca=default")
+    assert not same_server(None, "https://141.144.202.25:7077#ca=default")
