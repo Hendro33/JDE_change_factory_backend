@@ -255,6 +255,26 @@ def reset_breaker(company_id: str) -> None:
         _breakers.pop(company_id, None)
 
 
+def _jde_reason(resp: httpx.Response) -> str:
+    """JD Edwards' own explanation from an error answer (e.g. "Invalid
+    username or password", "role not authorized for environment"), short and
+    plain -- it is what an Administrator needs to fix the JDE side."""
+    try:
+        data = resp.json()
+    except ValueError:
+        return ""
+    if not isinstance(data, dict):
+        return ""
+    parts = []
+    for key in ("message", "exception", "errorMessage", "error", "userMessage", "description"):
+        v = data.get(key)
+        if isinstance(v, str) and v.strip() and v.strip() not in parts:
+            parts.append(v.strip())
+    text = " -- ".join(parts)
+    text = " ".join(text.split())[:300]
+    return f": JD Edwards says \"{text}\"" if text else ""
+
+
 # ---------------------------------------------------------------------
 # Live
 # ---------------------------------------------------------------------
@@ -298,10 +318,10 @@ class LiveAisTransport:
             raise TransportError(f"the endpoint answered with a redirect (HTTP {resp.status_code}); redirects are refused")
         if resp.status_code in (401, 403):
             record_transport_outcome(self.company_id, True)  # reachable; the credential or role was refused
-            raise AuthenticationFailed(f"AIS refused the request (HTTP {resp.status_code})")
+            raise AuthenticationFailed(f"AIS refused the request (HTTP {resp.status_code}){_jde_reason(resp)}")
         if resp.status_code >= 400:
             record_transport_outcome(self.company_id, False)
-            raise TransportError(f"AIS answered HTTP {resp.status_code}")
+            raise TransportError(f"AIS answered HTTP {resp.status_code}{_jde_reason(resp)}")
         record_transport_outcome(self.company_id, True)
         try:
             return resp.json()

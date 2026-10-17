@@ -243,7 +243,13 @@ class Session:
         pw = page.locator("input[type=password]").first
         if await pw.count() == 0:
             await self.shot("web client opened: no sign-in form")
-            raise NotSent("the web client showed no sign-in form")
+            try:
+                seen = " ".join((await page.inner_text("body"))[:200].split())
+                title = (await page.title())[:80]
+            except Exception:  # noqa: BLE001
+                seen, title = "", ""
+            raise NotSent(f"the web client at {self._where()} showed no sign-in form"
+                          + (f' (page "{title}": {seen})' if (title or seen) else " (empty page)"))
         user = page.locator("input[name=User], input#User, input[name=user], input[name=username]").first
         if await user.count() == 0:
             raise NotSent("the web client's sign-in form has no user field Jade recognises")
