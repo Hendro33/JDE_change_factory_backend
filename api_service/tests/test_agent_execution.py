@@ -121,6 +121,38 @@ def test_the_write_user_must_differ_from_the_discovery_user_and_only_admins_chan
     assert r.status_code == 422
 
 
+def test_a_separate_browser_user_is_optional_and_falls_back_to_the_write_user(ready):
+    """The web client / Web OMW may use its own JDE user (e.g. JADE_UI) with
+    its own role; without one, the DEV write user is used."""
+    from jde_api_service.executors import settings
+
+    client = ready
+    view = setup_execution(client, web_client_url="https://jde-dev.customer.example/jde", test=False)
+    assert view["browserUserConfigured"] is False and view["browserUserStorage"] == "none"
+    assert settings.browser_credential("vdb") == ("JADEWRITE", WRITE_PASSWORD)
+    assert settings.browser_role(settings.load("vdb"), "JADEDISC") == "JADEWRITE"
+
+    cur = client.get("/admin/jde/execution", headers=H).json()
+    r = client.put("/admin/jde/execution", headers=H, json={**cur["config"], "browserRole": "JADEUI",
+                                                            "expectedRevision": cur["revision"]})
+    assert r.status_code == 200, r.text
+    r = client.put("/admin/jde/execution/browser-user", headers=H, json={
+        "username": "JADE_UI", "password": "Br0wser-pw", "expectedRevision": r.json()["revision"]})
+    assert r.status_code == 200, r.text
+    view = r.json()
+    assert view["browserUserConfigured"] and view["browserUserStorage"] == "encrypted"
+    assert view["browserUserMasked"].startswith("JA") and "Br0wser-pw" not in str(view)
+    assert settings.browser_credential("vdb") == ("JADE_UI", "Br0wser-pw")
+    assert settings.browser_role(settings.load("vdb"), "JADEDISC") == "JADEUI"
+    # The AIS write user is unchanged.
+    assert settings.write_credential("vdb") == ("JADEWRITE", WRITE_PASSWORD)
+    # The browser user may not be the read-only discovery user either.
+    r = client.put("/admin/jde/execution/browser-user", headers=H, json={
+        "username": "JADEDISC", "password": "x", "expectedRevision": view["revision"]})
+    assert r.status_code == 422 and "different user" in r.json()["detail"]
+    assert any(a["action"] == "browser_user_saved" for a in client.get("/admin/jde/execution", headers=H).json()["audit"])
+
+
 # ---------------------------------------------------------------------
 # The AIS executor
 # ---------------------------------------------------------------------

@@ -12,6 +12,8 @@ connection -- the AIS address and certificate, environment and path code):
     read-only discovery user; its password is encrypted with the server's
     credential key, bound to the AIS address and certificate it was entered
     for, and never returned;
+  * optionally, a separate browser user (and role) for the web client and
+    Web OMW, stored the same way; without one the write user is used;
   * the on/off switches: agent execution for the whole customer, and per
     capability. Both are on by default where a route exists; switching
     either is an Admin action recorded with name and date.
@@ -79,6 +81,8 @@ class ExecutionConfig(ApiModel):
     web_ca_certificate_sha256: str = Field(default="", pattern=r"^([0-9a-f]{64})?$")
     # The dedicated write user's role in DEV (never *ALL).
     write_role: str = ""
+    # The browser user's role (blank = the write role).
+    browser_role: str = ""
     notes: str = Field(default="", max_length=1000)
 
     @field_validator("web_client_url", "web_omw_url")
@@ -86,7 +90,7 @@ class ExecutionConfig(ApiModel):
     def _address(cls, v: str) -> str:
         return _https(v, required=False)
 
-    @field_validator("write_role")
+    @field_validator("write_role", "browser_role")
     @classmethod
     def _role(cls, v: str) -> str:
         v = (v or "").strip()
@@ -151,9 +155,12 @@ def _profile_material(company_id: str) -> dict:
     return {"ais": profile_service.destination(c), "environment": c.environment, "path_code": c.path_code}
 
 
-def material_hash(profile_material: dict, config: ExecutionConfig, credential_revision: int) -> str:
+def material_hash(profile_material: dict, config: ExecutionConfig, credential_revision: int,
+                  browser_revision: int = 0) -> str:
     material = {k: v for k, v in config.model_dump(mode="json").items() if k != "notes"}
     material["credential_revision"] = credential_revision
+    if browser_revision:
+        material["browser_credential_revision"] = browser_revision
     material["profile"] = profile_material
     return hashlib.sha256(json.dumps(material, sort_keys=True).encode()).hexdigest()
 
@@ -172,7 +179,7 @@ def audit_log(company_id: str, limit: int = 100) -> list[dict]:
 
 
 def _describe_config_change(before: Optional[ExecutionConfig], after: ExecutionConfig) -> str:
-    fields = ("web_client_url", "web_omw_url", "web_ca_certificate_sha256", "write_role", "notes")
+    fields = ("web_client_url", "web_omw_url", "web_ca_certificate_sha256", "write_role", "browser_role", "notes")
     if before is None:
         return "settings saved: " + ", ".join(f"{f}={getattr(after, f) or '(blank)'}" for f in fields if f != "notes")
     changed = [f"{f}: {getattr(before, f) or '(blank)'} -> {getattr(after, f) or '(blank)'}"
@@ -187,9 +194,10 @@ def save(company_id: str, config: ExecutionConfig, *, expected_revision: Optiona
         row = _row(conn, company_id)
         revision = next_revision(row["revision"] if row else None, expected_revision)
         cred_rev = row["credential_revision"] if row else 0
+        browser_rev = (row["browser_credential_revision"] or 0) if row else 0
         config_json = json.dumps(config.model_dump(mode="json"), sort_keys=True)
         before = ExecutionConfig.model_validate(json.loads(row["config"])) if row else None
-        new_hash = material_hash(profile, config, cred_rev)
+        new_hash = material_hash(profile, config, cred_rev, browser_rev)
         if row is None:
             conn.execute("INSERT INTO jde_execution_settings (company_id, revision, config, material_hash, updated_at, "
                          "updated_by) VALUES (?, ?, ?, ?, ?, ?)", (company_id, revision, config_json, new_hash, now, actor))
@@ -221,10 +229,71 @@ def save_credential(company_id: str, username: str, password: str, *, expected_r
             "UPDATE jde_execution_settings SET revision = ?, material_hash = ?, credential_username = ?, "
             "credential_secret = ?, credential_revision = ?, credential_destination = ?, credential_updated_at = ?, "
             "credential_updated_by = ?, updated_at = ?, updated_by = ? WHERE company_id = ?",
-            (revision, material_hash(profile, config, cred_rev), username.strip(), secret, cred_rev, destination,
-             now, actor, now, actor, company_id))
+            (revision, material_hash(profile, config, cred_rev, row["browser_credential_revision"] or 0),
+             username.strip(), secret, cred_rev, destination, now, actor, now, actor, company_id))
     audit(company_id, "write_user_saved", f"DEV write user {username.strip()} saved (password encrypted)", actor)
     return load(company_id)  # type: ignore[return-value]
+
+
+def save_browser_credential(company_id: str, username: str, password: str, *, expected_revision: Optional[int],
+                            actor: str) -> dict:
+    """The optional separate user for the web client and Web OMW."""
+    if not username.strip() or not password:
+        raise ValueError("username and password are both required")
+    destination = _profile_destination(company_id)
+    profile = _profile_material(company_id)
+    if not destination:
+        raise SettingsNotFound("save the JD Edwards connection (AIS address) before the browser user")
+    secret = credential_crypto.encrypt(password)  # refuses without a key
+    now = _now()
+    with connection(immediate=True) as conn:
+        row = _row(conn, company_id)
+        if row is None:
+            raise SettingsNotFound("save the agent execution settings before the browser user")
+        revision = next_revision(row["revision"], expected_revision)
+        browser_rev = (row["browser_credential_revision"] or 0) + 1
+        config = ExecutionConfig.model_validate(json.loads(row["config"]))
+        conn.execute(
+            "UPDATE jde_execution_settings SET revision = ?, material_hash = ?, browser_username = ?, "
+            "browser_secret = ?, browser_credential_revision = ?, browser_destination = ?, updated_at = ?, "
+            "updated_by = ? WHERE company_id = ?",
+            (revision, material_hash(profile, config, row["credential_revision"], browser_rev), username.strip(),
+             secret, browser_rev, destination, now, actor, company_id))
+    audit(company_id, "browser_user_saved", f"browser user {username.strip()} saved (password encrypted)", actor)
+    return load(company_id)  # type: ignore[return-value]
+
+
+def browser_credential(company_id: str) -> tuple[str, str]:
+    """(username, password) for the browser executor: the separate browser
+    user when one is saved, otherwise the DEV write user."""
+    s = load(company_id)
+    if s and s.get("browser_secret"):
+        if s.get("browser_destination") != _profile_destination(company_id):
+            raise credential_crypto.CredentialUnreadable(
+                "the browser user's password was entered for a different AIS address or certificate; re-enter it")
+        return s["browser_username"], credential_crypto.decrypt(s["browser_secret"])
+    return write_credential(company_id)
+
+
+def browser_role(s: Optional[dict], profile_role: str) -> str:
+    if not s:
+        return profile_role
+    c: ExecutionConfig = s["config"]
+    if s.get("browser_secret"):
+        return c.browser_role or c.write_role or profile_role
+    return c.write_role or profile_role
+
+
+def browser_credential_storage(s: Optional[dict]) -> str:
+    if not s or not s.get("browser_secret"):
+        return "none"
+    try:
+        credential_crypto.decrypt(s["browser_secret"])
+    except credential_crypto.CredentialUnreadable:
+        return "unreadable"
+    if s.get("browser_destination") != _profile_destination(s["company_id"]):
+        return "entered for a different AIS address or certificate -- re-enter it"
+    return "encrypted"
 
 
 def write_credential(company_id: str) -> tuple[str, str]:
@@ -254,7 +323,8 @@ def credential_storage(s: Optional[dict]) -> str:
 def current_hash(s: dict) -> str:
     """The material hash as it is NOW: a change to the connection profile
     (another AIS address, environment or path code) also makes it differ."""
-    return material_hash(_profile_material(s["company_id"]), s["config"], s["credential_revision"])
+    return material_hash(_profile_material(s["company_id"]), s["config"], s["credential_revision"],
+                         s.get("browser_credential_revision") or 0)
 
 
 def record_check(company_id: str, check: str, state: str, detail: str, *, tested_hash: str) -> None:

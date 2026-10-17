@@ -19,6 +19,7 @@ SECRETS = (
     ("ai_connections", "company_id", "credential_secret"),
     ("jde_profiles", "company_id", "credential_secret"),
     ("jde_execution_settings", "company_id", "credential_secret"),
+    ("jde_execution_settings", "company_id", "browser_secret"),
 )
 
 

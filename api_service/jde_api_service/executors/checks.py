@@ -6,7 +6,8 @@ Connection for discovery. Nothing is changed in JD Edwards:
     DEV environment and its role, Jade checks the environment the session
     reports, and signs out.
   * Web client: Jade opens the web client in the browser executor and signs
-    in as the write user (a screenshot is kept), then closes the browser.
+    in as the browser user -- or the write user when no separate browser
+    user is saved -- (a screenshot is kept), then closes the browser.
 
 A result counts only for the settings it was run against: any material
 change afterwards marks it stale.
@@ -74,7 +75,7 @@ def _web_client(company_id: str) -> tuple[str, str]:
     if not ok:
         return "failed", why
     try:
-        username, password = settings.write_credential(company_id)
+        username, password = settings.browser_credential(company_id)
         shots: list[dict] = []
         session = browser.Session(company_id, f"executions/{company_id}/settings-test/{int(time.time() * 1000)}", [],
                                   shots)
@@ -92,4 +93,5 @@ def _web_client(company_id: str) -> tuple[str, str]:
         asyncio.run(run())
     except Exception as exc:  # noqa: BLE001
         return "failed", str(exc)
-    return "ok", f"signed in to the web client as the DEV write user (screenshot {shots[-1]['storage_key']})"
+    who = "the browser user" if (settings.load(company_id) or {}).get("browser_secret") else "the DEV write user"
+    return "ok", f"signed in to the web client as {who} (screenshot {shots[-1]['storage_key']})"

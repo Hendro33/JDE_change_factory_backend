@@ -133,16 +133,37 @@ def test_the_profile_refuses_unsafe_settings(client, override, message):
     assert message in r.text
 
 
-def test_enabling_needs_every_check_and_the_attestations(client):
-    save_profile(client, routingIsolationConfirmed=False)
+def test_the_connection_is_usable_once_test_connection_passes_no_attestations_needed(client):
+    """What the agents need is a connection that works: saved settings, a
+    readable password and a passed Test Connection. Customer attestations
+    are optional and never block, and there is no separate enable step."""
+    save_profile(client, routingIsolationConfirmed=False, isolationEvidence="", privilegeConfirmed=False,
+                 privilegeStatement="", runtimeAttestationConfirmed=False, runtimeAttestationEvidence="",
+                 discoveryWindow=None, approvedReads=[])
     save_credential(client)
-    rev = client.get("/admin/jde/profile", headers=headers("vdb")).json()["revision"]
-    r = client.post("/admin/jde/enable", headers=headers("vdb"), json={"expectedRevision": rev})
-    assert r.status_code == 409
-    assert "route and isolation" in r.json()["detail"] and "reachability check is unknown" in r.json()["detail"]
-    # Test Connection is also refused before the customer's confirmations exist.
-    r = client.post("/admin/jde/test-connection", headers=headers("vdb"))
-    assert r.json()["outcome"] == "blocked" and "routing and isolation" in r.json()["detail"]
+    view = client.get("/admin/jde/profile", headers=headers("vdb")).json()
+    assert view["discoveryEnabled"] is False
+    assert any("reachability is unknown" in b for b in view["enableBlockers"])
+    assert not any("isolation" in b or "attest" in b or "window" in b for b in view["enableBlockers"])
+    r = client.post("/admin/jde/test-connection", headers=headers("vdb")).json()
+    assert r["outcome"] == "ok", r
+    view = client.get("/admin/jde/profile", headers=headers("vdb")).json()
+    assert view["discoveryEnabled"] is True and view["enableBlockers"] == [] and view["ready"] is True
+    groups = {g["id"]: g for g in view["readiness"]}
+    assert groups["connection"]["satisfied"] is True
+    assert all(i["required"] is False for i in groups["customer_assurance"]["items"])
+
+
+def test_editing_assurance_notes_keeps_the_test_but_a_new_role_does_not(client):
+    save_profile(client)
+    save_credential(client)
+    assert client.post("/admin/jde/test-connection", headers=headers("vdb")).json()["outcome"] == "ok"
+    save_profile(client, customerContact="someone else", privilegeStatement="changed wording")
+    assert client.get("/admin/jde/profile", headers=headers("vdb")).json()["discoveryEnabled"] is True
+    save_profile(client, role="JADEDISC2")
+    view = client.get("/admin/jde/profile", headers=headers("vdb")).json()
+    assert view["discoveryEnabled"] is False
+    assert any("stale" in b for b in view["enableBlockers"])
 
 
 def test_environment_verification_fails_on_a_mismatch(client):
@@ -176,26 +197,23 @@ def _env_check(client) -> dict:
 
 def test_server_defaults_alone_never_verify_the_environment(client):
     """defaultconfig reports the server's DEFAULT environment. Even when it
-    equals the expected one, it is not evidence of the session: if the
-    token response does not state the session context, the check stays
-    unverified and discovery cannot be enabled."""
-    from jde_api_service.discovery import transport
-
+    equals the configured one, it is never evidence of the session: when the
+    token response does not state the session context, the session items are
+    recorded as not reported (Jade requested them explicitly), never
+    'verified' from the server default."""
     save_profile(client)
     save_credential(client)
     with sim_edit("vdb", "set defaultconfig.defaultEnvironment") as _est:
         _est["defaultconfig"]["defaultEnvironment"] = "JDV920"  # matches the profile
     with sim_edit("vdb", "set session.report_context") as _est:
         _est["session"]["report_context"] = False
-    r = client.post("/admin/jde/test-connection", headers=headers("vdb")).json()
-    assert r["outcome"] == "failed"
+    client.post("/admin/jde/test-connection", headers=headers("vdb")).json()
     env = _env_check(client)
-    assert env["state"] == "unknown"
-    missing = " ".join(env["facets"]["missing_evidence"])
-    assert "session environment" in missing and "session role" in missing and "application release" in missing
+    items = {i["item"]: i for i in env["facets"]["items"]}
+    assert items["session environment"]["status"] == "recorded"
+    assert items["session role"]["status"] == "recorded"
+    assert all(i["status"] != "verified" for n, i in items.items() if n.startswith("session"))
     assert env["facets"]["server_defaults"]["used_as_evidence"] is False
-    rev = client.get("/admin/jde/profile", headers=headers("vdb")).json()["revision"]
-    assert client.post("/admin/jde/enable", headers=headers("vdb"), json={"expectedRevision": rev}).status_code == 409
 
 
 def test_the_session_response_is_the_evidence_not_the_server_default(client):
@@ -215,10 +233,11 @@ def test_the_session_response_is_the_evidence_not_the_server_default(client):
     # The live server reports its AIS release (server level, not the session).
     assert items["Tools / server release"]["status"] == "verified"
     assert "server level" in items["Tools / server release"]["source"]
-    # AIS never reports the path code: it waits for the approved F00941 read,
-    # and is never derived from the environment name or the CNC statement.
-    assert items["path code"]["status"] == "pending" and items["path code"]["reported"] is None
-    assert "F00941" in items["path code"]["source"]
+    # AIS never reports the path code: Test Connection reads it from JDE's
+    # environment master (F00941), never from the environment name.
+    view = client.get("/admin/jde/profile", headers=headers("vdb")).json()
+    pc = next(i for i in view["readiness"][0]["items"] if i["id"] == "path_code")
+    assert pc["satisfied"] is True and "F00941" in pc["detail"], pc
     assert items["OCM data-source routing and isolation"]["status"] == "attested"
     assert any("JPD920" in n for n in env["facets"]["notes"])
 
@@ -243,24 +262,14 @@ def test_a_session_granted_a_different_environment_is_a_mismatch(client):
     assert r["outcome"] == "failed" and "session reports 'JPD920'" in r["detail"]
 
 
-def test_without_a_cnc_attestation_enabling_stays_blocked(client):
-    """Live, the AIS server reports its release and the path code comes from
-    the approved F00941 read -- but the CNC's runtime attestation is still
-    required before discovery can be enabled."""
-    save_profile(client, runtimeAttestationConfirmed=False, runtimeAttestationEvidence="",
-                 dedicatedAccount=dedicated_account(client, "vdb"))
+def test_a_cnc_attestation_is_optional_and_the_path_code_comes_from_jde(client):
+    save_profile(client, runtimeAttestationConfirmed=False, runtimeAttestationEvidence="")
     save_credential(client)
     r = client.post("/admin/jde/test-connection", headers=headers("vdb")).json()
     assert r["outcome"] == "ok", r
     env = _env_check(client)
     assert env["facets"]["attested"]["runtime"] is None
-    items = {i["item"]: i for i in env["facets"]["items"]}
-    assert items["path code"]["status"] == "pending"
-    r = client.post("/admin/jde/sample-read", headers=headers("vdb"), json={
-        "capabilityId": "table_browse", "target": "F00941", "maxRecords": 1,
-        "filters": [{"field": "EMENHV", "op": "=", "value": "JDV920"}]}).json()
-    assert r["outcome"] == "ok", r
     view = client.get("/admin/jde/profile", headers=headers("vdb")).json()
-    assert any("attested the Tools release and path code" in b for b in view["enableBlockers"])
-    assert client.post("/admin/jde/enable", headers=headers("vdb"),
-                       json={"expectedRevision": view["revision"]}).status_code == 409
+    assert view["discoveryEnabled"] is True
+    pc = next(i for i in view["readiness"][0]["items"] if i["id"] == "path_code")
+    assert pc["satisfied"] is True, pc

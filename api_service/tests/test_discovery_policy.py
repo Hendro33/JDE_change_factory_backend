@@ -45,7 +45,8 @@ def _grant(story: str = "S-DP-1", company: str = "vdb"):
     ("set_processing_option", "P4210|CIQ0001", [], [], 1, "not a discovery capability"),
     ("run_orchestration", "", [], [], 1, "not a discovery capability"),
     ("source_code", "B5542001", [], [], 1, "unavailable"),
-    ("version_list", "P4210", [], [], 1, "not an approved read"),
+    ("version_list", "P4210; DROP", [], [], 1, "needs an exact application name"),
+    ("version_list", "", [], [], 1, "needs an exact application name"),
     ("table_browse", "F0101", ["AN8"], [], 1, "not approved"),
     ("table_browse", "F4211", ["DOCO", "UPRC"], [], 1, "fields not approved"),
     ("table_browse", "F4211", ["DOCO"], [{"field": "DOCO", "op": "=", "value": "1"}], 1, "filtering on 'DOCO'"),
@@ -67,6 +68,24 @@ def test_out_of_scope_calls_are_blocked_before_network_dispatch(client, calls, c
     assert calls == before  # nothing was sent, not even authentication
     last = service.list_activity("vdb", 1)[0]
     assert last["outcome"] == "blocked" and last["story_id"] == "S-DP-1" and last["agent_run_id"] == "RUN-test"
+
+
+def test_without_approved_reads_any_well_formed_read_is_allowed_and_stays_a_read(client, calls):
+    """No approved-reads list = no extra restriction: the Architect may read
+    any table, UDC, version or processing option by its exact name -- still
+    reads only, still at most the record limit, nothing written."""
+    from jde_api_service.discovery import service
+
+    ready_company(client, approvedReads=[])
+    _approved_story("S-DP-1")
+    ev = service.execute_read(_grant(), "udc_values", "00/DT", [], [], 5)
+    assert ev["record_count"] >= 0 and ev["capability_id"] == "udc_values"
+    sent = [c for c in calls if c[1].endswith("/dataservice")]
+    assert sent, calls
+    with pytest.raises(service.DiscoveryBlocked, match="name the columns"):
+        service.execute_read(_grant(), "table_browse", "F4211", [], [], 1)
+    with pytest.raises(service.DiscoveryBlocked, match="max_records"):
+        service.execute_read(_grant(), "table_browse", "F4211", ["DOCO"], [], 11)
 
 
 def test_a_permitted_read_returns_sanitised_evidence_with_provenance(client, calls):
@@ -305,8 +324,10 @@ def test_live_test_connection_uses_only_fixed_endpoints_and_verified_tls(client,
     _live(client, monkeypatch, _ais_ok(requests))
     r = client.post("/admin/jde/test-connection", headers=headers("vdb")).json()
     assert r["outcome"] == "ok", r
+    # Sign in, the server defaults, one read-only browse of the environment
+    # master (F00941) for the path code, sign out -- nothing else.
     assert set(requests) <= {("GET", "/jderest/defaultconfig"), ("POST", "/jderest/v2/tokenrequest"),
-                             ("POST", "/jderest/v2/tokenrequest/logout")}
+                             ("POST", "/jderest/v2/dataservice"), ("POST", "/jderest/v2/tokenrequest/logout")}
     live = transport.LiveAisTransport("vdb", "https://ais-vdb.customer.example", 5,
                                       transport=httpx.MockTransport(_ais_ok([])),
                                       trust=transport.Trust(host="ais-vdb.customer.example"))
@@ -322,7 +343,10 @@ def test_live_redirects_are_refused(client, monkeypatch):
     assert r["outcome"] == "failed" and "redirect" in r["detail"]
 
 
-def test_live_environment_that_ais_does_not_report_is_not_verified(client, monkeypatch):
+def test_live_environment_that_ais_does_not_report_is_recorded_not_guessed(client, monkeypatch):
+    """Jade requests the configured environment explicitly; when the session
+    does not echo it back, that is recorded as such (only a DIFFERENT
+    environment is a failure)."""
     def handler(request):
         if request.url.path.endswith("/tokenrequest"):
             return httpx.Response(200, json={"userInfo": {"token": "t"}})
@@ -330,7 +354,22 @@ def test_live_environment_that_ais_does_not_report_is_not_verified(client, monke
 
     _live(client, monkeypatch, handler)
     r = client.post("/admin/jde/test-connection", headers=headers("vdb")).json()
-    assert r["outcome"] == "failed" and r["profile"]["health"]["environment"]["state"] == "unknown"
+    assert r["outcome"] == "ok", r
+    items = {i["item"]: i for i in r["profile"]["health"]["environment"]["facets"]["items"]}
+    assert items["session environment"]["status"] == "recorded"
+    assert "did not state" in items["session environment"]["detail"]
+
+
+def test_live_environment_mismatch_fails(client, monkeypatch):
+    def handler(request):
+        if request.url.path.endswith("/tokenrequest"):
+            return httpx.Response(200, json={"environment": "JPS920", "role": "JADEDISC", "userInfo": {"token": "t"}})
+        return httpx.Response(200, json={"aisVersion": "9.2.8.2"})
+
+    _live(client, monkeypatch, handler)
+    r = client.post("/admin/jde/test-connection", headers=headers("vdb")).json()
+    assert r["outcome"] == "failed" and r["profile"]["health"]["environment"]["state"] == "failed"
+    assert "JPS920" in r["detail"]
 
 
 def test_the_circuit_breaker_stops_calls_after_repeated_failures(client, monkeypatch):

@@ -151,7 +151,7 @@ class Session:
         if profile is None:
             raise NotSent("the customer's JD Edwards connection is not saved")
         self.environment = profile["config"].environment
-        self.role = self.config.write_role or profile["config"].role
+        self.role = settings.browser_role(s, profile["config"].role)
         pems = []
         for sha in (self.config.web_ca_certificate_sha256, profile["config"].ca_certificate_sha256):
             cert = certificates.get(company_id, sha) if sha else None
@@ -474,7 +474,7 @@ def apply_item(record: dict, item: dict, log: list[dict], screenshots: list[dict
     if not ok:
         raise NotSent(why)
     try:
-        username, password = settings.write_credential(record["company_id"])
+        username, password = settings.browser_credential(record["company_id"])
     except Exception as exc:  # noqa: BLE001
         raise NotSent(str(exc)) from None
     attempt_key = f"executions/{record['company_id']}/{record['change_id']}/{item['id']}/{int(time.time() * 1000)}"

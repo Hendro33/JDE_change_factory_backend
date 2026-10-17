@@ -7,10 +7,15 @@ Rules this module enforces:
   * Saving never contacts JDE.
   * Every save is a new revision (409 stale, 428 missing expected revision),
     kept in jde_profile_revisions.
-  * A MATERIAL change -- anything but the contact names, or a new credential
-    -- marks every earlier check stale and switches discovery off until the
-    connection is re-tested, an approved sample read succeeds and an Admin
-    enables discovery again.
+  * The connection is usable by Jade's agents as soon as Test Connection has
+    passed for the current settings: reachable over verified TLS, the read
+    user signed in, and the session's environment (and role) are the ones
+    configured. A MATERIAL change -- the address, certificate, environment,
+    role, expected releases or path code, or a new credential -- marks the
+    test stale until it is run again.
+  * Everything else on the page (customer attestations, evidence, approved
+    reads, window, limits, data sharing) is recorded or restricts reads
+    further when filled in, but never has to be filled in first.
   * The secret is never returned, logged or put in an error message.
 """
 
@@ -30,7 +35,16 @@ from .transport import (Trust, allowed_hosts, live_allowed_by_deployment, live_s
                         tls_trust)
 
 HEALTH_CHECKS = ("reachability", "authentication", "environment", "approved_read")
-_NON_MATERIAL = {"customer_contact", "cnc_contact", "connection_name"}
+# The checks Test Connection runs; all must be ok for the current settings
+# before the agents may use the connection.
+CONNECTION_CHECKS = ("reachability", "authentication", "environment")
+# Fields that do not change what Test Connection proves (where Jade connects,
+# as whom, in which environment). Editing them never makes the test stale.
+_NON_MATERIAL = {"customer_contact", "cnc_contact", "connection_name", "network_route", "isolation_evidence",
+                 "routing_isolation_confirmed", "privilege_statement", "privilege_confirmed",
+                 "runtime_attestation_confirmed", "runtime_attestation_evidence", "evidence_artifact_ids",
+                 "dedicated_account", "network_restriction", "approved_reads", "discovery_window", "limits",
+                 "data_sharing_policy", "environment_purpose", "trial_approval_reference"}
 
 
 def _now() -> str:
@@ -244,7 +258,7 @@ def connection_status(checks: dict[str, CheckResult]) -> dict[str, str]:
         return out("connected", "Connected", "AIS reached over verified TLS, signed in, and a read-only request succeeded.")
     if read.state == "failed":
         return out("connected", "Connected, sample read failed", read.detail)
-    return out("connected", "Connected", "AIS reached over verified TLS and signed in. Next: run the approved sample read.")
+    return out("connected", "Connected", "AIS reached over verified TLS and signed in. A sample read is optional.")
 
 
 def capability_status(profile: Optional[dict], capability_id: str) -> tuple[str, str]:
@@ -281,50 +295,33 @@ def capability_views(profile: Optional[dict]) -> list[CapabilityView]:
 
 
 def window_open(config: JdeProfileConfig, now: Optional[datetime] = None) -> bool:
+    """No window = no time restriction. A window, when set, limits reads to it."""
     if config.discovery_window is None:
-        return False
+        return True
     now = now or datetime.now(timezone.utc)
     return (datetime.fromisoformat(config.discovery_window.starts_at) <= now
             < datetime.fromisoformat(config.discovery_window.ends_at))
 
 
 def enable_blockers(profile: dict) -> list[str]:
-    """Everything that stops discovery being enabled now, in plain words."""
+    """What stops Jade's agents using this connection now, in plain words.
+    Only the connection itself: settings saved, a readable credential, a
+    passed Test Connection for these settings, not disabled, and a usable
+    TLS trust. Nothing the customer attests is a blocker."""
     config: JdeProfileConfig = profile["config"]
     out = []
-    if not config.routing_isolation_confirmed or not config.isolation_evidence.strip():
-        out.append("the customer/CNC has not confirmed the network route and isolation (with evidence)")
-    if not config.privilege_confirmed or not config.privilege_statement.strip():
-        out.append("the customer has not confirmed the JDE identity is narrowly privileged (read-only role)")
-    if not config.runtime_attestation_confirmed or not config.runtime_attestation_evidence.strip():
-        out.append("the CNC has not attested the Tools release and path code the environment runs on "
-                   "(Jade also checks them against JDE where it can)")
-    if not config.approved_reads:
-        out.append("no approved read operations")
-    if config.discovery_window is None:
-        out.append("no discovery window")
-    elif not window_open(config):
-        out.append("the discovery window is not open now")
     if config.connection_mode == "live":
         trust = trust_for(profile["company_id"], config)
         if not live_allowed_by_deployment(trust):
             out.append(live_status_detail(trust))
     if credential_storage(profile) != "encrypted":
-        out.append("no readable discovery credential")
+        out.append("the read user's password is not saved (or must be re-entered)")
     h = health(profile)
-    for name in HEALTH_CHECKS:
+    for name in CONNECTION_CHECKS:
         if h[name].state != "ok":
-            out.append(f"{name.replace('_', ' ')} check is {h[name].state} for this revision")
+            out.append(f"Test Connection: {name.replace('_', ' ')} is {h[name].state} for these settings")
     if profile["disabled"]:
-        out.append("the connection is disabled; re-test it before enabling")
-    if config.connection_mode == "live":
-        groups, _ = readiness(profile)
-        for g in groups:
-            for i in g["items"]:
-                if i["required"] and not i["satisfied"]:
-                    text = f"{g['label']}: {i['label']} -- {i['detail']}"
-                    if text not in out:
-                        out.append(text)
+        out.append("the connection is disabled; run Test Connection to switch it back on")
     return out
 
 
@@ -357,29 +354,32 @@ def prerequisites(profile: dict) -> list[dict]:
              f"isolated trial environment -- approval: {config.trial_approval_reference}"),
         item("routing_isolation", "Network route and data isolation confirmed by the customer/CNC", "customer_attestation",
              config.routing_isolation_confirmed and config.isolation_evidence.strip(),
-             config.isolation_evidence.strip() or "not confirmed"),
+             config.isolation_evidence.strip() or "not recorded (optional)", required=False),
         item("privilege", "JDE identity is narrowly privileged (read-only role)", "customer_attestation",
-             config.privilege_confirmed and config.privilege_statement.strip(), config.privilege_statement.strip() or "not confirmed"),
+             config.privilege_confirmed and config.privilege_statement.strip(),
+             config.privilege_statement.strip() or "not recorded (optional)", required=False),
         item("runtime", "Tools release and path code attested by the CNC", "customer_attestation",
              config.runtime_attestation_confirmed and config.runtime_attestation_evidence.strip(),
-             config.runtime_attestation_evidence.strip() or "not attested (AIS does not report them)"),
+             config.runtime_attestation_evidence.strip() or "not recorded (optional)", required=False),
         item("evidence", "Evidence documents linked", "customer_attestation", bool(evidence) and not any("NOT FOUND" in e for e in evidence),
              "; ".join(evidence) or "none linked (optional, recommended)", required=False),
-        item("approved_reads", "Approved read operations defined", "configuration", bool(config.approved_reads),
-             f"{len(config.approved_reads)} capability(ies)"),
-        item("window", "Authorisation window open now", "configuration", window_open(config),
+        item("approved_reads", "Approved reads (optional restriction)", "configuration", True,
+             f"{len(config.approved_reads)} restricted capability(ies)" if config.approved_reads else
+             "none: every available read capability, read-only, at most the record limit", required=False),
+        item("window", "Time window (optional restriction)", "configuration", window_open(config),
              (f"{config.discovery_window.starts_at} to {config.discovery_window.ends_at}" if config.discovery_window
-              else "no window")),
+              else "none: no time restriction"), required=bool(config.discovery_window)),
         item("credential", "Credential saved and readable on the server", "configuration",
              credential_storage(profile) == "encrypted", credential_storage(profile)),
     ]
     for name, label in (("reachability", "Endpoint reachable from the backend"),
                         ("authentication", "Authentication accepted (session opened and logged out)"),
-                        ("environment", "Session environment, role and release match the profile"),
-                        ("approved_read", "Approved sample read succeeded")):
+                        ("environment", "Session environment and role match the settings"),
+                        ("approved_read", "Sample read succeeded (optional)")):
         c = h[name]
         out.append(item(name, label, "machine_verified", c.state == "ok",
-                        f"{c.state} for this revision" + (f" -- {c.detail}" if c.detail else "")))
+                        f"{c.state} for this revision" + (f" -- {c.detail}" if c.detail else ""),
+                        required=name in CONNECTION_CHECKS))
     if live:
         for s_ in server_prerequisites(config):
             out.append({**s_, "kind": "server_managed", "required": True})
@@ -444,104 +444,75 @@ def _account_problems(profile: dict) -> list[str]:
 
 
 def readiness(profile: dict) -> tuple[list[dict], bool]:
-    """Separately visible readiness groups. Every required item must be
-    satisfied before discovery can be enabled."""
+    """Two groups: the connection (required -- what the agents need) and the
+    customer's assurance (recorded when the customer provides it; never
+    required). Ready = the connection group is satisfied."""
     config: JdeProfileConfig = profile["config"]
     live = config.connection_mode == "live"
     h = health(profile)
     ids = _identity_items(profile)
-
-    def ident(name, label):
-        i = ids.get(name)
-        if not live and name == "path code":
-            return _item("path_code", label, "machine_verified", True, "not applicable in simulation", required=False)
-        if name == "path code":
-            pc = _current(profile["health"].get("path_code"), profile)
-            return _item("path_code", label, "machine_verified", pc.state == "ok",
-                         pc.detail or "not established: needs the approved F00941 environment-master read")
-        return _item(name.replace(" ", "_").replace("/", ""), label, "machine_verified",
-                     bool(i) and i["status"] in (("verified",) if live else ("verified", "attested")),
-                     (i["detail"] if i else "not checked yet: run Test Connection"))
-
-    na = "not applicable in simulation"
     trust = trust_for(profile["company_id"], config)
     trust_ok, trust_detail = tls_trust(trust)
-    reach = h["reachability"]
-    connectivity = [
+
+    def ident(name, label, required):
+        i = ids.get(name)
+        ok = bool(i) and i["status"] in ("verified", "recorded", "attested")
+        return _item(name.replace(" ", "_").replace("/", ""), label, "machine_verified", ok,
+                     (i["detail"] if i else "not checked yet: run Test Connection"), required=required)
+
+    pc = _current(profile["health"].get("path_code"), profile)
+    connection = [
         _item("live_enabled", "Live access available (not locked by the server operator)", "configuration",
-              live_allowed_by_deployment(trust) or not live, live_status_detail(trust) if live else na, required=live),
-        _item("tls_trust", "TLS certificate trust (uploaded certificate or public CAs; never unverified)", "configuration",
-              trust_ok or not live, trust_detail if live else na, required=live),
-        _item("allowlist", "AIS host is the permitted destination", "configuration",
-              (not live) or trust.host in allowed_hosts(trust),
-              (f"{trust.host}: the saved AIS address" if trust.host in allowed_hosts(trust)
-               else "no AIS address is saved") if live else na,
-              required=live),
-        _item("tls_verified", "Endpoint reached from the backend over verified TLS", "machine_verified",
-              reach.state == "ok" and (not live or "verified TLS" in reach.detail), reach.detail or "not checked yet"),
-    ]
-    account_problems = _account_problems(profile) if live else []
-    nr = config.network_restriction
-    identity = [
-        _item("authentication", "Signed in as the configured user (session opened and logged out)", "machine_verified",
-              h["authentication"].state == "ok", h["authentication"].detail or "not checked yet"),
-        ident("session environment", "Authenticated environment captured and equal to the configured environment"),
-        ident("session role", "Authenticated role captured, dedicated (never *ALL)"),
-        ident("application release", "Application release reported by the session"),
-        ident("Tools / server release", "Tools / server release reported by JDE"),
-        ident("path code", "Path code established from JDE (never from the environment name)"),
-    ]
-    authz = [
-        _item("dedicated_account", "Dedicated user and role, JDE permissions independently verified", "evidence",
-              (not live) or not account_problems, "; ".join(account_problems) if live else na, required=live),
-        _item("approved_read", "The approved sample read succeeds within its bounds", "machine_verified",
-              h["approved_read"].state == "ok", h["approved_read"].detail or "not run"),
-        _item("privilege_statement", "Customer statement that the identity is narrowly privileged", "customer_attestation",
-              config.privilege_confirmed and config.privilege_statement.strip(),
-              config.privilege_statement.strip() or "not confirmed", required=not live),
-    ]
-    restricted = bool(nr.restricted_to_source and nr.backend_source_address.strip()
-                      and (nr.evidence.strip() or nr.evidence_artifact_ids))
-    trial_exception = (not restricted and nr.trial_exception and config.environment_purpose == "isolated_trial"
-                       and bool(nr.trial_exception_reason.strip()))
-    network = [
-        _item("source_restriction", "AIS access restricted to the backend's source address",
-              "accepted_exception" if trial_exception else "customer_attestation",
-              (not live) or restricted or trial_exception,
-              (f"accepted trial exception (by {profile.get('updated_by') or 'an Admin'}): {nr.trial_exception_reason}"
-               if trial_exception else
-               f"{nr.backend_source_address or 'no source address'}: {nr.evidence or 'no evidence'}") if live else na,
-              required=live),
-        _item("routing_isolation", "Network route and data isolation confirmed by the customer/CNC", "customer_attestation",
-              config.routing_isolation_confirmed and config.isolation_evidence.strip(),
-              config.isolation_evidence.strip() or "not confirmed"),
-    ]
-    safeguards = [
-        _item("writes_disabled", "This read-only user never writes to JDE",
-              "server_managed", True, "discovery sends reads only; approved changes are made by the agents with the "
-              "separate DEV write user (Agent execution, below), under the delivery gate", required=live),
-        _item("approved_reads", "Approved reads defined (exact targets, columns, record limit)", "configuration",
-              bool(config.approved_reads), f"{len(config.approved_reads)} approved read(s), at most "
-                                           f"{config.limits.max_records} records each"),
-        _item("window", "Authorisation window open now", "configuration", window_open(config),
-              (f"{config.discovery_window.starts_at} to {config.discovery_window.ends_at}" if config.discovery_window
-               else "no window")),
-        _item("credential", "Credential encrypted on the server", "configuration",
+              live_allowed_by_deployment(trust) or not live, live_status_detail(trust), required=live),
+        _item("tls_trust", "TLS certificate trust (uploaded certificate or public CAs; never unverified)",
+              "configuration", trust_ok or not live, trust_detail, required=live),
+        _item("credential", "Read user's password saved on the server", "configuration",
               credential_storage(profile) == "encrypted", credential_storage(profile)),
+        _item("reachability", "AIS reached from the backend over verified TLS", "machine_verified",
+              h["reachability"].state == "ok", h["reachability"].detail or "not checked yet: run Test Connection"),
+        _item("authentication", "Read user signs in (session opened and logged out)", "machine_verified",
+              h["authentication"].state == "ok", h["authentication"].detail or "not checked yet: run Test Connection"),
+        ident("session environment", "Session runs in the configured environment", True),
+        ident("session role", "Session runs with the configured role", True),
+        ident("application release", "Application release (compared only when set)", False),
+        ident("Tools / server release", "Tools / server release (compared only when set)", False),
+        _item("path_code", "Path code (read from JDE's F00941 during Test Connection)", "machine_verified",
+              pc.state == "ok" or bool(config.path_code), pc.detail or (
+                  f"{config.path_code} (entered)" if config.path_code else "not established yet"), required=False),
         _item("not_disabled", "Connection not disabled", "configuration", not profile["disabled"],
               "disabled -- run Test Connection to re-check" if profile["disabled"] else "active"),
     ]
+    acc_problems = _account_problems(profile) if live else []
+    nr = config.network_restriction
+    restricted = bool(nr.restricted_to_source and nr.backend_source_address.strip())
+    trial_exception = (not restricted and nr.trial_exception and config.environment_purpose == "isolated_trial"
+                       and bool(nr.trial_exception_reason.strip()))
+    assurance = [
+        _item("routing_isolation", "Network route and data isolation confirmed by the customer/CNC",
+              "customer_attestation", config.routing_isolation_confirmed and config.isolation_evidence.strip(),
+              config.isolation_evidence.strip() or "not recorded", required=False),
+        _item("privilege_statement", "Customer statement that the read user is narrowly privileged",
+              "customer_attestation", config.privilege_confirmed and config.privilege_statement.strip(),
+              config.privilege_statement.strip() or "not recorded", required=False),
+        _item("dedicated_account", "Dedicated read user and role, JDE permissions independently verified", "evidence",
+              not acc_problems, "; ".join(acc_problems) or "recorded", required=False),
+        _item("source_restriction", "AIS access restricted to the backend's source address",
+              "accepted_exception" if trial_exception else "customer_attestation",
+              restricted or trial_exception,
+              (f"accepted trial exception (by {profile.get('updated_by') or 'an Admin'}): {nr.trial_exception_reason}"
+               if trial_exception else f"{nr.backend_source_address or 'no source address'}: {nr.evidence or 'no evidence'}"),
+              required=False),
+        _item("approved_read", "A sample read succeeded", "machine_verified", h["approved_read"].state == "ok",
+              h["approved_read"].detail or "not run", required=False),
+    ]
     groups = [
-        {"id": "connectivity", "label": "Connectivity", "items": connectivity},
-        {"id": "identity", "label": "Identity", "items": identity},
-        {"id": "jde_authorization", "label": "JDE authorisation", "items": authz},
-        {"id": "network_restriction", "label": "Network restriction", "items": network},
-        {"id": "runtime_safeguards", "label": "Jade runtime safeguards", "items": safeguards},
+        {"id": "connection", "label": "Connection (needed by the agents)", "items": connection},
+        {"id": "customer_assurance", "label": "Customer assurance (optional, recorded only)", "items": assurance},
     ]
     for g in groups:
         req = [i for i in g["items"] if i["required"]]
         g["satisfied"] = all(i["satisfied"] for i in req)
-    return groups, all(g["satisfied"] for g in groups)
+    return groups, groups[0]["satisfied"]
 
 
 def _host(config: JdeProfileConfig) -> str:
@@ -592,8 +563,11 @@ def clear_disabled(company_id: str) -> None:
 
 
 def is_active(profile: Optional[dict]) -> bool:
-    return bool(profile and profile["discovery_enabled"] and not profile["disabled"]
-                and profile["enabled_material_hash"] == profile["material_hash"])
+    """May Jade's agents use this connection now? Yes once Test Connection
+    has passed for the current settings, the password is readable, live
+    access is not locked off and the connection is not disabled. There is no
+    separate enable step."""
+    return bool(profile) and not enable_blockers(profile)  # type: ignore[arg-type]
 
 
 def view(company_id: str) -> JdeProfileView:

@@ -58,6 +58,11 @@ def _summarise(pem: str) -> dict[str, Any]:
     return {"certificates": out}
 
 
+def summarise(pem: str) -> dict[str, Any]:
+    """Public: the summary (subjects, names, CA flags) of an uploaded PEM."""
+    return _summarise(pem)
+
+
 def validate(pem: str) -> tuple[str, str, dict[str, Any]]:
     """(normalised pem, sha256, summary) or InvalidCertificate."""
     pem = (pem or "").strip()

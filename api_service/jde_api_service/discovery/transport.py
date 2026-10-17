@@ -144,11 +144,34 @@ def tls_context(trust: Optional[Trust] = None) -> ssl.SSLContext:
         raise FileNotFoundError("the certificate named in the settings is not stored")
     if trust and trust.ca_pem:
         ctx = ssl.create_default_context(cadata=trust.ca_pem)
+        if pinned_without_name(trust):
+            # The uploaded certificate does not name the address Jade connects
+            # to (a self-signed trial certificate issued for an internal host
+            # name). Only that exact uploaded certificate is trusted -- nothing
+            # from the public trust store -- so the name check is replaced by
+            # the pin. The certificate itself is still verified.
+            ctx.check_hostname = False
     else:
         ctx = ssl.create_default_context()
-    if ctx.verify_mode != ssl.CERT_REQUIRED or not ctx.check_hostname:  # defensive: never weaker than the default
-        raise ssl.SSLError("TLS context is not verifying certificates and host names")
+    if ctx.verify_mode != ssl.CERT_REQUIRED:  # defensive: certificates are always verified
+        raise ssl.SSLError("TLS context is not verifying certificates")
+    if not ctx.check_hostname and not (trust and trust.ca_pem):  # name check off only for a pinned upload
+        raise ssl.SSLError("TLS context is not verifying host names")
     return ctx
+
+
+def pinned_without_name(trust: Optional[Trust]) -> bool:
+    """True when the uploaded certificate does not name the AIS host: Jade then
+    trusts exactly that certificate instead of checking the name."""
+    if not trust or not trust.ca_pem or not trust.host:
+        return False
+    from . import certificates
+
+    try:
+        summary = certificates.summarise(trust.ca_pem)
+    except Exception:  # noqa: BLE001 -- an unreadable upload keeps the normal checks
+        return False
+    return not certificates.covers_host(summary, trust.host)
 
 
 def tls_trust(trust: Optional[Trust] = None) -> tuple[bool, str]:
@@ -160,6 +183,9 @@ def tls_trust(trust: Optional[Trust] = None) -> tuple[bool, str]:
             tls_context(trust)
         except (ssl.SSLError, OSError, ValueError) as exc:
             return False, f"the uploaded certificate is not usable ({type(exc).__name__})"
+        if pinned_without_name(trust):
+            return True, (f"exactly the certificate uploaded in the settings (sha256 {trust.ca_sha256[:16]}...); it does "
+                          f"not name {trust.host}, so Jade trusts that certificate itself instead of checking the name")
         return True, (f"only the certificate uploaded in the settings (sha256 {trust.ca_sha256[:16]}...), with "
                       "certificate and host-name/IP checks")
     try:

@@ -180,10 +180,17 @@ def test_the_uploaded_certificate_is_used_for_every_request_with_hostname_checks
     assert [p for _, p in https_ais["seen"]] == ["/jderest/defaultconfig", "/jderest/v2/tokenrequest",
                                                 "/jderest/v2/dataservice", "/jderest/v2/tokenrequest/logout"]
 
-    # Host/IP verification stays on: a certificate for 127.0.0.2 is refused on 127.0.0.1.
+    # An uploaded certificate that does not name the address (a trial server's self-signed certificate issued
+    # for an internal host name) is trusted as exactly that certificate: the server presenting it is accepted...
+    pinned = _trust(https_ais["wrong_ip_cert"])
+    assert transport.pinned_without_name(pinned) and "instead of checking the name" in transport.tls_trust(pinned)[1]
+    assert "verified TLS" in transport.LiveAisTransport(
+        "vdb", f"https://127.0.0.1:{https_ais['wrong_ip_port']}", 5, trust=pinned).check_reachability()
+    # ...and any other server is refused: the pin replaces the name check, the certificate is still verified.
     with pytest.raises(transport.TransportError):
-        transport.LiveAisTransport("vdb", f"https://127.0.0.1:{https_ais['wrong_ip_port']}", 5,
-                                   trust=_trust(https_ais["wrong_ip_cert"])).check_reachability()
+        transport.LiveAisTransport("vdb", base, 5, trust=pinned).check_reachability()
+    # A certificate that does name the address keeps the normal host-name check.
+    assert not transport.pinned_without_name(_trust(https_ais["good_cert"]))
     # The only destination is the saved AIS address.
     with pytest.raises(transport.DestinationNotAllowed, match="not the AIS address saved"):
         transport.LiveAisTransport("vdb", base, 5, trust=_trust(https_ais["good_cert"], host="ais.elsewhere.example"))
@@ -210,13 +217,20 @@ def test_test_connection_only_authenticates_reads_server_identity_and_logs_out(c
     r = client.post("/admin/jde/test-connection", headers=H).json()
     assert r["outcome"] == "ok", r
     assert [(m, p) for m, p, _ in requests] == [("GET", "/jderest/defaultconfig"), ("POST", "/jderest/v2/tokenrequest"),
-                                                ("GET", "/jderest/defaultconfig"), ("POST", "/jderest/v2/tokenrequest/logout")]
+                                                ("GET", "/jderest/defaultconfig"), ("POST", "/jderest/v2/dataservice"),
+                                                ("POST", "/jderest/v2/tokenrequest/logout")]
+    # The one data read is a BROWSE of the environment master for the path code.
+    browse = requests[3][2]
+    assert browse["dataServiceType"] == "BROWSE" and browse["targetName"] == "F00941"
     token_body = requests[1][2]
     assert token_body["username"] == "JADEDISC" and token_body["environment"] == "JPS920" and token_body["role"] == "JADEREAD"
     assert token_body["password"] == "s3cret-Discovery-pw"  # from the encrypted store only
     assert "s3cret-Discovery-pw" not in json.dumps(r)
     its, env = items(client)
-    assert its["path code"]["status"] == "pending"  # never derived from the environment name
+    # Never derived from the environment name: F00941 returned no row here, so it is not established.
+    view = client.get("/admin/jde/profile", headers=H).json()
+    pc = next(i for i in view["readiness"][0]["items"] if i["id"] == "path_code")
+    assert not pc["satisfied"] and "F00941" in pc["detail"] and pc["required"] is False
     assert its["Tools / server release"]["status"] == "verified" and its["Tools / server release"]["reported"] == "9.2.26.2"
     assert any("JPS920" in n or "*ALL" in n for n in env["facets"]["notes"])
 
@@ -291,33 +305,26 @@ def test_path_code_comes_only_from_jde(client, monkeypatch):
         "filters": [{"field": "EMENHV", "op": "=", "value": "JPS920"}]}).json()
     assert r["outcome"] == "ok", r
     view = client.get("/admin/jde/profile", headers=H).json()
-    identity = next(g for g in view["readiness"] if g["id"] == "identity")
-    pc = next(i for i in identity["items"] if i["id"] == "path_code")
+    connection = next(g for g in view["readiness"] if g["id"] == "connection")
+    pc = next(i for i in connection["items"] if i["id"] == "path_code")
     assert pc["satisfied"] and "PS920" in pc["detail"] and "JPS920" in pc["detail"]
 
 
-def test_readiness_needs_the_dedicated_account_and_network_restriction(client, monkeypatch):
+def test_customer_assurance_is_recorded_but_never_required(client, monkeypatch):
     requests: list = []
-    # No network restriction recorded yet (the shared test profile has one).
+    # No network restriction or dedicated-account verification recorded.
     live_profile(client, monkeypatch, requests, f00941=[{"F00941_EMENHV": "JPS920", "F00941_EMPATHCD": "PS920"}],
-                 profile={"networkRestriction": {}})
+                 profile={"networkRestriction": {}, "dedicatedAccount": {}})
     assert client.post("/admin/jde/test-connection", headers=H).json()["outcome"] == "ok"
-    for body in ({"capabilityId": "udc_values", "target": "00/DT", "maxRecords": 5},
-                 {"capabilityId": "table_browse", "target": "F00941", "maxRecords": 1,
-                  "filters": [{"field": "EMENHV", "op": "=", "value": "JPS920"}]}):
-        assert client.post("/admin/jde/sample-read", headers=H, json=body).json()["outcome"] == "ok"
     view = client.get("/admin/jde/profile", headers=H).json()
     groups = {g["id"]: g for g in view["readiness"]}
-    assert list(groups) == ["connectivity", "identity", "jde_authorization", "network_restriction", "runtime_safeguards"]
-    assert groups["connectivity"]["satisfied"] and groups["identity"]["satisfied"]
-    assert not groups["jde_authorization"]["satisfied"] and not groups["network_restriction"]["satisfied"]
-    # The read-only discovery user never writes: changes go through the agents' separate DEV write user.
-    safeguards = {i["id"]: i for i in groups["runtime_safeguards"]["items"]}
-    assert safeguards["writes_disabled"]["satisfied"] and "separate DEV write user" in safeguards["writes_disabled"]["detail"]
-    assert not view["ready"]
-    assert client.post("/admin/jde/enable", headers=H, json={"expectedRevision": view["revision"]}).status_code != 200
+    assert list(groups) == ["connection", "customer_assurance"]
+    assert groups["connection"]["satisfied"] and view["ready"] and view["discoveryEnabled"]
+    assurance = {i["id"]: i for i in groups["customer_assurance"]["items"]}
+    assert all(not i["required"] for i in assurance.values())
+    assert not assurance["dedicated_account"]["satisfied"] and not assurance["source_restriction"]["satisfied"]
 
-    # A statement alone does not count: no evidence document -> still blocked.
+    # A statement alone does not count as verified: no evidence document.
     account = {"username": "JADEDISC", "role": "JADEREAD", "verifiedBy": "Customer security lead", "verifiedOn": "2026-09-25",
                "method": "security_configuration_review", "permitsApprovedReads": True, "rejectsProhibitedOperations": True}
     cfg = view["config"]
@@ -326,29 +333,11 @@ def test_readiness_needs_the_dedicated_account_and_network_restriction(client, m
                  networkRestriction={"backendSourceAddress": "203.0.113.10", "restrictedToSource": True,
                                      "evidence": "OCI security list rule 7 allows 7077 from 203.0.113.10 only"})
     view = client.get("/admin/jde/profile", headers=H).json()
-    authz = next(g for g in view["readiness"] if g["id"] == "jde_authorization")
-    assert not authz["satisfied"] and "no evidence document" in authz["items"][0]["detail"]
-    assert next(g for g in view["readiness"] if g["id"] == "network_restriction")["satisfied"]
-
-    doc = client.post("/admin/jde/artifacts", headers=H, json={
-        "kind": "reference_document", "objectName": "JADEREAD", "objectType": "SECURITY", "exportFormat": "text",
-        "exportedAt": "2026-09-25T08:00:00+00:00", "docTitle": "Security Workbench export for JADEREAD",
-        "fileName": "jaderead_security.txt", "contentBase64": "UmVhZCBvbmx5OiBGMDAwNSwgRjAwOTQx"}).json()
-    save_profile(client, **{k: v for k, v in cfg.items() if k not in ("dedicatedAccount", "networkRestriction")},
-                 dedicatedAccount={**account, "evidenceArtifactIds": [f"{doc['artifactId']}@r{doc['revision']}"]},
-                 networkRestriction={"backendSourceAddress": "203.0.113.10", "restrictedToSource": True,
-                                     "evidence": "OCI security list rule 7 allows 7077 from 203.0.113.10 only"})
-    # A material edit re-requires the machine checks for the new revision.
-    view = client.get("/admin/jde/profile", headers=H).json()
-    assert not view["ready"]
-    assert client.post("/admin/jde/test-connection", headers=H).json()["outcome"] == "ok"
-    for body in ({"capabilityId": "udc_values", "target": "00/DT", "maxRecords": 5},
-                 {"capabilityId": "table_browse", "target": "F00941", "maxRecords": 1,
-                  "filters": [{"field": "EMENHV", "op": "=", "value": "JPS920"}]}):
-        assert client.post("/admin/jde/sample-read", headers=H, json=body).json()["outcome"] == "ok"
-    view = client.get("/admin/jde/profile", headers=H).json()
-    assert view["ready"], [(g["id"], [i for i in g["items"] if i["required"] and not i["satisfied"]]) for g in view["readiness"]]
-    assert client.post("/admin/jde/enable", headers=H, json={"expectedRevision": view["revision"]}).status_code == 200
+    assurance = {i["id"]: i for i in view["readiness"][1]["items"]}
+    assert not assurance["dedicated_account"]["satisfied"] and "no evidence document" in assurance["dedicated_account"]["detail"]
+    assert assurance["source_restriction"]["satisfied"]
+    # Recording assurance is not a material change: the connection stays usable.
+    assert view["ready"] and view["discoveryEnabled"]
 
 
 def test_an_isolated_trial_can_accept_the_network_exception_and_only_a_trial(client):
@@ -356,7 +345,7 @@ def test_an_isolated_trial_can_accept_the_network_exception_and_only_a_trial(cli
 
     def network_item():
         view = client.get("/admin/jde/profile", headers=H).json()
-        group = next(g for g in view["readiness"] if g["id"] == "network_restriction")
+        group = next(g for g in view["readiness"] if g["id"] == "customer_assurance")
         return next(i for i in group["items"] if i["id"] == "source_restriction")
 
     unrestricted = {"backendSourceAddress": "", "restrictedToSource": False, "evidence": "", "evidenceArtifactIds": []}

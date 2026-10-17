@@ -839,4 +839,15 @@ MIGRATIONS: list[tuple[int, str]] = [
         ALTER TABLE jira_integrations ADD COLUMN comment_visibility TEXT NOT NULL DEFAULT 'internal';
         """,
     ),
+    (
+        18,
+        """
+        -- A separate JD Edwards user for the browser executor (web client and
+        -- Web OMW). Optional: when none is saved, the DEV write user is used.
+        ALTER TABLE jde_execution_settings ADD COLUMN browser_username TEXT;
+        ALTER TABLE jde_execution_settings ADD COLUMN browser_secret TEXT;
+        ALTER TABLE jde_execution_settings ADD COLUMN browser_credential_revision INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE jde_execution_settings ADD COLUMN browser_destination TEXT;
+        """,
+    ),
 ]

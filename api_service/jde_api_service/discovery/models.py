@@ -163,8 +163,10 @@ class JdeProfileConfig(ApiModel):
     # Required for an isolated trial: who approved using this environment and where (ticket, e-mail, minutes).
     trial_approval_reference: str = Field(default="", max_length=500)
     role: str
-    expected_application_release: str
-    expected_tools_release: str
+    # Optional: when set, Test Connection compares them with what JDE reports;
+    # when blank, what JDE reports is recorded and nothing is compared.
+    expected_application_release: str = ""
+    expected_tools_release: str = ""
     path_code: str = ""
     # The AIS server certificate (or its CA) uploaded in these settings, by
     # sha256; blank = the public trust store. It only adds trust for this
@@ -233,12 +235,20 @@ class JdeProfileConfig(ApiModel):
             url = url[: -len("/jderest")]
         return url
 
-    @field_validator("environment", "role", "expected_application_release", "expected_tools_release")
+    @field_validator("environment", "role")
     @classmethod
     def _explicit(cls, v: str) -> str:
         v = v.strip()
         if not v or v.upper() in {"*ALL", "*", "ALL"}:
             raise ValueError("must be named explicitly (no blank, *ALL or wildcard)")
+        return v
+
+    @field_validator("expected_application_release", "expected_tools_release")
+    @classmethod
+    def _release(cls, v: str) -> str:
+        v = (v or "").strip()
+        if v.upper() in {"*ALL", "*", "ALL"}:
+            raise ValueError("a release is a release number, or blank to record what JDE reports")
         return v
 
     @field_validator("path_code")

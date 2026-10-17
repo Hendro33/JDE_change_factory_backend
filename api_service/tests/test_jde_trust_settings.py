@@ -46,11 +46,12 @@ def test_an_uploaded_certificate_alone_connects_over_verified_tls(client, https_
     assert reach["state"] == "ok" and "uploaded in the settings" in reach["detail"], r
     assert ("POST", "/jderest/v2/tokenrequest") in https_ais["seen"]
 
-    # Verification stays on: that certificate does not make a server for 127.0.0.2 acceptable on 127.0.0.1.
+    # Verification stays on: a certificate that does not name 127.0.0.1 is trusted only as exactly itself --
+    # another server on 127.0.0.1 (presenting a different certificate) is refused.
     wrong = open(https_ais["wrong_ip_cert"]).read()
     trust = transport.Trust(host="127.0.0.1", ca_pem=wrong, ca_sha256="x" * 64)
     with pytest.raises(transport.TransportError):
-        transport.LiveAisTransport("vdb", f"https://127.0.0.1:{https_ais['wrong_ip_port']}", 5,
+        transport.LiveAisTransport("vdb", f"https://127.0.0.1:{https_ais['port']}", 5,
                                    trust=trust).check_reachability()
 
 

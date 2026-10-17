@@ -57,6 +57,9 @@ def view(company_id: str) -> dict[str, Any]:
         "writeUserConfigured": bool(s and s.get("credential_secret")),
         "writeUserMasked": _mask(s.get("credential_username")) if s else None,
         "writeUserStorage": settings.credential_storage(s),
+        "browserUserConfigured": bool(s and s.get("browser_secret")),
+        "browserUserMasked": _mask(s.get("browser_username")) if s else None,
+        "browserUserStorage": settings.browser_credential_storage(s),
         "agentExecutionEnabled": bool(s["agent_execution_enabled"]) if s else True,
         "capabilities": caps,
         "checks": {c: settings.check_state(s, c) for c in settings.CHECKS} if s else {},
@@ -105,6 +108,24 @@ def save_write_user(payload: settings.WriteCredentialUpdate, ctx: AuthContext = 
     except credential_crypto.CredentialKeyMissing as exc:
         raise HTTPException(status_code=409, detail=str(exc))
     except settings.SettingsNotFound as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    return view(ctx.customer_id)
+
+
+@router.put("/admin/jde/execution/browser-user")
+def save_browser_user(payload: settings.WriteCredentialUpdate, ctx: AuthContext = Depends(require_role("admin"))) -> dict:
+    from ..discovery import profile_service
+
+    profile = profile_service.load(ctx.customer_id)
+    if profile and (profile.get("credential_username") or "").strip().upper() == payload.username.strip().upper():
+        raise HTTPException(status_code=422, detail="the browser user must be a different user than the read-only "
+                                                    "discovery user")
+    try:
+        settings.save_browser_credential(ctx.customer_id, payload.username, payload.password,
+                                         expected_revision=payload.expected_revision, actor=ctx.identity.display_name)
+    except (credential_crypto.CredentialKeyMissing, settings.SettingsNotFound) as exc:
         raise HTTPException(status_code=409, detail=str(exc))
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
