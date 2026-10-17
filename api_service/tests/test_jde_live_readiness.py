@@ -251,23 +251,27 @@ def test_an_environment_name_difference_is_shown_not_corrected(client, monkeypat
     assert not view["ready"]
 
 
-def test_all_role_proves_authentication_but_never_readiness_or_a_read(client, monkeypatch):
+def test_the_role_is_the_users_jde_security_and_never_blocks_sign_in(client, monkeypatch):
+    """Whatever role JD Edwards gives the session (SYSADMIN, *ALL...) is
+    recorded; the user's own JD Edwards security decides what it may do.
+    Only a different ENVIRONMENT is a failure."""
     requests: list = []
     live_profile(client, monkeypatch, requests, role="*ALL")
     r = client.post("/admin/jde/test-connection", headers=H).json()
-    view = r["profile"]
-    assert view["health"]["authentication"]["state"] == "ok"
+    assert r["outcome"] == "ok", r
     its, _ = items(client)
-    assert its["session role"]["status"] == "mismatch" and "*ALL" in its["session role"]["detail"]
-    assert not view["ready"] and not view["discoveryEnabled"]
-    sent = len(requests)
-    s = client.post("/admin/jde/sample-read", headers=H,
-                    json={"capabilityId": "udc_values", "target": "00/DT", "maxRecords": 5}).json()
-    assert s["outcome"] == "blocked" and "*ALL" in s["detail"]
-    assert len(requests) == sent
-    r = client.put("/admin/jde/profile", headers=H, json={**client.get("/admin/jde/profile", headers=H).json()["config"],
-                                                          "role": "*all", "expectedRevision": view["revision"]})
-    assert r.status_code == 422  # *ALL can never be the configured role
+    assert its["session role"]["status"] == "recorded" and "*ALL" in its["session role"]["detail"]
+    assert r["profile"]["discoveryEnabled"]
+    # Any role may be configured, or none (JD Edwards then uses the user's default role).
+    cfg = client.get("/admin/jde/profile", headers=H).json()
+    for role in ("SYSADMIN", "*ALL", ""):
+        cfg = client.put("/admin/jde/profile", headers=H, json={**cfg["config"], "role": role,
+                                                               "expectedRevision": cfg["revision"]}).json()
+        assert cfg["config"]["role"] == role
+    requests.clear()
+    assert client.post("/admin/jde/test-connection", headers=H).json()["outcome"] == "ok"
+    token_body = next(b for m, p, b in requests if p.endswith("/tokenrequest"))
+    assert "role" not in token_body  # blank: no role is requested
 
 
 # ---------------------------------------------------------------------

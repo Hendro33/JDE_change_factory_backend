@@ -117,8 +117,9 @@ def test_the_write_user_must_differ_from_the_discovery_user_and_only_admins_chan
     r = client.put("/admin/jde/execution/write-user", headers=H, json={"username": "jadedisc", "password": "x",
                                                                        "expectedRevision": r.json()["revision"]})
     assert r.status_code == 422 and "different user" in r.json()["detail"]
+    # Any JD Edwards role is accepted, *ALL included (the user's JD Edwards security applies).
     r = client.put("/admin/jde/execution", headers=H, json={"writeRole": "*ALL", "expectedRevision": 1})
-    assert r.status_code == 422
+    assert r.status_code == 200, r.text
 
 
 def test_a_separate_browser_user_is_optional_and_falls_back_to_the_write_user(ready):

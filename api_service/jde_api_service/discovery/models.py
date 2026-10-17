@@ -162,7 +162,9 @@ class JdeProfileConfig(ApiModel):
     environment_purpose: EnvironmentPurpose = "development"
     # Required for an isolated trial: who approved using this environment and where (ticket, e-mail, minutes).
     trial_approval_reference: str = Field(default="", max_length=500)
-    role: str
+    # The JD Edwards role Jade asks for at sign-in. Blank = the user's own
+    # default role (JD Edwards decides). Any role is accepted, *ALL included.
+    role: str = ""
     # Optional: when set, Test Connection compares them with what JDE reports;
     # when blank, what JDE reports is recorded and nothing is compared.
     expected_application_release: str = ""
@@ -235,13 +237,18 @@ class JdeProfileConfig(ApiModel):
             url = url[: -len("/jderest")]
         return url
 
-    @field_validator("environment", "role")
+    @field_validator("environment")
     @classmethod
     def _explicit(cls, v: str) -> str:
         v = v.strip()
         if not v or v.upper() in {"*ALL", "*", "ALL"}:
             raise ValueError("must be named explicitly (no blank, *ALL or wildcard)")
         return v
+
+    @field_validator("role")
+    @classmethod
+    def _role(cls, v: str) -> str:
+        return (v or "").strip().upper()
 
     @field_validator("expected_application_release", "expected_tools_release")
     @classmethod

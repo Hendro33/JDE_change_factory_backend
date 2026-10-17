@@ -544,16 +544,17 @@ def verify_environment(config: JdeProfileConfig, server_defaults: dict, session:
     else:
         item("session environment", "verified", "AIS token response", f"session reports {env!r}", config.environment, env)
     role = session.get("role")
-    if role is None:
+    if not config.role:
+        item("session role", "recorded", "AIS token response",
+             f"no role configured: JD Edwards chose {role!r}" if role else "no role configured or reported",
+             None, role)
+    elif role is None:
         item("session role", "recorded", "AIS token response",
              f"the token-request response did not state the session's role; Jade requested {config.role!r} explicitly",
              config.role, None)
-    elif str(role).strip().upper() in {"*ALL", "ALL", "*"}:
-        item("session role", "mismatch", "AIS token response",
-             f"the session runs with role {role!r}, which is not acceptable for Jade discovery: a dedicated, restricted "
-             "role is required. Authentication works, but the connection is not ready", config.role, role)
-    elif str(role) != config.role:
-        item("session role", "mismatch", "AIS token response", f"configured {config.role!r}, session reports {role!r}",
+    elif str(role).strip().upper() != config.role.upper():
+        item("session role", "recorded", "AIS token response",
+             f"Jade asked for {config.role!r}; JD Edwards reports {role!r} (recorded; the user's JD Edwards security applies)",
              config.role, role)
     else:
         item("session role", "verified", "AIS token response", f"session reports {role!r}", config.role, role)

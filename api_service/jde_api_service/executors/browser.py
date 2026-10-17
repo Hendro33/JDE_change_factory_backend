@@ -240,7 +240,12 @@ class Session:
             await page.goto(self.config.web_client_url, wait_until="domcontentloaded", timeout=30000)
         except Exception as exc:  # noqa: BLE001
             raise NotSent(f"the web client could not be opened: {_short(exc)}") from None
-        pw = page.locator("input[type=password]").first
+        pw_sel = "input[type=password], input[name=Password], input#Password, input[name=password]"
+        try:  # the JD Edwards sign-in page builds its form with script after the page loads
+            await page.wait_for_selector(pw_sel, state="attached", timeout=20000)
+        except Exception:  # noqa: BLE001
+            pass
+        pw = page.locator(pw_sel).first
         if await pw.count() == 0:
             await self.shot("web client opened: no sign-in form")
             try:
@@ -255,11 +260,24 @@ class Session:
             raise NotSent("the web client's sign-in form has no user field Jade recognises")
         await user.fill(username)
         await pw.fill(password)
+        # Environment and Role sit under "Details" on the JD Edwards sign-in page.
+        details = page.locator("text=Details").first
+        try:
+            if await details.count() and not await page.locator("input[name=Environment], select[name=Environment]").first.is_visible():
+                await details.click()
+                await page.wait_for_timeout(300)
+        except Exception:  # noqa: BLE001
+            pass
         for name, value in (("Environment", self.environment), ("Role", self.role)):
             box = page.locator(f"input[name={name}], select[name={name}], input#{name}").first
             if value and await box.count() and await box.is_visible():
                 if await box.evaluate("e => e.tagName") == "SELECT":
-                    await box.select_option(label=value)
+                    # The option may be shown as "JPS920" or "JPS920 - Pristine": match the code.
+                    matched = await box.evaluate(
+                        "(e, v) => { const o = [...e.options].find(o => o.value.toUpperCase() === v.toUpperCase()"
+                        " || o.text.trim().toUpperCase().startsWith(v.toUpperCase())); return o ? o.value : null; }", value)
+                    if matched is not None:
+                        await box.select_option(value=matched)
                 else:
                     await box.fill(value)
         await pw.press("Enter")
@@ -268,7 +286,7 @@ class Session:
             await page.wait_for_timeout(500)
         except Exception:  # noqa: BLE001
             pass
-        if await page.locator("input[type=password]").count():
+        if await page.locator(pw_sel).count():
             await self.shot("sign-in refused")
             raise NotSent("the web client did not accept the DEV write user's sign-in")
         await self.shot(f"signed in to the web client as the DEV write user ({self.environment})")

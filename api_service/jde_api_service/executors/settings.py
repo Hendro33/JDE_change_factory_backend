@@ -93,10 +93,8 @@ class ExecutionConfig(ApiModel):
     @field_validator("write_role", "browser_role")
     @classmethod
     def _role(cls, v: str) -> str:
-        v = (v or "").strip()
-        if v.upper() in {"*ALL", "ALL", "*"}:
-            raise ValueError("*ALL is not a dedicated role; the write user needs its own DEV role")
-        return v
+        # Any JD Edwards role, *ALL included; blank = the read role, or the user's default.
+        return (v or "").strip().upper()
 
 
 class ExecutionSettingsUpdate(ExecutionConfig):

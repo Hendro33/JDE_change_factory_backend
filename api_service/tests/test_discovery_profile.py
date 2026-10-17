@@ -119,7 +119,6 @@ def test_the_profile_is_company_scoped_and_admin_only(client, viewer_client):
     ({"aisBaseUrl": "http://ais.customer.example"}, "https"),
     ({"aisBaseUrl": "https://user:pw@ais.customer.example"}, "credentials"),
     ({"environment": "*ALL"}, "explicitly"),
-    ({"role": "*ALL"}, "explicitly"),
     ({"environmentType": "PROD"}, ""),
     ({"approvedReads": [{"capabilityId": "set_processing_option", "targets": ["P4210|CIQ0001"]}]}, "unknown discovery capability"),
     ({"approvedReads": [{"capabilityId": "source_code", "targets": ["B5542001"]}]}, "unavailable"),

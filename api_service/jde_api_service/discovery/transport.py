@@ -335,9 +335,10 @@ class LiveAisTransport:
 
     def authenticate(self, username: str, password: str, environment: str, role: str) -> Session:
         method, path = AUTH_ENDPOINTS["token_request"]
-        data = self._send(method, path, body={"username": username, "password": password,
-                                              "environment": environment, "role": role,
-                                              "deviceName": "JadeDiscovery"})
+        body = {"username": username, "password": password, "environment": environment, "deviceName": "JadeDiscovery"}
+        if role:  # blank = the user's own default role
+            body["role"] = role
+        data = self._send(method, path, body=body)
         token = ((data.get("userInfo") or {}).get("token")) or data.get("token")
         if not token:
             raise AuthenticationFailed("AIS returned no session token")
