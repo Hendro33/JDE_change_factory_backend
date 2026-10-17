@@ -175,6 +175,21 @@ def activate(framework_id: str, version: int, ctx: AuthContext = Depends(require
         raise _refusal(exc)
 
 
+class DomainsInput(ApiModel):
+    node_keys: list[str]
+
+
+@router.post("/process/frameworks/{framework_id}/versions/{version}/domains")
+def create_domains(framework_id: str, version: int, payload: DomainsInput,
+                   ctx: AuthContext = Depends(require_role("admin"))) -> dict:
+    """Business domains from the chosen processes of an active framework version."""
+    try:
+        return framework.create_domains(ctx.customer_id, framework_id, version, payload.node_keys,
+                                        actor=ctx.identity.display_name)
+    except (*_REFUSALS, LookupError) as exc:
+        raise _refusal(exc)
+
+
 @router.put("/process/settings")
 def select(payload: SelectInput, ctx: AuthContext = Depends(require_role("admin"))) -> dict:
     try:

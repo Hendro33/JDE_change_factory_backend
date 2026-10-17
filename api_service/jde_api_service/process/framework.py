@@ -143,16 +143,51 @@ def propose_mapping(headers: list[str]) -> dict[str, Optional[str]]:
 
 def inspect(data: bytes) -> dict:
     """Sheets, their headers and a proposed mapping -- the first step of an
-    import, before anything is stored."""
+    import, before anything is stored. The proposed sheet is the template
+    sheet when present, otherwise the largest sheet whose headers map to a
+    Node ID and a Name (in an APQC PCF workbook: the "Combined" sheet)."""
     sheets = _read_workbook(data)
     out = []
     for name, rows in sheets.items():
         headers = _headers(rows)
-        out.append({"sheet": name, "headers": headers, "rows": max(len(rows) - 1, 0),
-                    "proposed_mapping": propose_mapping(headers)})
-    default = next((s["sheet"] for s in out if s["sheet"] == TEMPLATE_SHEET), out[0]["sheet"] if out else None)
+        mapping = propose_mapping(headers)
+        out.append({"sheet": name, "headers": headers, "rows": max(len(rows) - 1, 0), "proposed_mapping": mapping,
+                    # No Parent ID column but dotted IDs: propose deriving the parent from the ID.
+                    "proposed_derive_parent": bool(mapping.get("node_key") and not mapping.get("parent_key"))})
+    usable = [s for s in out if s["proposed_mapping"].get("node_key") and s["proposed_mapping"].get("name")]
+    default = next((s["sheet"] for s in out if s["sheet"] == TEMPLATE_SHEET), None) or (
+        max(usable, key=lambda s: s["rows"])["sheet"] if usable else (out[0]["sheet"] if out else None))
+    looks_apqc = any("pcf id" in [h.lower() for h in s["headers"]] for s in out)
     return {"sheets": out, "default_sheet": default, "fields": list(FIELDS), "required_fields": list(REQUIRED_FIELDS),
-            "field_labels": FIELD_LABELS}
+            "field_labels": FIELD_LABELS, "looks_like_apqc": looks_apqc,
+            "description_source": _definition_sheet(sheets, out)}
+
+
+def _definition_sheet(sheets: dict[str, list[list[Any]]], inspected: list[dict]) -> Optional[str]:
+    """A sheet that holds a Definition per Hierarchy ID (the APQC glossary)."""
+    for s in inspected:
+        lower = [h.lower() for h in s["headers"]]
+        if "definition" in lower and "hierarchy id" in lower:
+            return s["sheet"]
+    return None
+
+
+def _definitions(sheets: dict[str, list[list[Any]]], key_header: str) -> tuple[Optional[str], dict[str, str]]:
+    """Definitions by node key from a glossary sheet whose key column has the
+    same header as the mapped Node ID column (e.g. "Hierarchy ID")."""
+    for name, rows in sheets.items():
+        headers = [h.lower() for h in _headers(rows)]
+        if "definition" in headers and key_header.lower() in headers:
+            ki, di = headers.index(key_header.lower()), headers.index("definition")
+            out = {}
+            for row in rows[1:]:
+                k = _cell(row[ki]) if ki < len(row) else ""
+                d = _cell(row[di]) if di < len(row) else ""
+                if k and d:
+                    out[k] = d
+            if out:
+                return name, out
+    return None, {}
 
 
 def parse(data: bytes, sheet: str, mapping: dict[str, Optional[str]], *, derive_parent: bool) -> tuple[list[dict], dict]:
@@ -196,14 +231,37 @@ def parse(data: bytes, sheet: str, mapping: dict[str, Optional[str]], *, derive_
         parent = values.get("parent_key", "")
         if not parent and derive_parent and "." in key:
             parent = key.rsplit(".", 1)[0]
+            values["_derived"] = "1"
         stated_level = values.get("level", "")
         nodes.append({"node_key": key[:100], "parent_key": parent[:100] or None, "name": name[:300],
                       "description": values.get("description", "")[:4000], "node_type": values.get("node_type", "")[:60],
-                      "external_ref": values.get("external_ref", "")[:100], "_row": rownum, "_stated_level": stated_level})
+                      "external_ref": values.get("external_ref", "")[:100], "_row": rownum, "_stated_level": stated_level,
+                      "_derived": bool(values.get("_derived"))})
     if not nodes and not errors:
         errors.append("the sheet has no node rows")
 
     by_key = {n["node_key"]: n for n in nodes}
+    # APQC numbering: a category is "4.0" and its process groups are "4.1",
+    # "4.2"... A derived parent "4" is the category "4.0"; "4.0" itself is a root.
+    for n in nodes:
+        if n.pop("_derived") and n["parent_key"] not in by_key:
+            if f"{n['parent_key']}.0" in by_key and n["node_key"] != f"{n['parent_key']}.0":
+                n["parent_key"] = f"{n['parent_key']}.0"
+            elif n["node_key"].endswith(".0") and n["node_key"].count(".") == 1:
+                n["parent_key"] = None
+    # Descriptions from a glossary sheet when no Description column is mapped
+    # (APQC: the "Glossary terms" sheet, Definition per Hierarchy ID).
+    if not mapping.get("description") and mapping.get("node_key"):
+        source, definitions = _definitions({k: v for k, v in sheets.items() if k != sheet}, mapping["node_key"])
+        if definitions:
+            hits = 0
+            for n in nodes:
+                d = definitions.get(n["node_key"])
+                if d and not n["description"]:
+                    n["description"] = d[:4000]
+                    hits += 1
+            if hits:
+                warnings.append(f"descriptions for {hits} nodes taken from the Definition column of sheet '{source}'")
     for n in nodes:
         if n["parent_key"] and n["parent_key"] not in by_key:
             errors.append(f"row {n['_row']}: parent {n['parent_key']} of node {n['node_key']} is not in the file")
@@ -497,3 +555,41 @@ def search(framework_id: str, version: int, query: str, limit: int = 25) -> list
             scored.append((score, n))
     scored.sort(key=lambda t: (-t[0], t[1]["position"]))
     return [n for _, n in scored[:limit]]
+
+
+# ---------------------------------------------------------------------
+# Business domains from a framework
+# ---------------------------------------------------------------------
+def create_domains(company_id: str, framework_id: str, version: int, node_keys: list[str], *, actor: str) -> dict:
+    """Create the company's business domains from processes of an ACTIVE
+    framework version: one domain per chosen node, with the node's ID as the
+    domain code and level, its name and its description. A node whose code is
+    already a domain of this company is left as it is (never duplicated or
+    overwritten). Returns what was created and what already existed."""
+    from ..models.business_domain import BusinessDomainCreate
+    from ..services.registry import get_business_domain_service
+
+    v = get_version(company_id, framework_id, version)
+    if v is None:
+        raise LookupError("no such framework version for this company")
+    if v["status"] != "active":
+        raise FrameworkRefused("activate the framework version before creating business domains from it")
+    if not node_keys:
+        raise FrameworkRefused("choose at least one process")
+    by_key = {n["node_key"]: n for n in nodes(framework_id, version)}
+    missing = [k for k in node_keys if k not in by_key]
+    if missing:
+        raise FrameworkRefused(f"not in version {version}: {', '.join(missing[:10])}")
+    service = get_business_domain_service()
+    existing = {d.apqc_code: d for d in service.list_for_customer(company_id)}
+    created, kept = [], []
+    for key in dict.fromkeys(node_keys):
+        if key in existing:
+            kept.append({"code": key, "name": existing[key].name, "id": existing[key].id})
+            continue
+        n = by_key[key]
+        d = service.create(BusinessDomainCreate(apqc_code=key, name=n["name"], level=key,
+                                                description=(n.get("description") or "")[:2000]),
+                           company_id, actor=actor)
+        created.append({"code": key, "name": d.name, "id": d.id})
+    return {"created": created, "existing": kept}
