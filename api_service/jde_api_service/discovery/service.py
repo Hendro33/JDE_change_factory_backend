@@ -6,7 +6,7 @@ Every request -- from the Architect's tools, an Admin's sample read, or a
 Refresh Evidence action -- is validated HERE, outside the model, before
 any network dispatch: the story's company (re-resolved from the backend's
 own link), that company's profile, its revision, enabled state, DEV
-environment, window, capability status, approved targets/fields/filters,
+environment, capability status, approved targets/fields/filters,
 record limits, the circuit breaker and the one-at-a-time lock. A refusal
 is logged as a blocked request and nothing is sent.
 
@@ -204,8 +204,6 @@ def validate(grant: DiscoveryGrant, capability_id: str, target: str, fields: lis
             raise DiscoveryBlocked("the profile changed after this run started; a new run is needed")
     if config.environment_purpose not in ("development", "isolated_trial"):
         raise DiscoveryBlocked("discovery is only for development or an approved isolated trial environment")
-    if not profile_service.window_open(config):
-        raise DiscoveryBlocked("outside the approved discovery window")
     cap = capabilities.get(capability_id)
     if cap is None:
         raise DiscoveryBlocked(f"{capability_id!r} is not a discovery capability (discovery only reads)")
@@ -760,10 +758,7 @@ def grant_for_story(story_id: str, company_id: str, *, agent_run_id: Optional[st
         return None, "this company has no JDE discovery profile"
     if not profile_service.is_active(profile):
         return None, "discovery is not enabled for this company's current profile revision"
-    window = profile["config"].discovery_window
     expires = time.time() + MAX_GRANT_SECONDS
-    if window is not None:
-        expires = min(datetime.fromisoformat(window.ends_at).timestamp(), expires)
     return DiscoveryGrant(company_id=company_id, story_id=story_id, domain_id=domain_id,
                           profile_revision=profile["revision"], agent_run_id=agent_run_id,
                           actor_user_id=actor_user_id, expires_at=expires, purpose=purpose), ""

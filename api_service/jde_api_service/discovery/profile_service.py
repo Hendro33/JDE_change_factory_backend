@@ -14,7 +14,7 @@ Rules this module enforces:
     role, expected releases or path code, or a new credential -- marks the
     test stale until it is run again.
   * Everything else on the page (customer attestations, evidence, approved
-    reads, window, limits, data sharing) is recorded or restricts reads
+    reads, limits, data sharing) is recorded or restricts reads
     further when filled in, but never has to be filled in first.
   * The secret is never returned, logged or put in an error message.
 """
@@ -43,7 +43,7 @@ CONNECTION_CHECKS = ("reachability", "authentication", "environment")
 _NON_MATERIAL = {"customer_contact", "cnc_contact", "connection_name", "network_route", "isolation_evidence",
                  "routing_isolation_confirmed", "privilege_statement", "privilege_confirmed",
                  "runtime_attestation_confirmed", "runtime_attestation_evidence", "evidence_artifact_ids",
-                 "dedicated_account", "network_restriction", "approved_reads", "discovery_window", "limits",
+                 "dedicated_account", "network_restriction", "approved_reads", "limits",
                  "data_sharing_policy", "environment_purpose", "trial_approval_reference"}
 
 
@@ -302,15 +302,6 @@ def capability_views(profile: Optional[dict]) -> list[CapabilityView]:
     return views
 
 
-def window_open(config: JdeProfileConfig, now: Optional[datetime] = None) -> bool:
-    """No window = no time restriction. A window, when set, limits reads to it."""
-    if config.discovery_window is None:
-        return True
-    now = now or datetime.now(timezone.utc)
-    return (datetime.fromisoformat(config.discovery_window.starts_at) <= now
-            < datetime.fromisoformat(config.discovery_window.ends_at))
-
-
 def enable_blockers(profile: dict) -> list[str]:
     """What stops Jade's agents using this connection now, in plain words.
     Only the connection itself: settings saved, a readable credential, a
@@ -374,9 +365,6 @@ def prerequisites(profile: dict) -> list[dict]:
         item("approved_reads", "Approved reads (optional restriction)", "configuration", True,
              f"{len(config.approved_reads)} restricted capability(ies)" if config.approved_reads else
              "none: every available read capability, read-only, at most the record limit", required=False),
-        item("window", "Time window (optional restriction)", "configuration", window_open(config),
-             (f"{config.discovery_window.starts_at} to {config.discovery_window.ends_at}" if config.discovery_window
-              else "none: no time restriction"), required=bool(config.discovery_window)),
         item("credential", "Credential saved and readable on the server", "configuration",
              credential_storage(profile) == "encrypted", credential_storage(profile)),
     ]
@@ -620,7 +608,7 @@ def _certificate_view(company_id: str, config: JdeProfileConfig) -> Optional[dic
 
 def _static_view_parts(config: Optional[JdeProfileConfig]) -> dict:
     from .capabilities import AUTH_ENDPOINTS, HARD_MAX_RECORDS, READ_ENDPOINTS
-    from .models import AUTH_METHODS, MAX_TIMEOUT_SECONDS, MAX_WINDOW_DAYS
+    from .models import AUTH_METHODS, MAX_TIMEOUT_SECONDS
 
     urls = {}
     if config is not None:
@@ -628,5 +616,5 @@ def _static_view_parts(config: Optional[JdeProfileConfig]) -> dict:
                 "logout": config.ais_base_url + AUTH_ENDPOINTS["logout"][1],
                 **{k: config.ais_base_url + p for k, (_, p) in READ_ENDPOINTS.items()}}
     return {"ceilings": {"max_records": HARD_MAX_RECORDS, "max_timeout_seconds": MAX_TIMEOUT_SECONDS,
-                         "max_window_days": MAX_WINDOW_DAYS, "concurrent_requests": 1, "max_filters": 5},
+                         "concurrent_requests": 1, "max_filters": 5},
             "auth_methods": AUTH_METHODS, "request_urls": urls}

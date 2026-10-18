@@ -140,14 +140,6 @@ def test_reads_outside_the_window_or_for_another_companys_story_are_blocked(clie
     forged = service.DiscoveryGrant(**{**grant.__dict__, "company_id": "bwm"})
     with pytest.raises(service.DiscoveryBlocked):
         service.execute_read(forged, "udc_values", "00/DT")
-    # Window closed.
-    monkeypatch_window = profile_service.window_open
-    profile_service.window_open = lambda config, now=None: False
-    try:
-        with pytest.raises(service.DiscoveryBlocked, match="window"):
-            service.execute_read(grant, "udc_values", "00/DT")
-    finally:
-        profile_service.window_open = monkeypatch_window
     assert calls == before
 
 

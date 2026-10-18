@@ -19,7 +19,6 @@ ConnectionMode = Literal["live"]
 # such as PS920 that the customer approved for this trial).
 EnvironmentPurpose = Literal["development", "isolated_trial"]
 AuthMethod = Literal["ais_token_request"]
-MAX_WINDOW_DAYS = 31
 MAX_TIMEOUT_SECONDS = 30
 # Authentication methods, honestly: only the first is implemented. The others
 # are listed so an Admin can see why a customer's requirement is not met yet.
@@ -82,25 +81,6 @@ class ApprovedRead(ApiModel):
                 raise ValueError(f"{self.capability_id} can only return {list(cap.fixed_fields)}; not {sorted(extra)}")
         if cap.capability_id == "table_browse" and not self.fields:
             raise ValueError("table_browse: list the approved columns -- there is no 'all columns'")
-        return self
-
-
-class DiscoveryWindow(ApiModel):
-    starts_at: str
-    ends_at: str
-
-    @model_validator(mode="after")
-    def _check(self) -> "DiscoveryWindow":
-        try:
-            start, end = datetime.fromisoformat(self.starts_at), datetime.fromisoformat(self.ends_at)
-        except ValueError as exc:
-            raise ValueError("discovery window times must be ISO-8601") from exc
-        if start.tzinfo is None or end.tzinfo is None:
-            raise ValueError("discovery window times need a timezone")
-        if end <= start:
-            raise ValueError("discovery window must end after it starts")
-        if (end - start).total_seconds() > MAX_WINDOW_DAYS * 86400:
-            raise ValueError(f"the discovery window can be at most {MAX_WINDOW_DAYS} days (server limit)")
         return self
 
 
@@ -191,7 +171,8 @@ class JdeProfileConfig(ApiModel):
     dedicated_account: DedicatedAccount = Field(default_factory=DedicatedAccount)
     network_restriction: NetworkRestriction = Field(default_factory=NetworkRestriction)
     approved_reads: list[ApprovedRead] = Field(default_factory=list)
-    discovery_window: Optional[DiscoveryWindow] = None
+    # A time window for reads existed earlier; it was removed (18 Oct 2026). Saved
+    # profiles may still carry discovery_window: it is ignored.
     limits: RequestLimits = Field(default_factory=RequestLimits)
     data_sharing_policy: DataSharingPolicy = "metadata_only"
 

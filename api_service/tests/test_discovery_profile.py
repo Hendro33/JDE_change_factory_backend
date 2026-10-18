@@ -138,7 +138,7 @@ def test_the_connection_is_usable_once_test_connection_passes_no_attestations_ne
     are optional and never block, and there is no separate enable step."""
     save_profile(client, routingIsolationConfirmed=False, isolationEvidence="", privilegeConfirmed=False,
                  privilegeStatement="", runtimeAttestationConfirmed=False, runtimeAttestationEvidence="",
-                 discoveryWindow=None, approvedReads=[])
+                 approvedReads=[])
     save_credential(client)
     view = client.get("/admin/jde/profile", headers=headers("vdb")).json()
     assert view["discoveryEnabled"] is False

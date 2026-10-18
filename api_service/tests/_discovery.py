@@ -48,8 +48,6 @@ def profile_body(company: str = "vdb", **overrides) -> dict:
         ],
         "networkRestriction": {"backendSourceAddress": "203.0.113.10", "restrictedToSource": True,
                                "evidence": "customer firewall rule 7 allows AIS from 203.0.113.10 only"},
-        "discoveryWindow": {"startsAt": (now - timedelta(days=1)).isoformat(),
-                            "endsAt": (now + timedelta(days=2)).isoformat()},
         "limits": {"maxRecords": 10, "timeoutSeconds": 5},
         "dataSharingPolicy": "configuration_and_artifacts",
     }
