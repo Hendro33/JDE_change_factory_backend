@@ -387,8 +387,8 @@ def authorise_functional_delivery(change_id: str) -> tuple[dict, dict]:
     from .scope import (
         ScopeViolation,
         check_allowed_value,
-        check_functional_scope,
         check_option_category,
+        functional_entry,
         reject_if_oracle_owned_version,
     )
 
@@ -435,7 +435,9 @@ def authorise_functional_delivery(change_id: str) -> tuple[dict, dict]:
     except capability_catalog.CapabilityError as exc:
         raise ChangeApprovalError(str(exc)) from exc
     reject_if_oracle_owned_version(op.get("version", ""))
-    entry = check_functional_scope(scope, op.get("application", ""), op.get("version", ""), op.get("option", ""))
+    entry = functional_entry(scope, capability_id, op.get("application", ""), op.get("version", ""), op.get("option", ""))
+    if entry.get("open"):
+        return record, scope
     check_allowed_value(entry, str(op.get("value", "")))
     if entry.get("capability_id") != capability_id:
         raise ScopeViolation(
@@ -523,8 +525,11 @@ def preflight(change_id: str) -> dict:
               record.get("capability_id", ""), record.get("capability_revision", ""), record["environment"]))
     if scope is not None:
         check("DEV environment bound and isolation confirmed", lambda: scope_module.check_environment_binding(scope, record["environment"]))
-        entry = check("Target is in the company's approved versions",
-                      lambda: scope_module.check_functional_scope(scope, op.get("application", ""), op.get("version", ""), op.get("option", "")))
+        entry = check("Target is in the company's approved versions, or this kind of change is allowed",
+                      lambda: scope_module.functional_entry(scope, record.get("capability_id", ""), op.get("application", ""),
+                                                            op.get("version", ""), op.get("option", "")))
+        if isinstance(entry, dict) and entry.get("open"):
+            entry = None
         if isinstance(entry, dict):
             check("Value is one of the allowed values", lambda: scope_module.check_allowed_value(entry, str(op.get("value", ""))))
         enforcement = check("Capability has a complete enforcement contract",

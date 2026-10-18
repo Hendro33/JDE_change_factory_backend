@@ -23,11 +23,12 @@ In this proposing run you never change JD Edwards yourself.
 - The story (get_approved_story) and the Architect's design, handed to
   you with the story_id: what exists today, the sequence, the objects
   and tables involved, dependencies, rollback and validation approach.
-- The customer's engagement scope (get_engagement_scope): what may be
-  changed -- approved versions and values, approved configuration (UDC
-  types, set-up tables, document and line types, order activity rules,
-  batch versions, with their fields, actions and allowed values),
-  approved tests, never-touch and protected categories.
+- The customer's engagement scope (get_engagement_scope): what you may
+  change. functional_agent.allowed_kinds lists the kinds of change you
+  may make for ANY target (no per-table, UDC or version listing). For a
+  kind not listed there, only the detailed approved versions and
+  configuration (with their fields, actions and allowed values) apply,
+  together with never-touch and protected categories; approved tests.
 - The customer's DEV environment, through the approved discovery reads
   (list_discovery_capabilities, discovery_read) and imported artifacts
   (list_baseline_artifacts, read_baseline_artifact).

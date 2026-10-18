@@ -72,7 +72,7 @@ def test_the_functional_agent_proposes_a_configuration_change_set_in_the_solutio
 
     tools, run = _run(monkeypatch, script)
     # What the Functional Agent saw: the customer's approved configuration, read-only.
-    assert [e["target"] for e in scope_seen["approved_configuration"]] == ["00/DT", "F40039:DCTO=SW|SX", "R42565|CIQ0001"]
+    assert [e["target"] for e in scope_seen["functional_agent"]["approved_configuration"]] == ["00/DT", "F40039:DCTO=SW|SX", "R42565|CIQ0001"]
     assert scope_seen["approved_tests"][0]["orchestration"] == "ORCH_SO"
     # The design's hand-off names the change set it proposed.
     handoff = get_design_baseline(STORY)

@@ -139,6 +139,13 @@ class SpikeExperiment(ApiModel):
 
 
 class FunctionalAgentScope(ApiModel):
+    # ENFORCED, the simple way: the kinds of change (catalogue capability ids)
+    # the Functional Agent may propose and deliver for ANY target. Within a
+    # listed kind nothing has to be listed per table, UDC or version; Jade's
+    # universal rules (DEV only, never XJDE/ZJDE, a person approves every
+    # change) still apply. The detailed lists below are the optional,
+    # narrower alternative for a kind that is not listed here.
+    allowed_capabilities: list[str] = []
     approved_versions: list[ApprovedVersion] = []
     # Everything else the Functional Agent may configure (UDCs, set-up and
     # constants tables, document types, line types, order activity rules,
@@ -154,6 +161,21 @@ class FunctionalAgentScope(ApiModel):
     # than silently treated as enforced.
     never_touch_notes: list[str] = []
     approvers: list[str] = []
+
+    @field_validator("allowed_capabilities")
+    @classmethod
+    def _known_capabilities(cls, values: list[str]) -> list[str]:
+        known = set(capability_catalog.executable_capabilities())
+        out = []
+        for v in values:
+            v = v.strip()
+            if not v:
+                continue
+            if v not in known:
+                raise ValueError(f"unknown Functional Agent capability {v!r}; use one of {sorted(known)}")
+            if v not in out:
+                out.append(v)
+        return out
 
     @model_validator(mode="before")
     @classmethod
