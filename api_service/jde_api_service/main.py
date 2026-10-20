@@ -29,6 +29,7 @@ from .routers import (
     change_requests,
     changes,
     company_users,
+    customer_admin,
     discovery,
     jde_execution,
     domain_governance,
@@ -181,6 +182,7 @@ app.include_router(domain_governance.router)
 app.include_router(architecture_review.router)
 app.include_router(admin.router)
 app.include_router(company_users.router)
+app.include_router(customer_admin.router)
 app.include_router(discovery.router)
 app.include_router(jde_execution.router)
 app.include_router(technical.router)
