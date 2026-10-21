@@ -140,6 +140,21 @@ class ReadPlan:
     max_records: int = HARD_MAX_RECORDS
 
 
+# AIS addresses a table's columns by data dictionary alias (F0005.KY), not by
+# column name (F0005.DRKY). Jade keeps the column names it has always used and
+# translates here, at the AIS boundary; the answer is translated back.
+AIS_ALIASES: dict[str, dict[str, str]] = {
+    "F0005": {"DRSY": "SY", "DRRT": "RT", "DRKY": "KY", "DRDL01": "DL01", "DRDL02": "DL02", "DRSPHD": "SPHD",
+              "DRHRDC": "HRDC"},
+    "F9860": {"SIOBNM": "OBNM", "SIFUNO": "FUNO", "SISY": "SY", "SIMD": "MD", "SIPKGNAME": "PKGNAME"},
+    "F983051": {"VRPID": "PID", "VRVERS": "VERS", "VRJD": "JD", "VRCHKOUTSTS": "CHKOUTSTS"},
+}
+
+
+def ais_alias(table: str, field: str) -> str:
+    return AIS_ALIASES.get(table, {}).get(field, field)
+
+
 def build_plan(cap: DiscoveryCapability, target: str, fields: list[str], filters: list[dict], max_records: int,
                *, environment: str) -> ReadPlan:
     method, path = READ_ENDPOINTS[cap.endpoint]  # type: ignore[index]
@@ -153,33 +168,33 @@ def build_plan(cap: DiscoveryCapability, target: str, fields: list[str], filters
     # dataservice BROWSE
     table = cap.fixed_table or target
     conditions = [
-        {"controlId": f"{table}.{f['field']}", "operator": FILTER_OPERATORS[f["op"]],
+        {"controlId": f"{table}.{ais_alias(table, f['field'])}", "operator": FILTER_OPERATORS[f["op"]],
          "value": [{"content": str(f["value"]), "specialValueId": "LITERAL"}]}
         for f in filters
     ]
     if cap.capability_id == "udc_values":
         sy, _, rt = target.partition("/")
         conditions = [
-            {"controlId": "F0005.DRSY", "operator": "EQUAL", "value": [{"content": sy, "specialValueId": "LITERAL"}]},
-            {"controlId": "F0005.DRRT", "operator": "EQUAL", "value": [{"content": rt, "specialValueId": "LITERAL"}]},
+            {"controlId": "F0005.SY", "operator": "EQUAL", "value": [{"content": sy, "specialValueId": "LITERAL"}]},
+            {"controlId": "F0005.RT", "operator": "EQUAL", "value": [{"content": rt, "specialValueId": "LITERAL"}]},
         ] + conditions
     elif cap.capability_id == "version_list":
-        conditions = [{"controlId": "F983051.VRPID", "operator": "EQUAL",
+        conditions = [{"controlId": "F983051.PID", "operator": "EQUAL",
                        "value": [{"content": target, "specialValueId": "LITERAL"}]}] + conditions
     elif cap.capability_id == "object_librarian":
-        conditions = [{"controlId": "F9860.SIOBNM", "operator": "EQUAL",
+        conditions = [{"controlId": "F9860.OBNM", "operator": "EQUAL",
                        "value": [{"content": target, "specialValueId": "LITERAL"}]}] + conditions
     body = {
         "targetName": table,
         "targetType": "table",
         "dataServiceType": "BROWSE",
-        "returnControlIDs": "|".join(f"{table}.{f}" for f in fields),
+        "returnControlIDs": "|".join(f"{table}.{ais_alias(table, f)}" for f in fields),
         "maxPageSize": str(max_records),
         "enableNextPageProcessing": "false",
         "outputType": "GRID_DATA",
     }
-    if conditions:
-        body["query"] = {"autoFind": True, "matchType": "MATCH_ALL", "condition": conditions}
+    # Without a query AIS answers with no rows: an unfiltered read still asks it to find.
+    body["query"] = {"autoFind": True, "matchType": "MATCH_ALL", "condition": conditions}
     return ReadPlan(cap.capability_id, cap.endpoint, method, path, body, fields, max_records)
 
 

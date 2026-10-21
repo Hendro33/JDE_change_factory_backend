@@ -40,7 +40,7 @@ def fake_ais(requests: list, *, env="JPS920", role="JADEREAD", release="9.2.26.2
                                              "defaultJasServer": "https://jas.example"})
         if path.endswith("/dataservice"):
             table = body["targetName"]
-            rows = {"F0005": [{"F0005_DRSY": "00", "F0005_DRRT": "DT", "F0005_DRKY": "SO", "F0005_DRDL01": "Sales Order"}],
+            rows = {"F0005": [{"F0005_SY": "00", "F0005_RT": "DT", "F0005_KY": "SO", "F0005_DL01": "Sales Order"}],
                     "F00941": f00941 or []}[table]
             return httpx.Response(200, json={f"fs_DATABROWSE_{table}": {"data": {"gridData": {"rowset": rows, "summary": {"moreRecords": False}}}}})
         return httpx.Response(404)
@@ -286,8 +286,9 @@ def test_the_sample_read_is_bound_to_the_approved_request(client, monkeypatch):
     sent_before = len(requests)
     assert preview["url"] == "https://ais-vdb.customer.example/jderest/v2/dataservice" and preview["method"] == "POST"
     assert preview["body"]["targetName"] == "F0005" and preview["body"]["maxPageSize"] == "5"
-    assert preview["body"]["returnControlIDs"] == "F0005.DRSY|F0005.DRRT|F0005.DRKY|F0005.DRDL01"
-    assert [c["controlId"] for c in preview["body"]["query"]["condition"]] == ["F0005.DRSY", "F0005.DRRT"]
+    # AIS addresses columns by data dictionary alias (SY, not DRSY)
+    assert preview["body"]["returnControlIDs"] == "F0005.SY|F0005.RT|F0005.KY|F0005.DL01"
+    assert [c["controlId"] for c in preview["body"]["query"]["condition"]] == ["F0005.SY", "F0005.RT"]
     assert len(requests) == sent_before  # the preview sends nothing
     for bad in ({**body, "fields": ["DRKY"]}, {**body, "maxRecords": 6}, {**body, "target": "00/UM"}):
         r = client.post("/admin/jde/sample-read", headers=H, json=bad)

@@ -122,7 +122,13 @@ class FakeAis:
         if path == "/jderest/v2/dataservice":
             table = body["targetName"]
             self._fault(company, environment, "discovery_read", table)
-            rows = estate["tables"].get(table) or []
+            from jde_api_service.discovery.capabilities import AIS_ALIASES
+
+            # Like real AIS: columns are addressed by data dictionary alias, and without a query nothing is found.
+            names = AIS_ALIASES.get(table, {})
+            rows = [{names.get(k, k): v for k, v in r.items()} for r in (estate["tables"].get(table) or [])]
+            if "query" not in body:
+                rows = []
             for cond in (body.get("query") or {}).get("condition", []):
                 col = cond["controlId"].split(".", 1)[1]
                 val = cond["value"][0]["content"]

@@ -379,7 +379,11 @@ class LiveAisTransport:
             if key.startswith("fs_DATABROWSE_") and isinstance(value, dict):
                 grid = ((value.get("data") or {}).get("gridData") or {})
         rowset = grid.get("rowset") or []
-        records = [{f: row.get(f"{table}_{f}") for f in plan.fields} for row in rowset[: plan.max_records]]
+        def value(row: dict, f: str):
+            alias = capabilities.ais_alias(table, f)
+            return row.get(f"{table}_{alias}", row.get(f"{table}_{f}"))
+
+        records = [{f: value(row, f) for f in plan.fields} for row in rowset[: plan.max_records]]
         more = bool((grid.get("summary") or {}).get("moreRecords"))
         return ReadResult(records, more_records=more, meta={"endpoint": "dataservice", "table": table,
                                                             "shape": "unverified"})
