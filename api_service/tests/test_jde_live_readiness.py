@@ -297,7 +297,9 @@ def test_the_sample_read_is_bound_to_the_approved_request(client, monkeypatch):
     assert r["outcome"] == "ok", r
     assert r["evidence"]["request_sha256"] == preview["request_sha256"]
     sent = [b for m, p, b in requests[sent_before:] if p.endswith("/dataservice")]
-    assert sent == [preview["body"]]  # exactly the previewed request
+    # exactly the previewed request, plus the session fields AIS needs (token and device name)
+    assert [{k: v for k, v in x.items() if k not in ("token", "deviceName")} for x in sent] == [preview["body"]]
+    assert all(x["deviceName"] == "JadeDiscovery" for x in sent)
 
 
 def test_path_code_comes_only_from_jde(client, monkeypatch):

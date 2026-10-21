@@ -42,7 +42,7 @@ CheckState = Literal["ok", "failed", "unknown", "stale"]
 _NAME = re.compile(r"^[A-Za-z0-9_]{1,40}$")
 _TARGETS = {
     "table": re.compile(r"^F[0-9A-Z]{3,9}$"),
-    "product_code/type": re.compile(r"^[0-9A-Z]{2,4}/[0-9A-Z]{2,3}$"),
+    "product_code/type": re.compile(r"^[0-9A-Z]{2,4}/[0-9A-Z]{1,3}$"),
     "application": re.compile(r"^[PRV][0-9A-Z]{3,9}$"),
     "object": re.compile(r"^[A-Z][0-9A-Z]{2,9}$"),
     "application|version": re.compile(r"^[PR][0-9A-Z]{3,9}\|[0-9A-Z_]{1,10}$"),

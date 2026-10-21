@@ -45,6 +45,9 @@ BREAKER_THRESHOLD = 3
 BREAKER_OPEN_SECONDS = 300
 
 
+# The device name Jade gives AIS when it asks for a token, and with every call that uses it.
+DEVICE_NAME = "JadeDiscovery"
+
 class TransportError(RuntimeError):
     """The endpoint could not be reached, refused us, or answered badly."""
 
@@ -307,7 +310,12 @@ class LiveAisTransport:
               body: Optional[dict] = None) -> dict[str, Any]:
         headers = {"Accept": "application/json"}
         if token:
+            # AIS accepts a token only together with the device name it was issued to (the token
+            # request's deviceName); without it every call answers 444 "Invalid Token".
             headers["jde-AIS-Auth"] = token
+            headers["jde-AIS-Auth-Device"] = DEVICE_NAME
+            if isinstance(body, dict):
+                body = {"token": token, "deviceName": DEVICE_NAME, **body}
         try:
             resp = self._client.request(method, f"{self.base_url}{path}", json=body, headers=headers)
         except httpx.HTTPError as exc:
@@ -335,7 +343,7 @@ class LiveAisTransport:
 
     def authenticate(self, username: str, password: str, environment: str, role: str) -> Session:
         method, path = AUTH_ENDPOINTS["token_request"]
-        body = {"username": username, "password": password, "environment": environment, "deviceName": "JadeDiscovery"}
+        body = {"username": username, "password": password, "environment": environment, "deviceName": DEVICE_NAME}
         if role:  # blank = the user's own default role
             body["role"] = role
         data = self._send(method, path, body=body)

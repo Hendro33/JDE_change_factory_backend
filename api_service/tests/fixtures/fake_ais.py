@@ -108,6 +108,9 @@ class FakeAis:
             return httpx.Response(200, json={})
         if not request.headers.get("jde-AIS-Auth") in self._tokens:
             return httpx.Response(401, json={"message": "no session"})
+        if request.headers.get("jde-AIS-Auth-Device") != "JadeDiscovery":
+            # Real AIS: a token used without the device it was issued to is refused.
+            return httpx.Response(444, json={"message": "Invalid Token: Please Request a New Token", "exception": "Exception"})
         estate = self._estate(company, environment)
         if path == "/jderest/v2/poservice":
             key = f"{body['applicationName']}|{body['version']}"
