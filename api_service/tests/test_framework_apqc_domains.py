@@ -78,7 +78,7 @@ def test_business_domains_are_created_from_an_active_version_without_duplicates(
     assert r.status_code == 200, r.text
     assert [c["code"] for c in r.json()["created"]] == ["2.1", "2.2"]
     domains = {x["apqcCode"]: x for x in client.get("/business-domains", headers=H).json()}
-    assert domains["2.2"]["name"] == "SYN Ship orders" and domains["2.2"]["level"] == "2.2"
+    assert domains["2.2"]["name"] == "SYN Ship orders" and domains["2.2"]["level"] == "2"
     assert domains["2.2"]["description"] == "Definition of SYN Ship orders" and domains["2.2"]["status"] == "active"
     # Running it again never duplicates or overwrites.
     r = client.post(url, headers=H, json={"nodeKeys": ["2.2", "1.1"]}).json()

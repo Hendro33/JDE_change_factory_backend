@@ -560,6 +560,14 @@ def search(framework_id: str, version: int, query: str, limit: int = 25) -> list
 # ---------------------------------------------------------------------
 # Business domains from a framework
 # ---------------------------------------------------------------------
+def _hierarchy_level(code: str) -> str:
+    """APQC-style depth: 6.0 -> 1, 9.3 -> 2, 9.3.2 -> 3."""
+    parts = [p for p in str(code).split(".") if p]
+    if len(parts) == 2 and parts[1] == "0":
+        return "1"
+    return str(max(len(parts), 1))
+
+
 def create_domains(company_id: str, framework_id: str, version: int, node_keys: list[str], *, actor: str) -> dict:
     """Create the company's business domains from processes of an ACTIVE
     framework version: one domain per chosen node, with the node's ID as the
@@ -588,7 +596,7 @@ def create_domains(company_id: str, framework_id: str, version: int, node_keys: 
             kept.append({"code": key, "name": existing[key].name, "id": existing[key].id})
             continue
         n = by_key[key]
-        d = service.create(BusinessDomainCreate(apqc_code=key, name=n["name"], level=key,
+        d = service.create(BusinessDomainCreate(apqc_code=key, name=n["name"], level=str(n.get("level") or _hierarchy_level(key)),
                                                 description=(n.get("description") or "")[:2000]),
                            company_id, actor=actor)
         created.append({"code": key, "name": d.name, "id": d.id})
