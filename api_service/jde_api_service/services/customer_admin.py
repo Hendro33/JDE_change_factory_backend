@@ -68,10 +68,15 @@ def _require_admin(user_id: str, *companies: str) -> None:
 
 
 def _table_exists(conn, table: str) -> bool:
+    # A savepoint, so a missing table does not abort the transaction on PostgreSQL.
+    conn.execute("SAVEPOINT jade_table_check")
     try:
         conn.execute(f"SELECT 1 FROM {table} WHERE 1 = 0")  # noqa: S608 -- fixed table names only
+        conn.execute("RELEASE SAVEPOINT jade_table_check")
         return True
     except Exception:  # noqa: BLE001 -- a table an older schema doesn't have
+        conn.execute("ROLLBACK TO SAVEPOINT jade_table_check")
+        conn.execute("RELEASE SAVEPOINT jade_table_check")
         return False
 
 
