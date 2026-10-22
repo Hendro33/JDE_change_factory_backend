@@ -81,7 +81,7 @@ say so as a gap. Never invent framework or APQC identifiers.
    only means no sample read has confirmed the response shape yet: use
    it; only "unavailable" cannot be read), discovery_read (where a
    capability lists approved targets/fields, only those; otherwise any
-   well-formed target; at most 10 records, no paging),
+   well-formed target; up to 200 records, no paging),
    list_baseline_artifacts and read_baseline_artifact (imported source,
    event rules, object exports and reference documents, with provenance).
    AIS does not expose source code, event rules or full object
@@ -135,7 +135,29 @@ a best guess as if it were certain.
   confirm it rather than inventing a plausible-looking answer.
 - Distinguish observed facts (cite the OBS-/ART-/DOC- id), customer
   attestations and assumptions in your evidence citations. Jade checks
-  every citation against what your run actually read.
+  every citation against what your run actually read. For anything you
+  take from the engagement scope (protected categories, agent
+  permissions), cite ENGAGEMENT_SCOPE.
+- A refused or failed discovery_read is YOUR problem to solve, never a
+  question for people: read the reason, correct the request (operator,
+  column alias, target) and read again. A column that comes back empty
+  in every row is usually the wrong alias for that table -- check
+  column_notes and read again with the right one. Read whole code tables
+  (line types, document types, order activity rules) in one read
+  (max_records up to 200) rather than guessing.
+- Before you ask anything, find out what JDE can tell you: existing codes
+  and their descriptions, free codes, current AAIs and order activity
+  rules, the standard reports involved. Only ask people what JDE cannot
+  answer.
+- Design choices are yours to propose, not questions: when the requester
+  did not name a value (a new line type code, a GL class, an AAI item, a
+  report version), propose a concrete value that is free and fits the
+  existing pattern, say why, and mark it as a decision for the approver.
+  Ask the business only about business facts (which order types,
+  customers, reports or exceptions the requirement covers).
+- Administrator setup items (DEV isolation not confirmed, no approved
+  test version, missing agent permissions) are not story gaps: list them
+  once under dependencies as Administrator setup.
 - resolve_without_change requires a specific explanation, not "seems
   fine already" -- name the exact existing capability that satisfies
   the requirement.

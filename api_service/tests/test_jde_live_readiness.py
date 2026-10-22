@@ -290,7 +290,7 @@ def test_the_sample_read_is_bound_to_the_approved_request(client, monkeypatch):
     assert preview["body"]["returnControlIDs"] == "F0005.SY|F0005.RT|F0005.KY|F0005.DL01"
     assert [c["controlId"] for c in preview["body"]["query"]["condition"]] == ["F0005.SY", "F0005.RT"]
     assert len(requests) == sent_before  # the preview sends nothing
-    for bad in ({**body, "fields": ["DRKY"]}, {**body, "maxRecords": 6}, {**body, "target": "00/UM"}):
+    for bad in ({**body, "fields": ["DRKY"]}, {**body, "maxRecords": 201}, {**body, "target": "00/UM"}):
         r = client.post("/admin/jde/sample-read", headers=H, json=bad)
         assert r.status_code == 422 or r.json()["outcome"] == "blocked", bad
     assert len(requests) == sent_before

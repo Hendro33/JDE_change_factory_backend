@@ -38,8 +38,45 @@ READ_ENDPOINTS = {
     "poservice": ("POST", "/jderest/v2/poservice"),
 }
 FILTER_OPERATORS = {"=": "EQUAL", "<>": "NOT_EQUAL", "<": "LESS", ">": "GREATER",
-                    "<=": "LESS_EQUAL", ">=": "GREATER_EQUAL", "begins_with": "STR_START_WITH"}
-HARD_MAX_RECORDS = 10
+                    "<=": "LESS_EQUAL", ">=": "GREATER_EQUAL", "begins_with": "STR_START_WITH",
+                    "contains": "STR_CONTAIN", "ends_with": "STR_END_WITH"}
+# Common spellings an agent or person writes, mapped to Jade's operators.
+OPERATOR_ALIASES = {
+    "eq": "=", "==": "=", "equals": "=", "is": "=",
+    "ne": "<>", "neq": "<>", "!=": "<>", "not_equal": "<>",
+    "lt": "<", "gt": ">", "le": "<=", "lte": "<=", "ge": ">=", "gte": ">=",
+    "starts_with": "begins_with", "startswith": "begins_with", "begins": "begins_with",
+    "endswith": "ends_with", "contain": "contains", "includes": "contains",
+}
+# Enough to see a whole code table (all line types, all document types) in one read.
+HARD_MAX_RECORDS = 200
+
+
+def normalise_filters(filters: list[dict]) -> list[dict]:
+    """Translate common operator spellings (eq, ne, gt, ...) and SQL-style
+    LIKE with % wildcards into Jade's operators, so a read is not refused
+    over notation. Anything still unknown is left for validation to refuse."""
+    out = []
+    for f in filters or []:
+        if not isinstance(f, dict):
+            out.append(f)
+            continue
+        g = dict(f)
+        op = str(g.get("op", "")).strip()
+        low = op.lower()
+        value = g.get("value")
+        if low in ("like", "ilike") and isinstance(value, str):
+            v = value.replace("*", "%")
+            starts, ends = v.startswith("%"), v.endswith("%")
+            core = v.strip("%")
+            low = "contains" if starts and ends else "ends_with" if starts else "begins_with" if ends else "="
+            g["value"] = core
+        elif low in OPERATOR_ALIASES:
+            low = OPERATOR_ALIASES[low]
+        if low in FILTER_OPERATORS:
+            g["op"] = low
+        out.append(g)
+    return out
 
 
 class NotARead(RuntimeError):
@@ -73,7 +110,7 @@ CAPABILITIES: dict[str, DiscoveryCapability] = {c.capability_id: c for c in (
     ),
     DiscoveryCapability(
         "table_browse", "Read rows of an approved table",
-        "Up to the profile's record limit (never more than 10) from one approved table, approved columns only, "
+        "Up to 200 rows from one approved table, approved columns only, "
         "optionally filtered on approved columns. No joins, no paging, no SQL.",
         "unverified", "business_data", target_kind="table", endpoint="dataservice",
     ),

@@ -42,6 +42,7 @@ SCOPE_STATEMENT = (
     "A snapshot at the times shown: it does not authorise any write and does not prove nothing has changed since; "
     "execution re-validates live preconditions independently."
 )
+SCOPE_REF = "ENGAGEMENT_SCOPE"
 BASES = {"observed", "customer_attestation", "process_reference", "assumption"}
 GAP_KINDS = {"missing", "stale", "conflict", "incompatible", "unavailable"}
 
@@ -143,7 +144,8 @@ def _validate_citations(raw: list[dict], ledger: RunLedger, profile_ref: Optiona
     artifact_ids = set(ledger.artifacts_consulted)
     doc_ids = {r for r, s in ledger.artifacts_listed.items() if s["kind"] == "reference_document"} | {
         r for r, s in ledger.artifacts_consulted.items() if s["kind"] == "reference_document"}
-    attestable = artifact_ids | ({profile_ref} if profile_ref else set())
+    # The customer's saved engagement scope is Jade's own record of what was agreed: always citable.
+    attestable = artifact_ids | ({profile_ref} if profile_ref else set()) | {SCOPE_REF}
     process_ids = process_citation_ids(ledger.process_context_consulted)
     citations, gaps = [], []
     for c in raw or []:
@@ -152,7 +154,7 @@ def _validate_citations(raw: list[dict], ledger: RunLedger, profile_ref: Optiona
         basis = c.get("basis") if c.get("basis") in BASES else "assumption"
         problem = ""
         if basis == "observed":
-            known = observed_ids | artifact_ids | doc_ids
+            known = observed_ids | artifact_ids | doc_ids | {SCOPE_REF}
             if any(i in process_ids for i in ids):
                 problem = "a process reference is not an observation of the JDE environment"
             elif not ids or any(i not in known for i in ids):
@@ -208,16 +210,25 @@ def _system_gaps(ledger: RunLedger, profile: Optional[dict]) -> tuple[list[dict]
                      "question": "Can the company's Admin configure, verify and enable JDE discovery for this company?",
                      "blocked_step": "confirming objects, versions and configuration against the customer's DEV system",
                      "source": "system"})
+    read_ok = {(o.get("capability_id"), o.get("target")) for o in ledger.observations}
+    seen: set = set()
     for b in ledger.blocked:
+        key = (b["capability_id"], b["target"])
+        if key in read_ok or key in seen:
+            continue  # the agent corrected the request and read it after all (or it is already listed)
+        seen.add(key)
         cap = capabilities.get(b["capability_id"])
+        restricted = "not approved" in b["reason"]
         unavailable = cap is not None and cap.base_status == "unavailable"
         gaps.append({
             "kind": "unavailable" if unavailable else "missing",
             "description": f"{b['capability_id']} on {b['target'] or '-'} was not read: {b['reason']}",
             "question": (cap.alternative if unavailable and cap else
-                         f"Should an Admin approve {b['capability_id']} for {b['target'] or 'this target'}? "
-                         "(any scope expansion needs explicit authorisation)"),
-            "blocked_step": "", "source": "system"})
+                         f"Should an Admin add {b['target'] or 'this target'} to the approved reads for "
+                         f"{b['capability_id']}?" if restricted else
+                         "No action for people: Jade's own read could not be completed; the next solution run "
+                         "reads it again."),
+            "blocked_step": "", "source": "system", "owner": "admin" if restricted else "jade"})
     for u in ledger.artifacts_unavailable:
         gaps.append({"kind": "unavailable", "description": f"{u['ref']} could not be analysed: {u['reason']}",
                      "question": "Can the customer provide this export in a supported text format?",

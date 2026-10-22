@@ -352,6 +352,7 @@ _OPS = {
     "EQUAL": lambda a, b: a == b, "NOT_EQUAL": lambda a, b: a != b, "LESS": lambda a, b: a < b,
     "GREATER": lambda a, b: a > b, "LESS_EQUAL": lambda a, b: a <= b, "GREATER_EQUAL": lambda a, b: a >= b,
     "STR_START_WITH": lambda a, b: str(a).startswith(str(b)),
+    "STR_END_WITH": lambda a, b: str(a).endswith(str(b)), "STR_CONTAIN": lambda a, b: str(b) in str(a),
 }
 
 

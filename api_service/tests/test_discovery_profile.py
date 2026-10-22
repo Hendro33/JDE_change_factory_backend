@@ -124,7 +124,7 @@ def test_the_profile_is_company_scoped_and_admin_only(client, viewer_client):
     ({"approvedReads": [{"capabilityId": "source_code", "targets": ["B5542001"]}]}, "unavailable"),
     ({"approvedReads": [{"capabilityId": "table_browse", "targets": ["F4211; DROP TABLE"], "fields": ["DOCO"]}]}, "exact"),
     ({"approvedReads": [{"capabilityId": "table_browse", "targets": ["F4211"], "fields": []}]}, "approved columns"),
-    ({"limits": {"maxRecords": 50}}, ""),
+    ({"limits": {"maxRecords": 500}}, ""),
 ])
 def test_the_profile_refuses_unsafe_settings(client, override, message):
     r = client.put("/admin/jde/profile", headers=headers("vdb"), json=profile_body(**override))

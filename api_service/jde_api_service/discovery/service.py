@@ -251,7 +251,7 @@ def validate(grant: DiscoveryGrant, capability_id: str, target: str, fields: lis
             raise DiscoveryBlocked("filter values are single literal values of at most 60 characters, no wildcards")
     if len(filters) > 5:
         raise DiscoveryBlocked("at most 5 filters")
-    limit = min(config.limits.max_records, capabilities.HARD_MAX_RECORDS)
+    limit = capabilities.HARD_MAX_RECORDS
     if not isinstance(max_records, int) or max_records < 1 or max_records > limit:
         raise DiscoveryBlocked(f"max_records must be 1..{limit} (no paging)")
     if config.connection_mode == "live" and transport.breaker_open(grant.company_id):
@@ -280,6 +280,21 @@ def _dispatch(profile: dict, plan: capabilities.ReadPlan) -> tuple[transport.Rea
         client.logout(session)
 
 
+def _empty_column_notes(target: str, fields: list[str], records: list[dict]) -> list[str]:
+    """A column that came back empty in every row usually means the alias is
+    not a column of this table: say so, so the reader corrects the request
+    instead of concluding the value does not exist."""
+    if not records:
+        return []
+    notes = []
+    for f in fields:
+        if all(str(r.get(f) if r.get(f) is not None else "").strip() == "" for r in records):
+            notes.append(f"{f} returned no value in any of the {len(records)} rows. If you expected values, check "
+                         f"that {f} is a column alias of {target or 'this target'} (each table has its own aliases, "
+                         "e.g. the line type description in F40205 is LNDS, not DL01) and read again.")
+    return notes
+
+
 def request_fingerprint(plan: capabilities.ReadPlan) -> str:
     """sha256 of exactly what is sent (method, path, body) -- never the
     credential or session token, which travel separately."""
@@ -293,7 +308,7 @@ def execute_read(grant: DiscoveryGrant, capability_id: str, target: str = "", fi
     """Validate, read once, and record. Returns the sanitised evidence.
     Raises DiscoveryBlocked (nothing sent) or DiscoveryFailed."""
     request_id = f"DR-{uuid.uuid4().hex[:12]}"
-    fields, filters = list(fields or []), list(filters or [])
+    fields, filters = list(fields or []), capabilities.normalise_filters(list(filters or []))
     started = time.time()
     summary = _target_summary(capability_id, target, fields, filters)
     profile = profile_service.load(grant.company_id)
@@ -366,6 +381,7 @@ def execute_read(grant: DiscoveryGrant, capability_id: str, target: str = "", fi
         "path_code": config.path_code,
         "profile_revision": profile["revision"],
         "record_count": len(result.records),
+        "column_notes": _empty_column_notes(target, fields, result.records),
         "more_records_available": result.more_records,
         "records": shared,
         "sharing": sharing,

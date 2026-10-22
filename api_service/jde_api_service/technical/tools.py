@@ -374,7 +374,7 @@ class TechnicalAgentTools:
                                             "max_records": {"type": "integer"}}, "required": ["capability_id"]})(
                 lambda a: _async(reply(self.discovery.read(a.get("capability_id", ""), a.get("target", "") or "",
                                                            a.get("fields"), a.get("filters"),
-                                                           int(a.get("max_records", 10) or 10))))),
+                                                           int(a.get("max_records", 50) or 50))))),
         ]
         return sdk.create_sdk_mcp_server(SERVER_NAME, tools=tools)
 

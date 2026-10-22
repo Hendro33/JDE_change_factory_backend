@@ -50,10 +50,10 @@ def _grant(story: str = "S-DP-1", company: str = "vdb"):
     ("table_browse", "F0101", ["AN8"], [], 1, "not approved"),
     ("table_browse", "F4211", ["DOCO", "UPRC"], [], 1, "fields not approved"),
     ("table_browse", "F4211", ["DOCO"], [{"field": "DOCO", "op": "=", "value": "1"}], 1, "filtering on 'DOCO'"),
-    ("table_browse", "F4211", ["DOCO"], [{"field": "DCTO", "op": "LIKE", "value": "S"}], 1, "operator"),
+    ("table_browse", "F4211", ["DOCO"], [{"field": "DCTO", "op": "REGEX", "value": "S"}], 1, "operator"),
     ("table_browse", "F4211", ["DOCO"], [{"field": "DCTO", "op": "=", "value": "S%"}], 1, "wildcards"),
     ("table_browse", "F4211", ["DOCO"], [{"field": "DCTO", "op": "=", "value": "SO", "sql": "1=1"}], 1, "only field"),
-    ("table_browse", "F4211", ["DOCO"], [], 11, "max_records"),
+    ("table_browse", "F4211", ["DOCO"], [], 201, "max_records"),
     ("table_browse", "F4211", ["DOCO"], [], 0, "max_records"),
 ])
 def test_out_of_scope_calls_are_blocked_before_network_dispatch(client, calls, capability, target, fields, filters,
@@ -85,7 +85,7 @@ def test_without_approved_reads_any_well_formed_read_is_allowed_and_stays_a_read
     with pytest.raises(service.DiscoveryBlocked, match="name the columns"):
         service.execute_read(_grant(), "table_browse", "F4211", [], [], 1)
     with pytest.raises(service.DiscoveryBlocked, match="max_records"):
-        service.execute_read(_grant(), "table_browse", "F4211", ["DOCO"], [], 11)
+        service.execute_read(_grant(), "table_browse", "F4211", ["DOCO"], [], 201)
 
 
 def test_a_permitted_read_returns_sanitised_evidence_with_provenance(client, calls):
