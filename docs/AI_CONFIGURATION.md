@@ -97,6 +97,25 @@ extraction, knowledge tools).
   * Outcome.
   * Notes when a story's model or configuration changed since its previous
     run. A configuration change affects new runs only, and never silently.
+  * The agent's **full final answer** (`ai_runs.output`), exactly as given.
+    Administrators open it from the run list (Operations › Agent health &
+    runs, "Full answer"; `GET /admin/ai/runs/{run_id}/output`). Jade never
+    cuts or rejects an answer for its length; an answer over 12,000
+    characters is marked "long" as a signal for tuning the prompt.
+* **Writing for people (fixed Jade policy).** Every pack's prompt ends with
+  the same writing section (`ai/packs.py`, `WRITING_POLICY`): conclusion
+  first, plain words, each point once, every open point with what it
+  affects, who resolves it and how, uncertainty explicit (values marked
+  verified, not yet verified or proposed, never "none"). It shapes style
+  only; it never asks an agent to leave anything out.
+* **Structured results.** The Architect's answer has a `result` block: a
+  one-sentence conclusion, the changes as before → after with each value's
+  status, the open points with an owner (jade, business, decision,
+  administrator, delivery) and whether each blocks, and the uncertainty that
+  could change the decision (`services/issues.py`). Designs made before the
+  block existed get one derived by Jade, marked as derived. An answer
+  without a valid route is recorded as an incomplete result to run again,
+  never turned into "Human Implementation".
 * **Agent Health** is computed from this configuration and these records.
   "Working" requires a completed run that the runtime reported on this
   customer's key against Anthropic. Test-provider runs never count.

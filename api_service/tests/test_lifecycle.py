@@ -30,6 +30,10 @@ def _no_records(monkeypatch):
     monkeypatch.setattr(lifecycle, "_technical_facts", lambda c, s: {"package": None, "record": None, "running": False})
     monkeypatch.setattr(lifecycle, "_asbuilt_final", lambda c, s: None)
     monkeypatch.setattr(lifecycle, "_process_decided", lambda c, s: None)
+    from jde_api_service.services import issues
+    monkeypatch.setattr(issues, "_baseline", lambda c, s: None)
+    monkeypatch.setattr(issues, "delivery_gate_issues", lambda c, lc: [])
+    monkeypatch.setattr(issues, "resolutions", lambda c, s: {})
 
 
 def test_new_request_waits_for_analysis():

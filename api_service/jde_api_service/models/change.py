@@ -11,6 +11,7 @@ from __future__ import annotations
 from typing import Any, Literal, Optional
 
 from .base import ApiModel
+from .issues import AgentResult
 from .lifecycle import Lifecycle
 from .ratings import ImpactLevel, BenefitLevel, StoryRatings
 
@@ -97,6 +98,9 @@ class ArchitectDecision(ApiModel):
     dependencies_and_conflicts: list[str] = []
     rollback_strategy: str = ""
     decided_at: str
+    # The readable result (conclusion, changes, owned issues, uncertainty).
+    # Older designs have none; services/issues.py derives one for them.
+    result: Optional[AgentResult] = None
 
 
 class ImplementationSpecification(ApiModel):

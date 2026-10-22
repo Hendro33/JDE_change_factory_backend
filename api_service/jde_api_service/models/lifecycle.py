@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Literal, Optional
 
 from .base import ApiModel
+from .issues import Issue, WorkLine
 
 Phase = Literal["understand", "story_review", "solutioning", "solution_review", "delivery", "validation", "release",
                 "done"]
@@ -70,5 +71,10 @@ class Lifecycle(ApiModel):
     # questions" on the story.
     open_items: list[str] = []
     route: Optional[str] = None
+    # Every open point with its owner (services/issues.py), and the at most
+    # five lines of "What needs to happen" -- the next action first. The
+    # next action itself already reflects the current blockers.
+    issues: list[Issue] = []
+    what_next: list[WorkLine] = []
 
 

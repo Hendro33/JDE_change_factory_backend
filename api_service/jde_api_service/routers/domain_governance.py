@@ -535,5 +535,19 @@ def list_delivery_queue(ctx: AuthContext = Depends(require_customer_access)) -> 
     """The set of approved changes Jade is authorised to work on,
     in queue order. Not a Sprint: no capacity, no start/end date --
     just an ordered list a human (the Application Manager) put entries
-    into, one at a time, via application_manager_approve above."""
-    return get_delivery_queue_service().list_for_customer(ctx.customer_id)
+    into, one at a time, via application_manager_approve above.
+    Each entry carries its story's canonical lifecycle, so the queue shows
+    the same state as the story page and every other list."""
+    entries = get_delivery_queue_service().list_for_customer(ctx.customer_id)
+    changes = {c.id: c for c in get_change_service().list_for_customer(ctx.customer_id)}
+    for e in entries:
+        c = changes.get(e.change_id)
+        if c is None:
+            continue
+        e.title = c.title
+        if c.lifecycle is not None:
+            lc = c.lifecycle
+            e.phase, e.phase_label, e.health, e.health_label = lc.phase, lc.phase_label, lc.health, lc.health_label
+            e.next_action = lc.next_action.summary
+            e.next_action_owner = lc.next_action.owner_label
+    return entries

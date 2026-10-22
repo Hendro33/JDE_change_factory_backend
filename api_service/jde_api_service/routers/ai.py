@@ -204,6 +204,15 @@ def runs(ctx: AuthContext = Depends(require_customer_access)) -> list[dict]:
     return ai_runtime.list_runs(ctx.customer_id)
 
 
+@router.get("/admin/ai/runs/{run_id}/output")
+def run_output(run_id: str, ctx: AuthContext = Depends(require_role("admin"))) -> dict:
+    """The run's full final answer, for Administrators."""
+    found = ai_runtime.run_output(ctx.customer_id, run_id)
+    if found is None:
+        raise HTTPException(status_code=404, detail="This agent run could not be found.")
+    return found
+
+
 @router.get("/admin/ai/spend")
 def spend(ctx: AuthContext = Depends(require_customer_access)) -> dict:
     return ai_runtime.spend_summary(ctx.customer_id)

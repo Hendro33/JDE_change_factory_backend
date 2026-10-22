@@ -31,3 +31,13 @@ class DeliveryQueueEntry(ApiModel):
     added_by: str
     added_at: str
     note: str = ""
+    # Read-only, from the change's canonical lifecycle when the queue is
+    # listed (services/lifecycle.py): the queue shows the same state as every
+    # other screen. The stored status above is kept for the record only.
+    title: str = ""
+    phase: Optional[str] = None
+    phase_label: str = ""
+    health: Optional[str] = None
+    health_label: str = ""
+    next_action: str = ""
+    next_action_owner: str = ""

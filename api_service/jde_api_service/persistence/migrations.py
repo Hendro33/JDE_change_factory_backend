@@ -850,4 +850,13 @@ MIGRATIONS: list[tuple[int, str]] = [
         ALTER TABLE jde_execution_settings ADD COLUMN browser_destination TEXT;
         """,
     ),
+    (
+        19,
+        """
+        -- The full final answer of every agent run, kept for Administrators to
+        -- troubleshoot and assess agent performance. Never truncated or
+        -- rejected by Jade; long output is a quality signal, not an error.
+        ALTER TABLE ai_runs ADD COLUMN output TEXT;
+        """,
+    ),
 ]

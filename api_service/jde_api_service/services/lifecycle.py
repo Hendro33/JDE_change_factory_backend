@@ -416,6 +416,15 @@ def derive(change, company_id: Optional[str] = None) -> Lifecycle:
         lc = _story_review(change)
     else:
         lc = _solution_onwards(change, company_id, story_id)
+    # Owned issues and "What needs to happen"; the next action follows the
+    # current blockers (services/issues.py). Presentational: a failure here
+    # never hides the lifecycle itself.
+    try:
+        from . import issues
+
+        lc = issues.apply(change, lc, company_id)
+    except Exception:  # noqa: BLE001
+        pass
     return lc
 
 
@@ -489,6 +498,12 @@ def _friendly_error(raw: Optional[str]) -> str:
         return "The AI connection for this customer is not set up or not working (Administration › Agents & AI)."
     if "budget" in low:
         return "This customer's monthly AI budget is used up."
+    if "incomplete result" in low:
+        return ("The Architect's answer was incomplete, so no design was recorded. Run the Architect again; "
+                "its full answer is kept for Administrators.")
+    if "unstructured result" in low:
+        return ("The Architect answered in prose instead of a design, so nothing was recorded. Run the Architect "
+                "again; its full answer is kept for Administrators.")
     if "disabled" in low or "switched off" in low:
         return "The agent needed for this step is switched off for this customer."
     return "The analysis stopped before it finished. Details are in the Technical view."

@@ -121,34 +121,28 @@ class MetricsService:
 
     def _compute(self, customer_id: str, all_changes: list[Change], delivered: dict[str, datetime],
                  start: Optional[datetime], end: Optional[datetime]) -> FactoryMetrics:
-        def in_state(*states: str) -> int:
-            return sum(1 for c in all_changes if c.state in states)
+        # Every count is read from the canonical lifecycle (services/lifecycle.py)
+        # -- the same phase every screen shows -- and only falls back to the
+        # stored state for a change whose lifecycle could not be derived.
+        buckets = [_bucket(c) for c in all_changes]
 
-        incoming_requests = in_state("RECEIVED")
-        awaiting_approval = in_state("BACKLOG_READY")
-        awaiting_domain_owner = sum(
-            1 for c in all_changes
-            if c.state == "BACKLOG_READY" and c.domain_review_stage in _PRE_DOMAIN_OWNER_APPROVAL_STAGES
-        )
+        def count(*names: str) -> int:
+            return sum(1 for b in buckets if b in names)
+
+        incoming_requests = count("incoming")
+        awaiting_approval = count("awaiting_domain_owner", "awaiting_application_manager")
+        awaiting_domain_owner = count("awaiting_domain_owner")
         # Gate 1 -- Domain Owner already approved, Application Manager
         # hasn't authorised it for delivery yet.
-        awaiting_application_manager = sum(
-            1 for c in all_changes
-            if c.state == "BACKLOG_READY" and c.domain_review_stage == "ready_for_application_manager"
-        )
-        # Gate 2 -- the Architect has proposed an exact change (or a
-        # human did, via the CLI) and nobody has approved or rejected
-        # it yet. change_approval only exists once a decision has been
-        # made (change_service.py), so its absence alongside a real
-        # exact_change is exactly "still pending".
-        awaiting_exact_change_approval = sum(
-            1 for c in all_changes if c.exact_change is not None and c.change_approval is None
-        )
-        in_delivery = sum(e.change_id in {c.id for c in all_changes} for e in self._delivery_queue.list_for_customer(customer_id)) if self._delivery_queue else 0
-        in_build = sum(1 for c in all_changes if c.state in _IN_BUILD)
-        in_testing = in_state("TESTING")
-        completed = sum(1 for c in all_changes if c.state in _COMPLETED)
-        rejected = sum(1 for c in all_changes if c.state in _REJECTED)
+        awaiting_application_manager = count("awaiting_application_manager")
+        # Gate 2 -- a proposed solution waiting for the Application Manager
+        # (including one waiting for an answer before it can be authorised).
+        awaiting_exact_change_approval = count("solution_review")
+        in_delivery = count("delivery")
+        in_build = count("solutioning", "solution_review", "delivery")
+        in_testing = count("validation")
+        completed = count("completed")
+        rejected = count("rejected")
 
         type_counts: dict[str, int] = {}
         for c in all_changes:
@@ -206,8 +200,8 @@ class MetricsService:
                 Total(key="completed", label="Completed", value=completed),
             ],
             pipeline=[
-                PipelineStage(stage="New", count=in_state("RECEIVED")),
-                PipelineStage(stage="Story enhancement", count=in_state("REFINING")),
+                PipelineStage(stage="New", count=count("incoming")),
+                PipelineStage(stage="Story enhancement", count=count("refining")),
                 PipelineStage(stage="Awaiting approval", count=awaiting_approval),
                 PipelineStage(stage="In build", count=in_build),
                 PipelineStage(stage="Testing", count=in_testing),
@@ -242,6 +236,39 @@ class MetricsService:
             )
             for c in all_changes[:limit]
         ]
+
+
+def _bucket(c: Change) -> str:
+    """Where a change sits for the counts, from its canonical lifecycle."""
+    lc = c.lifecycle
+    if lc is None:
+        return _bucket_from_state(c)
+    if lc.phase == "understand":
+        return "refining" if c.processing_stage in ("receiving", "improving", "checking") else "incoming"
+    if lc.phase == "story_review":
+        return "awaiting_application_manager" if lc.next_action.action == "authorise_delivery" else "awaiting_domain_owner"
+    if lc.phase == "done":
+        return "rejected" if lc.outcome == "rejected" else "completed"
+    return lc.phase  # solutioning, solution_review, delivery, validation, release
+
+
+def _bucket_from_state(c: Change) -> str:
+    if c.state == "RECEIVED":
+        return "incoming"
+    if c.state == "REFINING":
+        return "refining"
+    if c.state == "BACKLOG_READY":
+        return ("awaiting_application_manager" if c.domain_review_stage == "ready_for_application_manager"
+                else "awaiting_domain_owner")
+    if c.state in _REJECTED:
+        return "rejected"
+    if c.state in _COMPLETED:
+        return "completed"
+    if c.state == "TESTING":
+        return "validation"
+    if c.exact_change is not None and c.change_approval is None:
+        return "solution_review"
+    return "delivery" if c.state in ("CHANGE_APPROVED", "EXECUTING") else "solutioning"
 
 
 def _parse(iso: Optional[str]) -> Optional[datetime]:

@@ -167,4 +167,7 @@ def test_dashboard_totals_are_unambiguous_and_derived(client, monkeypatch):
     r = client.get("/metrics", headers=headers(customer="bwm"))
     metrics = r.json()
     assert _total(metrics, "awaiting_application_manager") == 0  # state is now APPROVED
-    assert _total(metrics, "in_delivery") == 1
+    # Counts follow the canonical lifecycle, the same words as the story page:
+    # authorised but not yet designed is Solutioning, not yet "in Delivery".
+    assert _total(metrics, "in_delivery") == 0
+    assert {p["stage"]: p["count"] for p in metrics["phases"]}["Solutioning"] == 1

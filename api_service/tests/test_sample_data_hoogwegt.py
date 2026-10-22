@@ -6,8 +6,14 @@ from .conftest import TEST_PASSWORD, _apply_csrf_header
 
 EXPECTED = {
     "CR-HW-001": ("done", "done"), "CR-HW-004": ("done", "done"), "CR-HW-005": ("release", "waiting"),
-    "CR-HW-006": ("validation", "waiting"), "CR-HW-007": ("delivery", "waiting"),
-    "CR-HW-008": ("solution_review", "waiting_decision"), "CR-HW-009": ("solution_review", "waiting_decision"),
+    "CR-HW-006": ("validation", "waiting"),
+    # Approved, but the delivery gate refuses it in this data set: the next
+    # action names the blocker instead of offering "record applied".
+    "CR-HW-007": ("delivery", "blocked"),
+    # Their designs never inspected the customer's JDE (the sample data has no
+    # connection): Jade names that as the Administrator's blocker instead of
+    # offering approval.
+    "CR-HW-008": ("solution_review", "blocked"), "CR-HW-009": ("solution_review", "blocked"),
     "CR-HW-010": ("solution_review", "blocked"), "CR-HW-011": ("solution_review", "waiting_decision"),
     "CR-HW-012": ("solutioning", "waiting"), "CR-HW-013": ("story_review", "waiting_decision"),
     "CR-HW-014": ("story_review", "waiting_decision"), "CR-HW-016": ("story_review", "waiting"),
@@ -42,6 +48,9 @@ def test_loads_every_stage_and_reads_through_the_api(isolated_dirs):
         h = {"X-Customer-Id": "hoogwegt"}
         changes = client.get("/changes", headers=h).json()
         assert {c["id"] for c in changes} >= set(EXPECTED)
+        blocked = client.get("/changes/CR-HW-007", headers=h).json()["lifecycle"]
+        assert blocked["nextAction"]["action"] != "record_applied", blocked["nextAction"]
+        assert any(i["source"] == "delivery_gate" and i["blocks"] for i in blocked["issues"])
         delivered = client.get("/changes/CR-HW-003/as-built", headers=h).json()
         assert [r["status"] for r in delivered["records"]] == ["final"]
         assert all(c["complete"] for c in delivered["checkpoints_now"]), delivered["checkpoints_now"]

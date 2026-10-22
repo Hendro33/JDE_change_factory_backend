@@ -151,3 +151,63 @@ def my_work(ctx: AuthContext = Depends(require_customer_access)) -> MyWork:
                               and c.lifecycle.outcome != "rejected" and c.updated_at >= cutoff],
         roles=sorted(roles),
     )
+
+
+# -- Owned issues ----------------------------------------------------------------------------
+class ResolveIssueInput(ApiModel):
+    # "answered" records an answer to a question; "resolved" says the point is
+    # dealt with (for example a setup gap fixed in Administration);
+    # "reopened" withdraws an earlier answer or resolution.
+    status: Literal["answered", "resolved", "reopened"] = "answered"
+    answer: str = ""
+
+
+@router.post("/changes/{change_id}/issues/{issue_id}/resolution", response_model=Change)
+def resolve_issue(change_id: str, issue_id: str, payload: ResolveIssueInput,
+                  ctx: AuthContext = Depends(require_write_access)) -> Change:
+    """Record an answer or a resolution on one of the story's open points.
+    Recording it never changes the story or the design by itself: the next
+    Architect run is given the answers and reassesses. Who may record it:
+    the issue's owner (a Domain Owner only for a story in their domain), the
+    Application Manager, or an Administrator."""
+    from ..dependencies import require_domain_owner_access
+    from ..services import issues as issues_service
+
+    change = get_change_service().get_for_customer(change_id, ctx.customer_id)
+    if change is None or change.lifecycle is None:
+        raise HTTPException(status_code=404, detail="This story could not be found.")
+    issue = next((i for i in change.lifecycle.issues if i.id == issue_id), None)
+    if issue is None:
+        raise HTTPException(status_code=404, detail="This open point is no longer on the story (it may have been "
+                                                    "replaced by a newer design).")
+    if issue.kind == "jade":
+        raise HTTPException(status_code=409, detail="JADE resolves this point itself; nothing needs to be recorded.")
+    if issue.source == "delivery_gate" and payload.status != "reopened":
+        raise HTTPException(status_code=409, detail="This point comes from the delivery check itself. It clears "
+                                                    "when its cause is fixed; it cannot be marked resolved by hand.")
+    if payload.status == "answered" and not payload.answer.strip():
+        raise HTTPException(status_code=422, detail="Write the answer first.")
+    roles = set(ctx.roles)
+    if not roles & {"product_manager", "admin"}:
+        if issue.owner == "domain_owner" and "domain_owner" in roles:
+            require_domain_owner_access(ctx, change.business_domain_id)
+        elif issue.owner not in roles:
+            raise HTTPException(status_code=403, detail=f"Only the {issue.owner_label or 'owner'}, the Application "
+                                                        "Manager or an Administrator can record this.")
+    issues_service.record_resolution(ctx.customer_id, change_id, issue=issue, status=payload.status,
+                                     answer=payload.answer, by=ctx.identity.display_name,
+                                     by_user_id=ctx.identity.id)
+    return get_change_service().get_for_customer(change_id, ctx.customer_id)
+
+
+@router.get("/setup-list")
+def setup_list(ctx: AuthContext = Depends(require_customer_access)) -> list[dict]:
+    """The Administrator's setup list: one task per setup gap, with every
+    story it affects (Administrators and Application Managers)."""
+    from ..services import issues as issues_service
+
+    if not set(ctx.roles) & {"admin", "product_manager"}:
+        raise HTTPException(status_code=403, detail="The setup list is for Administrators and Application Managers.")
+    open_ = [c for c in get_change_service().list_for_customer(ctx.customer_id)
+             if c.lifecycle and c.lifecycle.phase != "done"]
+    return issues_service.setup_list(open_)

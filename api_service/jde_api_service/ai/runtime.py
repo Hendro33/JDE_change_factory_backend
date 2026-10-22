@@ -442,10 +442,12 @@ class AgentRun:
         with db(immediate=True) as conn:
             conn.execute(
                 "UPDATE ai_runs SET status = ?, reported_model = ?, credential_source = ?, knowledge = ?, usage = ?, "
-                "cost_usd = ?, cost_basis = ?, error = ?, finished_at = ?, runtime = ? WHERE run_id = ?",
+                "cost_usd = ?, cost_basis = ?, error = ?, finished_at = ?, runtime = ?, output = ? WHERE run_id = ?",
                 (status, reported_model, self.credential_source or "not reported by the runtime",
                  json.dumps(self.knowledge_log[:200]), json.dumps(usage), cost, basis,
-                 (error or "")[:1000] or None, _now(), self._runtime_label(), self.run_id))
+                 (error or "")[:1000] or None, _now(), self._runtime_label(),
+                 # The agent's full final answer, exactly as given (never cut).
+                 r.get("text") if isinstance(r.get("text"), str) else None, self.run_id))
 
     def _runtime_label(self) -> str:
         try:
@@ -518,8 +520,30 @@ def list_runs(company_id: str, limit: int = 50) -> list[dict]:
         d = dict(r)
         for k in ("roles", "packs", "knowledge", "usage", "models", "context", "notes"):
             d[k] = json.loads(d[k]) if d.get(k) else None
+        output = d.pop("output", None)
+        d["output_chars"] = len(output) if output else 0
+        # A quality signal for tuning the prompt, never a reason to discard it.
+        d["output_long"] = bool(output) and len(output) > LONG_OUTPUT_CHARS
         out.append(d)
     return out
+
+
+# Beyond this, an agent's answer is flagged in the run view as long.
+LONG_OUTPUT_CHARS = 12000
+
+
+def run_output(company_id: str, run_id: str) -> Optional[dict]:
+    """One run's full final answer (Administrators: troubleshooting and
+    assessing agent performance)."""
+    with db() as conn:
+        row = conn.execute("SELECT run_id, driver, story_id, status, error, started_at, finished_at, output FROM ai_runs "
+                           "WHERE company_id = ? AND run_id = ?", (company_id, run_id)).fetchone()
+    if row is None:
+        return None
+    d = dict(row)
+    d["output_chars"] = len(d["output"]) if d.get("output") else 0
+    d["output_long"] = d["output_chars"] > LONG_OUTPUT_CHARS
+    return d
 
 
 def health(company_id: str) -> list[dict]:
