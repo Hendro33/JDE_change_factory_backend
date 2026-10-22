@@ -150,6 +150,10 @@ def start_architecture_review(
     except agent_settings.AgentDisabled as exc:
         raise HTTPException(status_code=409, detail=str(exc))
 
+    # Marked as running before answering, so every screen shows "at work"
+    # at once and a second click is refused (409) instead of starting a
+    # second run. The run itself calls start() again, which keeps history.
+    run_service.start(change_id)
     background_tasks.add_task(
         run_architecture_review,
         story_id=change_id,
