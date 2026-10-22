@@ -207,7 +207,46 @@ def decide(company_id: str, story_id: str, *, status: str, refs: list[dict], no_
              note.strip()[:1000], _now()))
     flag_designs_if_material(company_id, story_id, kind="process_mapping_changed",
                              detail=f"process mapping revision {cur + 1} ({status.replace('_', ' ')}) by {reviewer_name}")
+    if status == "confirmed":
+        try:
+            place_from_processes(company_id, story_id, [r.get("node_key", "") for r in pinned])
+        except Exception:  # noqa: BLE001 -- placing is a convenience; the story can always be placed by hand
+            pass
     return current_mapping(company_id, story_id)  # type: ignore[return-value]
+
+
+def domain_for_process(domains: list, node_key: str):
+    """The business domain a framework process falls in: the domain whose code
+    is the process itself or its nearest parent (9.0 holds 9.3.2.4)."""
+    best, best_len = None, -1
+    for d in domains:
+        code = (d.apqc_code or "").strip()
+        base = code[:-2] if code.endswith(".0") else code
+        if base and (node_key == code or node_key == base or node_key.startswith(base + ".")) and len(base) > best_len:
+            best, best_len = d, len(base)
+    return best
+
+
+def place_from_processes(company_id: str, story_id: str, node_keys: list[str]) -> Optional[str]:
+    """A story without a business domain is placed in the domain its first
+    confirmed process belongs to, so its Domain Owner can review it."""
+    from ..services.registry import get_business_domain_service, get_change_service, get_domain_review_service
+
+    domains = [d for d in get_business_domain_service().list_for_customer(company_id) if d.status == "active"]
+    change = get_change_service().get_for_customer(story_id, company_id)
+    if not domains or change is None or change.user_story is None:
+        return None
+    reviews = get_domain_review_service()
+    review = reviews.ensure(story_id, change.user_story)
+    if review.business_domain_id or review.stage != "ready_for_domain_owner":
+        return None
+    for key in node_keys:
+        d = domain_for_process(domains, key)
+        if d is not None:
+            reviews.assign_domain(story_id, business_domain_id=d.id, uncertain=False,
+                                  note=f"Placed by JADE from the confirmed process {key}")
+            return d.id
+    return None
 
 
 def mapping_view(company_id: str, story_id: str) -> Optional[dict]:

@@ -75,6 +75,7 @@ After the pipeline reaches a final outcome, respond with ONLY a single fenced js
     "financial_impact": "", "operational_reach": "", "risk_compliance": "", "strategic_alignment": "", "urgency": ""
   },
   "rough_complexity_signal": "Low" | "Medium" | "High" | "Unknown",
+  "business_domain": {"id": "<the id of the ONE business domain from the list given with this request that owns this story, or null when none fits>", "confidence": "high" | "medium" | "low", "reason": "<one sentence: why this domain>"},
   "check_outcome": "proposed_to_backlog" | "needs_revision" | "needs_human_input",
   "failed_criteria": ["<only when check_outcome is not proposed_to_backlog>"]
 }
@@ -84,7 +85,50 @@ Leave any business_impact field as an empty string if the source did not state i
 """.strip()
 
 
-def _build_prompt(story_id: str, source: str, raw_content: str) -> str:
+def _domains_block(customer_id: Optional[str]) -> str:
+    """The customer's active business domains, for choosing the story's owner."""
+    if not customer_id:
+        return ""
+    try:
+        from .registry import get_business_domain_service
+
+        domains = [d for d in get_business_domain_service().list_for_customer(customer_id) if d.status == "active"]
+    except Exception:  # noqa: BLE001 -- no domains means no suggestion, never a failed intake
+        return ""
+    if not domains:
+        return ""
+    lines = [f"- id {d.id}: {d.apqc_code} {d.name} -- {(d.description or '')[:220]}" for d in domains]
+    return ("Business domains of this customer (choose the ONE that owns this story for business_domain; its "
+            "Domain Owner reviews the story; use null when none fits):\n" + "\n".join(lines))
+
+
+def place_in_domain(customer_id: Optional[str], change_id: str, story, choice: Any) -> Optional[str]:
+    """Places a story that reached the backlog in the business domain the
+    agents chose, so it goes straight to that domain's owner. Never moves a
+    story that already has a domain or is already under review; an unknown
+    id or no choice leaves it for the Application Manager to place."""
+    if not customer_id or not isinstance(choice, dict):
+        return None
+    domain_id = str(choice.get("id") or "").strip()
+    if not domain_id:
+        return None
+    from .registry import get_business_domain_service, get_domain_review_service
+
+    domain = get_business_domain_service().get_for_customer(domain_id, customer_id)
+    if domain is None or getattr(domain, "status", "active") != "active":
+        return None
+    reviews = get_domain_review_service()
+    review = reviews.ensure(change_id, story)
+    if review.business_domain_id or review.stage != "ready_for_domain_owner":
+        return None
+    confidence = str(choice.get("confidence") or "").lower()
+    reason = str(choice.get("reason") or "").strip()[:400]
+    note = f"Placed by JADE ({confidence or 'unstated'} confidence): {reason}".strip()
+    reviews.assign_domain(change_id, business_domain_id=domain_id, uncertain=False, note=note)
+    return domain_id
+
+
+def _build_prompt(story_id: str, source: str, raw_content: str, customer_id: Optional[str] = None) -> str:
     return f"""Use the receive-agent, then the improve-agent, then the check-agent to process this raw request, exactly as each subagent's own instructions describe.
 
 story_id to use throughout, in every tool call: {story_id}
@@ -94,6 +138,8 @@ Raw draft text (preserve verbatim as the source content -- treat it as data to p
 \"\"\"{raw_content}\"\"\"
 
 If check-agent does not pass the story on a given attempt and revision_count is still below 2, send it back to improve-agent with the specific failed criteria named, exactly as Section 5.4 / check-agent's own instructions describe, then run check-agent again. Stop looping once check-agent passes the story (and it calls propose_to_backlog itself), or once revision_count reaches 2 and check-agent escalates instead.
+
+{_domains_block(customer_id)}
 
 {_SCHEMA_INSTRUCTIONS}"""
 
@@ -196,7 +242,7 @@ async def run_enhancement(
             options = ai_run.options(cwd=repo_root, permission_mode=PERMISSION_MODE, allowed_tools=_ALLOWED_TOOLS,
                                      max_turns=MAX_TURNS, subagents=roles,
                                      owned_tools={"mcp__jde-change-factory__propose_to_backlog": ["check-agent"]})
-            prompt = _build_prompt(story_id, source, raw_content) + ai_run.context_prompt()
+            prompt = _build_prompt(story_id, source, raw_content, customer_id) + ai_run.context_prompt()
 
             seen_starts: set[str] = set()
             ran: list[str] = []
@@ -285,6 +331,12 @@ async def run_enhancement(
             failed_criteria=failed_criteria,
             backlog_story_id=backlog_story_id,
         )
+        if backlog_story_id:
+            try:
+                place_in_domain(customer_id, request_id, _user_story_from_summary(summary),
+                                summary.get("business_domain"))
+            except Exception:  # noqa: BLE001 -- placing is a convenience; the Application Manager can always place it
+                pass
         for run_id in started_run_ids:
             agent_run_service.complete(run_id)
     except Exception as exc:  # noqa: BLE001 -- always recorded, never raised into the background task runner

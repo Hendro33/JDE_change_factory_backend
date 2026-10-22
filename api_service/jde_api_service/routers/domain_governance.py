@@ -132,28 +132,44 @@ def get_domain_review(change_id: str, ctx: AuthContext = Depends(require_custome
 
 @router.post("/changes/{change_id}/domain-review/assign-domain", response_model=DomainReview)
 def assign_domain(
-    change_id: str, payload: AssignDomainInput, ctx: AuthContext = Depends(require_role("product_manager", "admin"))
+    change_id: str, payload: AssignDomainInput, ctx: AuthContext = Depends(require_customer_access)
 ) -> DomainReview:
-    """Choosing the domain chooses who may approve the requirement, so it
-    is a triage decision (Application Manager or Admin), and it is closed
-    once a Domain Owner has started: moving a story into another domain
-    mid-review would hand the decision to someone else."""
+    """Choosing the domain chooses who reviews the requirement. JADE places
+    a new story in a domain itself; the Application Manager or Admin can
+    place or move it before review starts, and the Domain Owner the story
+    sits with can move it to another domain -- also during their review --
+    which hands it to that domain's owner, back at the start of review."""
     change = _change_with_story(change_id, ctx.customer_id)
-    get_domain_review_service().ensure(change_id, change.user_story)
+    review = get_domain_review_service().ensure(change_id, change.user_story)
     if not payload.uncertain and payload.business_domain_id:
         domain = get_business_domain_service().get_for_customer(payload.business_domain_id, ctx.customer_id)
         if domain is None:
             raise HTTPException(status_code=404, detail=f"no such business domain: {payload.business_domain_id}")
+    manager = bool(ctx.roles & {"product_manager", "admin"})
+    owner = False
+    if not manager:
+        require_domain_owner_access(ctx, review.business_domain_id)
+        owner = True
+        if payload.uncertain or not payload.business_domain_id:
+            raise HTTPException(status_code=422, detail="choose the business domain the story belongs to")
 
-    # Closed once Domain Owner review has started -- checked under the lock,
-    # so a Domain Owner starting at the same moment wins or loses cleanly.
-    with _transition(change_id, {"ready_for_domain_owner"}, lambda r: require_current_role(ctx, "product_manager", "admin")):
-        return get_domain_review_service().assign_domain(
-            change_id,
-            business_domain_id=payload.business_domain_id,
-            uncertain=payload.uncertain,
-            note=payload.note,
-        )
+    def authorise(r):
+        if owner:
+            require_domain_owner_access(ctx, r.business_domain_id)
+        else:
+            require_current_role(ctx, "product_manager", "admin")
+
+    stages = {"ready_for_domain_owner", "domain_owner_reviewing"} if owner else {"ready_for_domain_owner"}
+    note = payload.note
+    if owner:
+        note = f"{payload.note.strip() or 'Moved to another domain'} -- {ctx.identity.display_name}, Domain Owner"
+    with _transition(change_id, stages, authorise):
+        service = get_domain_review_service()
+        updated = service.assign_domain(change_id, business_domain_id=payload.business_domain_id,
+                                        uncertain=payload.uncertain, note=note)
+        if owner and updated.stage != "ready_for_domain_owner":
+            updated = service.set_stage(change_id, "ready_for_domain_owner")
+        return updated
 
 
 @router.post("/changes/{change_id}/domain-review/start", response_model=DomainReview)
