@@ -95,6 +95,13 @@ class JiraSyncService:
             except Exception as exc:  # noqa: BLE001 -- one bad issue must never abort the batch
                 errors.append(JiraSyncError(issue_key=issue.key, message=str(exc)))
 
+        if imported:
+            # Routine automation (step 4): new tickets become stories by
+            # themselves; the automation loop starts them a few at a time.
+            from . import automation
+
+            if automation.enabled(customer_id):
+                automation.queue_intake(customer_id, imported, "Jira")
         return JiraSyncResult(considered=len(issues), imported=imported, updated_in_jira=updated_in_jira, errors=errors,
                               skipped_withdrawn=skipped)
 
@@ -108,8 +115,8 @@ class JiraSyncService:
                               skipped=True)
         is_new = False
         if existing is None:
-            # Intake, and ONLY intake -- no enhancement is triggered
-            # here or anywhere else in this module.
+            # Intake only here; the story is started by routine automation
+            # (queued in sync_for_customer), never inside this loop.
             self._change_requests.create_from_jira(issue, customer_id, request_id=stable_id)
             is_new = True
 

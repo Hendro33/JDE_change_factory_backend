@@ -77,3 +77,6 @@ class ChangeRequestCreate(ApiModel):
     # Optional business classification chosen when the request is raised.
     priority: Optional[Priority] = None
     change_type: Optional[ChangeType] = None
+    # Routine automation (step 4): JADE turns the request into a user story by
+    # itself unless this is false ("analyse now" unticked on the form).
+    start_analysis: bool = True

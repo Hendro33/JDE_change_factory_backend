@@ -62,6 +62,9 @@ def put_connection(payload: ConnectionInput, ctx: AuthContext = Depends(require_
                            activity_models=payload.activity_models)
     except ai_connection.InvalidConfig as exc:
         raise _bad(exc)
+    from ..services import automation as _automation
+
+    _automation.setup_changed(ctx.customer_id, "AI connection changed")
     return get_connection(ctx)
 
 
@@ -74,6 +77,9 @@ def put_credential(payload: CredentialInput, ctx: AuthContext = Depends(require_
     except credential_crypto.CredentialKeyMissing:
         raise HTTPException(status_code=409, detail="the server has no credential encryption key "
                                                     "(JDE_CREDENTIAL_KEY), so the API key cannot be stored")
+    from ..services import automation as _automation
+
+    _automation.setup_changed(ctx.customer_id, "AI key replaced")
     return get_connection(ctx)
 
 
@@ -179,10 +185,14 @@ def set_disabled(pack_id: str, payload: PackDisable, ctx: AuthContext = Depends(
 @router.put("/admin/ai/assignments/{role}")
 def assign(role: str, payload: PackAssign, ctx: AuthContext = Depends(require_role("admin"))) -> dict:
     try:
-        return ai_packs.assign(ctx.customer_id, role, payload.pack_id, payload.revision,
-                               actor=ctx.identity.display_name, expected_version=payload.expected_version)
+        out = ai_packs.assign(ctx.customer_id, role, payload.pack_id, payload.revision,
+                              actor=ctx.identity.display_name, expected_version=payload.expected_version)
     except ai_packs.InvalidPack as exc:
         raise HTTPException(status_code=409 if "someone else" in str(exc) else 422, detail=str(exc))
+    from ..services import automation as _automation
+
+    _automation.setup_changed(ctx.customer_id, "agent instructions assigned")
+    return out
 
 
 @router.delete("/admin/ai/assignments/{role}")

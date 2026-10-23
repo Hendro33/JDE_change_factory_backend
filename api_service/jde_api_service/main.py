@@ -122,7 +122,16 @@ async def _lifespan(app: FastAPI):
     ensure_bootstrap_admin()
     from .validation.worker import Worker
     worker = Worker().start() if os.environ.get("JDE_VALIDATION_WORKER", "true").lower() == "true" else None
+    # Routine automation (redesign step 4): intake, reassessment, the
+    # re-check before delivery and notifications, every few seconds.
+    import asyncio
+
+    from .services import automation as _automation
+
+    routine = asyncio.create_task(_automation.run_forever()) if _automation.server_enabled() else None
     yield
+    if routine:
+        routine.cancel()
     if worker:
         worker.close()
     from jde_mcp_server import docstore as _docstore
@@ -235,3 +244,5 @@ from .routers.story_ratings import router as story_ratings_router
 app.include_router(story_ratings_router)
 from .routers.delivery_work import router as delivery_work_router  # noqa: E402
 app.include_router(delivery_work_router)
+from .routers.automation import router as automation_router  # noqa: E402
+app.include_router(automation_router)

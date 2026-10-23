@@ -80,6 +80,18 @@ class Authorisation(ApiModel):
     history: list[PastApproval] = []
 
 
+class AutomationPlan(ApiModel):
+    """What JADE will do by itself next on this story (services/automation.py):
+    scheduled (it will start at due_at), capped (it stopped retrying and a
+    person takes over), or off (routine automation is switched off here)."""
+    kind: Literal["intake", "solutioning"]
+    state: Literal["scheduled", "capped", "off"]
+    reason: str
+    label: str
+    due_at: Optional[str] = None
+    signature: str = ""
+
+
 class Lifecycle(ApiModel):
     phase: Phase
     phase_label: str
@@ -111,5 +123,7 @@ class Lifecycle(ApiModel):
     since: Optional[str] = None
     # While JADE works: what it is doing right now, from the run's own reads.
     activity: str = ""
+    # Routine work JADE starts by itself (redesign step 4); None = nothing due.
+    automation: Optional[AutomationPlan] = None
 
 

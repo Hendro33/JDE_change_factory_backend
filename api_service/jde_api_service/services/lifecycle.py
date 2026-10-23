@@ -557,6 +557,12 @@ def derive(change, company_id: Optional[str] = None) -> Lifecycle:
     except Exception:  # noqa: BLE001
         pass
     try:
+        from . import automation
+
+        lc = automation.apply(change, lc, company_id)
+    except Exception:  # noqa: BLE001
+        pass
+    try:
         from . import work_items
 
         lc = work_items.apply(change, lc)

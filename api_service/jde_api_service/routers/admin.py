@@ -310,7 +310,11 @@ def get_engagement_scope(ctx: AuthContext = Depends(require_customer_access)) ->
 def update_engagement_scope(
     payload: EngagementScopeUpdate, ctx: AuthContext = Depends(require_role("admin"))
 ) -> EngagementScope:
-    return get_engagement_scope_service().upsert(ctx.customer_id, payload, actor=ctx.identity.display_name)
+    saved = get_engagement_scope_service().upsert(ctx.customer_id, payload, actor=ctx.identity.display_name)
+    from ..services import automation as _automation
+
+    _automation.setup_changed(ctx.customer_id, "governance scope saved")
+    return saved
 
 
 # ---------------------------------------------------------------------

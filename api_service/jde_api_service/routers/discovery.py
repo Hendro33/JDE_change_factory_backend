@@ -71,6 +71,9 @@ def save_profile(payload: JdeProfileUpdate, ctx: AuthContext = Depends(require_r
                                  actor=ctx.identity.display_name)
     if before is not None and before["material_hash"] != saved["material_hash"]:
         baseline.on_profile_saved(ctx.customer_id, saved)
+    from ..services import automation as _automation
+
+    _automation.setup_changed(ctx.customer_id, "JDE connection changed")
     return profile_service.view(ctx.customer_id)
 
 
@@ -149,6 +152,9 @@ def enable_discovery(payload: RevisionInput, ctx: AuthContext = Depends(require_
         raise HTTPException(status_code=409, detail=str(exc))
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
+    from ..services import automation as _automation
+
+    _automation.setup_changed(ctx.customer_id, "JDE connection enabled")
     return _action(ctx.customer_id, "ok", "discovery enabled for this profile revision")
 
 

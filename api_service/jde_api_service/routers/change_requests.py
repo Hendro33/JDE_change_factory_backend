@@ -18,6 +18,7 @@ router = APIRouter(tags=["change-requests"])
 @router.post("/change-requests", response_model=ChangeRequest, status_code=201)
 def create_change_request(
     payload: ChangeRequestCreate,
+    background_tasks: BackgroundTasks,
     ctx: AuthContext = Depends(require_write_access),
 ) -> ChangeRequest:
     """Direct text entry, optionally with documents uploaded beforehand.
@@ -42,6 +43,11 @@ def create_change_request(
         classification_service.set_classification(
             created.id, ctx.customer_id, priority=payload.priority, change_type=payload.change_type,
             actor_id=ctx.identity.id, actor=ctx.identity.display_name, expected_revision=None)
+    from ..services import automation
+
+    if payload.start_analysis and automation.enabled(ctx.customer_id):
+        automation.queue_intake(ctx.customer_id, [created.id], "typed in")
+        automation.nudge(ctx.customer_id, created.id, background_tasks=background_tasks)
     return created
 
 

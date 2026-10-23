@@ -7,6 +7,10 @@ from pathlib import Path
 
 import pytest
 
+# Routine automation starts agent runs by itself; off for every test (also the
+# unit tests that use no fixture); tests of it switch it on with monkeypatch.
+os.environ["JDE_ROUTINE_AUTOMATION"] = "false"
+
 _HERE = Path(__file__).resolve().parent
 _MCP_SERVER_SRC = _HERE.parent.parent / "mcp_server"
 if str(_MCP_SERVER_SRC) not in sys.path:
@@ -51,6 +55,8 @@ def isolated_dirs(tmp_path, monkeypatch):
     database) and mcp_server's stores (backlog, changes, evidence) --
     no test can see another test's or a developer's real local data."""
     monkeypatch.setenv("JDE_VALIDATION_WORKER", "false")
+    # Routine automation starts agent runs by itself; tests of it switch it on.
+    monkeypatch.setenv("JDE_ROUTINE_AUTOMATION", "false")
     import dataclasses
 
     from jde_api_service.config import settings as api_settings
