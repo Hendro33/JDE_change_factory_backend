@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Literal, Optional
 
 from .base import ApiModel
+from .delivery_view import OutcomeCard, WorkItem
 from .issues import Issue, WorkLine
 
 Phase = Literal["understand", "story_review", "solutioning", "solution_review", "delivery", "validation", "release",
@@ -44,7 +45,8 @@ class NextAction(ApiModel):
     # A stable identifier the UI maps to the control that performs it.
     action: Optional[str] = None
     # Which Story Workspace tab holds the control.
-    tab: Literal["overview", "story", "solution", "delivery", "evidence", "technical"] = "overview"
+    # "outcome" is the business view's Progress and outcome.
+    tab: Literal["overview", "story", "solution", "delivery", "evidence", "technical", "outcome"] = "overview"
     # What happens if it's done -- shown on the decision card.
     effect: str = ""
 
@@ -76,5 +78,12 @@ class Lifecycle(ApiModel):
     # next action itself already reflects the current blockers.
     issues: list[Issue] = []
     what_next: list[WorkLine] = []
+    # The real division of the delivery work (services/work_items.py), and at
+    # the end the outcome with its three outcomes kept apart.
+    work_items: list[WorkItem] = []
+    outcome_card: Optional[OutcomeCard] = None
+    handoff_authorised: bool = False
+    # While JADE works: what it is doing right now, from the run's own reads.
+    activity: str = ""
 
 

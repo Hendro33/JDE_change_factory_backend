@@ -24,7 +24,7 @@ from ._technical import (
     record_build,
     record_verify,
 )
-from .conftest import headers
+from .conftest import headers, accept_outcome
 
 
 def _view(client, story: str, company: str = "vdb") -> dict:
@@ -105,6 +105,9 @@ def test_the_full_recorded_delivery_with_separate_milestones(client, monkeypatch
     actions = [h["action"] for h in view["human_actions"]]
     assert actions[:1] == ["design_approval"] and "implementation_approved" in actions and "cnc_activation" in actions
     # The story's lifecycle moves on to the as-built record.
+    change = client.get("/changes/S-TECH-2", headers=headers("vdb")).json()
+    assert change["lifecycle"]["nextAction"]["action"] == "accept_outcome", change["lifecycle"]
+    accept_outcome(client, "S-TECH-2")
     change = client.get("/changes/S-TECH-2", headers=headers("vdb")).json()
     assert change["lifecycle"]["nextAction"]["action"] == "finalise_asbuilt", change["lifecycle"]
 

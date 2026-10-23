@@ -364,7 +364,7 @@ def _baseline(company_id: str, story_id: str) -> Optional[dict]:
         return None
 
 
-_SOLUTION_DECISIONS = {"approve_exact_change", "approve_design"}
+_SOLUTION_DECISIONS = {"approve_exact_change", "approve_design", "authorise_handoff"}
 
 
 def apply(change, lc: Lifecycle, company_id: Optional[str] = None) -> Lifecycle:

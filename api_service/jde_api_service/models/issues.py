@@ -106,7 +106,7 @@ class Issue(ApiModel):
     # Where it came from: the Architect's result, Jade's own checks of the
     # records, or the delivery gate.
     source: Literal["architect", "design_evidence", "delivery_gate", "lifecycle"] = "architect"
-    tab: Literal["overview", "story", "solution", "delivery", "evidence", "technical"] = "solution"
+    tab: Literal["overview", "story", "solution", "delivery", "evidence", "technical", "outcome"] = "solution"
     resolution: Optional[IssueResolution] = None
 
 
@@ -117,6 +117,6 @@ class WorkLine(ApiModel):
     who: str = ""
     text: str
     action: Optional[str] = None
-    tab: Literal["overview", "story", "solution", "delivery", "evidence", "technical"] = "overview"
+    tab: Literal["overview", "story", "solution", "delivery", "evidence", "technical", "outcome"] = "overview"
     blocking: bool = False
     primary: bool = False

@@ -233,3 +233,5 @@ def health() -> dict:
 # Structured planning ratings; independent of all delivery gates.
 from .routers.story_ratings import router as story_ratings_router
 app.include_router(story_ratings_router)
+from .routers.delivery_work import router as delivery_work_router  # noqa: E402
+app.include_router(delivery_work_router)

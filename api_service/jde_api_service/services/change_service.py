@@ -406,7 +406,7 @@ def _change_from_story(
         source_reference = origin.source_reference
         original_request = origin.raw_content
     else:
-        title = statement[:120]
+        title = statement if len(statement) <= 120 else statement[:119].rsplit(" ", 1)[0].rstrip(",;:") + "…"
         source = _coerce_source(record.get("source"))
         source_reference = ""
         original_request = statement

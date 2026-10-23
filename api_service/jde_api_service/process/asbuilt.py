@@ -208,12 +208,35 @@ def gather(company_id: str, story_id: str, change) -> dict:
         "validation": story_handoff(company_id, story_id),
         "design": _design(company_id, story_id, change), "route": route,
         "implementation": {"technical": tech, "functional": func},
+        "handoff": _handoff(change),
+        "acceptance": _acceptance(company_id, story_id, change, route),
     }
+
+
+def _handoff(change) -> Optional[dict]:
+    if change is None or change.architect_decision is None:
+        return None
+    from ..delivery import handoff
+
+    st = handoff.state(change)
+    return {"items": [{"id": i["id"], "text": i["text"], "implementer": i.get("implementer", ""),
+                       "completion": i.get("completion")} for i in st["items"]],
+            "authorisation": st["authorisation"], "verification": st["verification"]}
+
+
+def _acceptance(company_id: str, story_id: str, change, route) -> Optional[dict]:
+    if change is None:
+        return None
+    from ..services import acceptance
+    from ..services.lifecycle import _technical_facts
+
+    tech = _technical_facts(company_id, story_id) if route in TECHNICAL_ROUTES else {}
+    return acceptance.current(change, tech)
 
 
 def _design_approved(src: dict) -> tuple:
     d = src["design"]
-    if src["route"] in TECHNICAL_ROUTES:
+    if src["route"] in TECHNICAL_ROUTES or src["route"] == "Human Implementation":
         a = d["design_approval"]
         return ("design_approved", "Architect design approved", a is not None,
                 f"design revision {a['design_revision']} by {a['approved_by']}" if a else "no approval of the current design")
@@ -273,6 +296,17 @@ def _checkpoints(src: dict) -> list[dict]:
              bool(v) and v.get("passed") and v.get("runtime_is_approved_artifact"),
              f"{sum(1 for r in v.get('results', []) if r['passed'])}/{len(v.get('results', []))} tests" if v else "not run"),
         ]
+    elif src["route"] == "Human Implementation":
+        h = src.get("handoff") or {"items": [], "verification": None}
+        n = len(h["items"])
+        done = sum(1 for i in h["items"] if i.get("completion"))
+        v = h.get("verification")
+        cps += [
+            ("implementation_recorded", "Every hand-off item recorded as completed, with evidence",
+             n > 0 and done == n, f"{done} of {n} items recorded"),
+            ("verified", "Result verified against the acceptance criteria", bool(v) and v["passed"],
+             f"{'passed' if v['passed'] else 'NOT passed'}, recorded by {v['by']}: {v['note']}" if v else "not recorded"),
+        ]
     else:
         ex = ((func or {}).get("exact_change") or {}).get("execution") or {}
         rb = (func or {}).get("readback")
@@ -288,6 +322,17 @@ def _checkpoints(src: dict) -> list[dict]:
               func["operation"].get("tool") == "configuration_change_set" else
               f"{rb['value']!r} ({rb['source']})" if rb else "not recorded")),
         ]
+    h = src.get("handoff") or {"items": []}
+    if src["route"] != "Human Implementation" and h["items"]:
+        done = sum(1 for i in h["items"] if i.get("completion"))
+        cps.append(("handoffs_recorded", "Work done outside JADE recorded, with evidence", done == len(h["items"]),
+                    f"{done} of {len(h['items'])} hand-off items recorded"))
+    acc = src.get("acceptance")
+    if "acceptance" in src:  # records made before this checkpoint existed do not carry it
+        cps.append(("business_accepted", "Outcome accepted by the business", bool(acc) and acc["decision"] == "accepted",
+                    (f"accepted by {acc.get('on_behalf_of') or acc['by']} on {acc['at'][:10]}"
+                     + (f" (recorded by {acc['by']})" if acc.get("on_behalf_of") else "")) if acc and
+                    acc["decision"] == "accepted" else f"not accepted: {acc['note']}" if acc else "not yet accepted"))
     cps += [("validation_" + v["plan_id"], "Validation release decision: " + v["title"], v["release_current"],
              "Current Application Manager approval" if v["release_current"] else "Review current validation and release handoff")
             for v in src.get("validation", [])]
@@ -367,7 +412,8 @@ def build(company_id: str, story_id: str, change) -> dict:
     checkpoints = _checkpoints(src)
     dev, lim = _deviations_and_limits(src)
     content = {"story": src["story"], "story_revision": src["story_revision"], "process": src["process"], "design": src["design"], "route": src["route"],
-               "implementation": src["implementation"], "validation": src.get("validation", []), "checkpoints": checkpoints,
+               "implementation": src["implementation"], "validation": src.get("validation", []),
+               "handoff": src.get("handoff"), "acceptance": src.get("acceptance"), "checkpoints": checkpoints,
                "all_checkpoints_complete": all(c["complete"] for c in checkpoints),
                "deviations": dev, "limitations": lim,
                "delivery_mode": "recorded"}

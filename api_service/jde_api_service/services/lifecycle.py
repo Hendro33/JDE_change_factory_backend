@@ -168,6 +168,24 @@ def _story_review(change) -> Lifecycle:
     return _mk("story_review", "waiting", NextAction(kind="none", summary="Waiting for the story review."))
 
 
+def _acceptance_of(change, tech: dict) -> Optional[dict]:
+    try:
+        from . import acceptance
+
+        return acceptance.current(change, tech)
+    except Exception:  # noqa: BLE001 -- no record yet
+        return None
+
+
+def _handoff_state(change) -> dict:
+    try:
+        from ..delivery import handoff
+
+        return handoff.state(change)
+    except Exception:  # noqa: BLE001
+        return {"items": [], "authorisation": None, "verification": None, "all_complete": False}
+
+
 def _delivery_steps(route: Optional[str], tech: dict, change, final: Optional[dict]) -> list[LifecycleStep]:
     steps: list[LifecycleStep] = []
 
@@ -175,6 +193,37 @@ def _delivery_steps(route: Optional[str], tech: dict, change, final: Optional[di
         steps.append(LifecycleStep(id=i, label=label, detail=detail,
                                    state="failed" if failed else "done" if done else "current" if current else "todo"))
 
+    def accept(verified: bool) -> bool:
+        """The business acceptance step, between DEV verification and release."""
+        acc = _acceptance_of(change, tech) if verified else None
+        hs = _handoff_state(change) if verified else {"items": []}
+        handoffs_open = any(not i.get("completion") for i in hs["items"])
+        ok = bool(acc) and acc["decision"] == "accepted"
+        if final and not ok:
+            # Released before business acceptance was asked for in Jade.
+            steps.append(LifecycleStep(id="acceptance", label="Business acceptance", state="skipped",
+                                       detail="Not recorded in JADE (released before acceptance was asked for)"))
+            return True
+        add("acceptance", "Business acceptance", ok, verified and not ok and not handoffs_open,
+            f"Accepted by {acc.get('on_behalf_of') or acc['by']}" if ok else
+            f"Not accepted: {acc['note']}" if acc else "",
+            failed=bool(acc) and acc["decision"] == "not_accepted")
+        return ok or bool(final)
+
+    if route == "Human Implementation":
+        hs = _handoff_state(change)
+        done = hs["all_complete"]
+        v = hs["verification"]
+        verified = bool(v) and v["passed"]
+        n = len(hs["items"])
+        add("build", "Implementation by a person", done, hs["authorisation"] is not None and not done,
+            f"{sum(1 for i in hs['items'] if i.get('completion'))} of {n} items recorded" if n else "")
+        add("validation", "Validation", verified, done and not v, (v or {}).get("note", "")[:120],
+            failed=bool(v) and not v["passed"])
+        accepted = accept(verified)
+        add("release", "Release approval", bool(final), accepted and not final, "As-built record finalised" if final else "")
+        add("production", "Production", False, False, "Promotion is done by CNC outside JADE")
+        return steps
     if route in TECHNICAL_ROUTES:
         st = tech.get("states") or {}
         rec = tech.get("record") or {}
@@ -191,7 +240,8 @@ def _delivery_steps(route: Optional[str], tech: dict, change, final: Optional[di
         add("validation", "Validation", verified, built and cnc and not verified,
             f"{sum(1 for r in results if r.get('passed'))} / {len(results)} tests passed" if results else "",
             failed=bool(ver) and not verified)
-        add("release", "Release approval", bool(final), verified and not final,
+        accepted = accept(verified)
+        add("release", "Release approval", bool(final), accepted and not final,
             "As-built record finalised" if final else "")
         add("production", "Production", False, False, "Promotion is done by CNC outside JADE")
     else:
@@ -205,9 +255,88 @@ def _delivery_steps(route: Optional[str], tech: dict, change, final: Optional[di
         add("validation", "Validation", passed, applied and not tested,
             "Test passed" if passed else "Test failed" if tested else "",
             failed=(bool(ex) and ex.test_state in ("unknown", "diverged")) or (tested and not passed))
-        add("release", "Release approval", bool(final), passed and not final, "As-built record finalised" if final else "")
+        accepted = accept(passed)
+        add("release", "Release approval", bool(final), accepted and not final, "As-built record finalised" if final else "")
         add("production", "Production", False, False, "Promotion is done by CNC outside JADE")
     return steps
+
+
+def _after_verification(change, route: str, tech: dict, steps: list[LifecycleStep]) -> Optional[Lifecycle]:
+    """Verified in DEV: the work done outside Jade must be recorded, and the
+    business accepts the outcome, before the release hand-over."""
+    hs = _handoff_state(change)
+    open_ = [i for i in hs["items"] if not i.get("completion")]
+    if open_:
+        nxt = open_[0]
+        return _mk("validation", "waiting", NextAction(
+            kind="task", summary=(f"Record the work done outside JADE: {nxt['text']} "
+                                  f"({nxt.get('implementer') or 'implementer to be named'}; "
+                                  f"{len(hs['items']) - len(open_)} of {len(hs['items'])} recorded)."),
+            owner="product_manager", action="record_handoff", tab="delivery",
+            effect="Each item is recorded with its evidence; then the business is asked to accept the outcome."),
+            delivery_steps=steps, route=route)
+    acc = _acceptance_of(change, tech)
+    if acc is None:
+        return _mk("validation", "waiting_decision", NextAction(
+            kind="decision", summary="Verified in DEV. Check that it works for the business, then accept the outcome.",
+            owner="domain_owner", action="accept_outcome", tab="outcome",
+            effect="Once accepted, the Application Manager hands it over for release (as-built record and CNC)."),
+            delivery_steps=steps, route=route)
+    if acc["decision"] != "accepted":
+        return _mk("validation", "blocked", NextAction(
+            kind="task", summary=f"The business did not accept the outcome: {acc['note']}",
+            owner="product_manager", action="rerun_solutioning", tab="solution",
+            effect="Agree the correction with the business, then run the Architect again or correct and verify "
+                   "again; the business is asked to accept the new outcome."),
+            delivery_steps=steps, route=route)
+    return None
+
+
+def _human_route(change, company_id: str, story_id: str, route: str) -> Lifecycle:
+    """Implementation by a named person outside Jade (delivery/handoff.py)."""
+    final = _asbuilt_final(company_id, story_id)
+    hs = _handoff_state(change)
+    steps = _delivery_steps(route, {}, change, final)
+    if hs["authorisation"] is None:
+        return _mk("solution_review", "waiting_decision", NextAction(
+            kind="decision", summary="Review JADE's specification and authorise its implementation by a person.",
+            owner="product_manager", action="authorise_handoff", tab="solution",
+            effect="Exactly this specification is handed to a named implementer, who records the work in JADE with "
+                   "evidence; nothing else is authorised."), route=route)
+    open_ = [i for i in hs["items"] if not i.get("completion")]
+    if open_:
+        nxt = open_[0]
+        n = len(hs["items"])
+        return _mk("delivery", "waiting", NextAction(
+            kind="task", summary=(f"Waiting for {nxt.get('implementer') or 'the implementer'}: {nxt['text']} "
+                                  f"({n - len(open_)} of {n} recorded). Record each item when it is done."),
+            owner="product_manager", action="record_handoff", tab="delivery",
+            effect="Each item is recorded with its evidence; then the result is verified against the acceptance "
+                   "criteria."), delivery_steps=steps, route=route)
+    v = hs["verification"]
+    if v is None:
+        return _mk("validation", "waiting", NextAction(
+            kind="task", summary="The work is recorded. Verify the result against the acceptance criteria and record it.",
+            owner="product_manager", action="record_handoff_verification", tab="delivery",
+            effect="The verification is recorded as evidence; then the business is asked to accept the outcome."),
+            delivery_steps=steps, route=route)
+    if not v["passed"]:
+        return _mk("validation", "failed", NextAction(
+            kind="task", summary=f"The result did not pass verification: {v['note']}",
+            owner="product_manager", action="rerun_solutioning", tab="solution",
+            effect="Correct it and run the Architect again for a corrected specification."),
+            delivery_steps=steps, route=route)
+    after = _after_verification(change, route, {}, steps)
+    if after is not None:
+        return after
+    if final is None:
+        return _mk("release", "waiting", NextAction(
+            kind="task", summary="Accepted by the business. Review and finalise the as-built record to hand it over for release.",
+            owner="product_manager", action="finalise_asbuilt", tab="delivery",
+            effect="The story is recorded as delivered, with its as-built record as permanent knowledge."),
+            delivery_steps=steps, route=route)
+    return _mk("done", "done", NextAction(kind="none", summary="Delivered and recorded."), outcome="delivered",
+               delivery_steps=steps, route=route)
 
 
 def _technical_route(change, company_id: str, story_id: str, design: dict, route: str) -> Lifecycle:
@@ -284,9 +413,12 @@ def _technical_route(change, company_id: str, story_id: str, design: dict, route
             kind="task", summary="Validation did not pass. Review the failed tests and start a repair revision.",
             owner="product_manager", action="start_technical_prepare", tab="delivery",
             effect="JADE prepares a repair as a new package revision for approval."), delivery_steps=steps, route=route)
+    after = _after_verification(change, route, tech, steps)
+    if after is not None:
+        return after
     if final is None:
         return _mk("release", "waiting", NextAction(
-            kind="task", summary="Validation passed. Review and finalise the as-built record to complete the release.",
+            kind="task", summary="Accepted by the business. Review and finalise the as-built record to hand it over for release.",
             owner="product_manager", action="finalise_asbuilt", tab="delivery",
             effect="The story is recorded as delivered, with its as-built record as permanent knowledge."),
             delivery_steps=steps, route=route)
@@ -299,10 +431,6 @@ def _functional_route(change, company_id: str, story_id: str, design: dict, rout
     tech: dict = {}
     steps = _delivery_steps(route, tech, change, final)
     ec, ap = change.exact_change, change.change_approval
-    if route == "Human Implementation":
-        return _mk("delivery", "waiting", NextAction(
-            kind="task", summary="This change is implemented by a person outside JADE, following the proposed solution.",
-            owner="product_manager", action=None, tab="solution"), route=route, delivery_steps=steps)
     if ec is None:
         return _mk("solution_review", "blocked", NextAction(
             kind="task", summary="JADE proposed a route but no exact change yet. Ask JADE or re-run the analysis.",
@@ -388,9 +516,12 @@ def _functional_route(change, company_id: str, story_id: str, design: dict, rout
                                  "approved change).",
             owner="product_manager", action="rerun_solutioning", tab="solution",
             effect="JADE proposes a corrected solution."), route=route, delivery_steps=steps)
+    after = _after_verification(change, route, {}, steps)
+    if after is not None:
+        return after
     if final is None:
         return _mk("release", "waiting", NextAction(
-            kind="task", summary="Validation completed. Review and finalise the as-built record to complete the release.",
+            kind="task", summary="Accepted by the business. Review and finalise the as-built record to hand it over for release.",
             owner="product_manager", action="finalise_asbuilt", tab="delivery",
             effect="The story is recorded as delivered, with its as-built record as permanent knowledge."),
             route=route, delivery_steps=steps)
@@ -425,7 +556,49 @@ def derive(change, company_id: Optional[str] = None) -> Lifecycle:
         lc = issues.apply(change, lc, company_id)
     except Exception:  # noqa: BLE001
         pass
+    try:
+        from . import work_items
+
+        lc = work_items.apply(change, lc)
+    except Exception:  # noqa: BLE001
+        pass
+    if lc.next_action.owner == "jade":
+        lc.activity = _activity(company_id, story_id)
     return lc
+
+
+_READ_WORDS = {"table_browse": "Reading", "udc_values": "Reading the codes in", "version_list": "Listing the versions of",
+               "object_librarian": "Looking up", "processing_option_values": "Reading the processing options of",
+               "environment_info": "Checking the AIS server"}
+
+
+def _activity(company_id: str, story_id: str) -> str:
+    """What JADE is doing right now: the latest read of the run in progress
+    (discovery observations are written as the agent reads)."""
+    try:
+        import json as _json
+
+        from ..persistence.db import connection
+
+        from datetime import datetime, timedelta, timezone
+
+        since = (datetime.now(timezone.utc) - timedelta(minutes=15)).isoformat()
+        with connection() as conn:
+            row = conn.execute("SELECT capability_id, request, result_count, observed_at FROM discovery_observations "
+                               "WHERE company_id = ? AND story_id = ? AND observed_at >= ? ORDER BY observed_at DESC "
+                               "LIMIT 1", (company_id, story_id, since)).fetchone()
+    except Exception:  # noqa: BLE001 -- no run, or no tables yet
+        return ""
+    if row is None:
+        return ""
+    try:
+        req = _json.loads(row["request"]) if isinstance(row["request"], str) else (row["request"] or {})
+    except ValueError:
+        req = {}
+    target = req.get("target") or req.get("table") or req.get("application") or ""
+    verb = _READ_WORDS.get(row["capability_id"], "Reading")
+    n = row["result_count"]
+    return f"{verb} {target}".strip() + (f" … {n} found" if n is not None else "")
 
 
 def _solution_onwards(change, company_id: str, story_id: str) -> Lifecycle:
@@ -480,6 +653,8 @@ def _solution_onwards(change, company_id: str, story_id: str) -> Lifecycle:
             effect="JADE reassesses the solution against the updated story."), route=route)
     elif route in TECHNICAL_ROUTES:
         lc = _technical_route(change, company_id, story_id, design, route)
+    elif route == "Human Implementation":
+        lc = _human_route(change, company_id, story_id, route)
     else:
         lc = _functional_route(change, company_id, story_id, design, route or "Functional Agent")
     lc.open_items = open_items + [i for i in lc.open_items if i not in open_items]

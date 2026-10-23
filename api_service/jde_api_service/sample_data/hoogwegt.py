@@ -756,6 +756,14 @@ def _seed_request(spec: dict, people: dict[str, dict], now: datetime) -> None:
         return
     at("tested")
     _test(change_id, spec, tester)
+    # The requester accepts the verified outcome (recorded by the Application
+    # Manager on their behalf), before the release hand-over.
+    from ..services import acceptance
+
+    change = get_change_service().get_for_customer(sid, COMPANY_ID)
+    acceptance.record(change, decision="accepted", note="Checked in DEV with the requester.",
+                      on_behalf_of=spec.get("requester") or "the requester", actor_name=am["name"],
+                      actor_user_id=am["id"], roles={"product_manager"})
     if stage != "done":
         return
 

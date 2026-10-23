@@ -19,7 +19,7 @@ import claude_agent_sdk as sdk
 import pytest
 
 from . import _technical as t
-from .conftest import TEST_PASSWORD, _apply_csrf_header, headers
+from .conftest import TEST_PASSWORD, _apply_csrf_header, headers, accept_outcome
 
 FIXTURES = os.path.join(os.path.dirname(__file__), "..", "..", "fixtures", "process_framework")
 STORY = "S-PROC-1"
@@ -293,6 +293,11 @@ def test_as_built_finalises_only_after_every_checkpoint(client, monkeypatch):
     assert r.status_code == 200, r.text
     v = t.record_verify(client, STORY, 1)
     assert v.status_code == 200, v.text
+    # Verified in DEV is not accepted: the release hand-over follows the business acceptance.
+    unaccepted = client.post(f"/changes/{STORY}/as-built", headers=headers()).json()
+    cp = {c["id"]: c for c in unaccepted["content"]["checkpoints"]}
+    assert cp["business_accepted"]["complete"] is False and not unaccepted["content"]["all_checkpoints_complete"]
+    accept_outcome(client, STORY)
 
     # The earlier draft is stale: its sources changed.
     stale = client.post(f"/changes/{STORY}/as-built/{early['version']}/finalise", headers=headers())
@@ -423,6 +428,7 @@ def test_functional_route_as_built_records_the_actual_change_and_refuses_incompl
     r = client.post(f"/changes/{story}/delivery/run-test", headers=headers())
     assert r.status_code == 200 and r.json()["passed"] is True, r.text
     assert any(p == "/jderest/v3/orchestrator/ORCH_SO" for _, p, _c in ais.calls)
+    accept_outcome(client, story)
     done = record()
     assert done["content"]["all_checkpoints_complete"], done["content"]["checkpoints"]
     f = done["content"]["implementation"]["functional"]

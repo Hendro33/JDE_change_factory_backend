@@ -304,3 +304,12 @@ def place_in_owned_domain(client, change_id: str, customer: str = "bwm", domain_
                     "INSERT INTO domain_assignments (membership_id, business_domain_id) VALUES (?, ?) ON CONFLICT DO NOTHING",
                     (row["id"], domain_id),
                 )
+
+
+def accept_outcome(client, story: str, customer: str = "vdb", by: str = "Ellen Vos (Domain Owner)") -> dict:
+    """The business accepts the verified outcome (recorded on their behalf),
+    as every delivery now requires before the release hand-over."""
+    r = client.post(f"/changes/{story}/acceptance", headers=headers(customer),
+                    json={"decision": "accepted", "note": "checked in DEV", "onBehalfOf": by})
+    assert r.status_code == 200, r.text
+    return r.json()

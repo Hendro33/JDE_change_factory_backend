@@ -91,7 +91,7 @@ def test_the_approved_test_orchestration_runs_live_on_the_customers_ais(client, 
     assert client.post("/changes/S-RD-TEST/delivery/run-test", headers=headers("vdb")).status_code == 409
     change = client.get("/changes/S-RD-TEST", headers=headers("vdb")).json()
     assert change["exactChange"]["execution"]["verification"]["source"] == "live orchestration"
-    assert change["lifecycle"]["nextAction"]["action"] == "finalise_asbuilt"
+    assert change["lifecycle"]["nextAction"]["action"] == "accept_outcome"  # then release
 
 
 def test_an_orchestration_that_times_out_is_unknown_until_reconciled(client, ais):

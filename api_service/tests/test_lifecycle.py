@@ -34,6 +34,15 @@ def _no_records(monkeypatch):
     monkeypatch.setattr(issues, "_baseline", lambda c, s: None)
     monkeypatch.setattr(issues, "delivery_gate_issues", lambda c, lc: [])
     monkeypatch.setattr(issues, "resolutions", lambda c, s: {})
+    # Business acceptance and hand-offs (step 2): stated per test, none by default.
+    monkeypatch.setattr(lifecycle, "_acceptance_of", lambda c, t: ACCEPTANCE.get(c.id))
+    monkeypatch.setattr(lifecycle, "_handoff_state", lambda c: {"items": [], "authorisation": None,
+                                                               "verification": None, "all_complete": False})
+    ACCEPTANCE.clear()
+
+
+ACCEPTANCE: dict = {}
+ACCEPTED = {"decision": "accepted", "by": "Ellen", "on_behalf_of": "", "note": "", "at": "2026-10-01T00:00:00+00:00"}
 
 
 def test_new_request_waits_for_analysis():
@@ -113,8 +122,20 @@ def test_functional_route_progression():
     assert approved.next_action.owner == "product_manager"
     assert _step(lifecycle.derive(_functional(write="applied"))) == ("validation", "waiting", "run_or_record_test")
     assert "orchestration" in lifecycle.derive(_functional(write="applied", orchestration="ORCH_SO")).next_action.summary
+    verified = lifecycle.derive(_functional(write="applied", test="completed", verification={"passed": True}))
+    # Verified in DEV is not accepted: the business accepts the outcome before the release hand-over.
+    assert _step(verified) == ("validation", "waiting_decision", "accept_outcome")
+    assert verified.next_action.owner == "domain_owner"
+    assert [s.id for s in verified.delivery_steps] == ["build", "validation", "acceptance", "release", "production"]
+    assert verified.delivery_steps[2].state == "current"
+    ACCEPTANCE["S-1"] = ACCEPTED
     released = lifecycle.derive(_functional(write="applied", test="completed", verification={"passed": True}))
     assert _step(released) == ("release", "waiting", "finalise_asbuilt")
+    ACCEPTANCE["S-1"] = {**ACCEPTED, "decision": "not_accepted", "note": "freight still on the goods line"}
+    refused = lifecycle.derive(_functional(write="applied", test="completed", verification={"passed": True}))
+    assert (refused.phase, refused.health, refused.next_action.owner) == ("validation", "blocked", "product_manager")
+    assert "freight still on the goods line" in refused.next_action.summary
+    ACCEPTANCE.clear()
     assert lifecycle.derive(_functional(executable=False)).health == "blocked"
     assert not hasattr(released, "simulated")
 
@@ -138,7 +159,7 @@ def test_functional_done_when_asbuilt_final(monkeypatch):
     monkeypatch.setattr(lifecycle, "_asbuilt_final", lambda c, s: {"status": "final"})
     lc = lifecycle.derive(_functional(write="applied", test="completed", verification={"passed": True}))
     assert (lc.phase, lc.health, lc.outcome) == ("done", "done", "delivered")
-    assert [s.state for s in lc.delivery_steps] == ["done", "done", "done", "todo"]
+    assert [s.state for s in lc.delivery_steps] == ["done", "done", "skipped", "done", "todo"]
 
 
 def _technical(monkeypatch, *, design_approved=True, package=True, status="approved", apply="applied", build="built",
@@ -170,6 +191,10 @@ def test_technical_route_progression(monkeypatch):
     assert (verify.phase, verify.next_action.action) == ("validation", "record_technical_verify")
     failed = _technical(monkeypatch, verification={"passed": False, "runtime_is_approved_artifact": True, "results": []})
     assert (failed.phase, failed.health) == ("validation", "failed")
+    ok = _technical(monkeypatch, verification={"passed": True, "runtime_is_approved_artifact": True,
+                                               "results": [{"passed": True}] * 4})
+    assert (ok.phase, ok.next_action.action) == ("validation", "accept_outcome")
+    ACCEPTANCE["S-1"] = ACCEPTED
     ok = _technical(monkeypatch, verification={"passed": True, "runtime_is_approved_artifact": True,
                                                "results": [{"passed": True}] * 4})
     assert (ok.phase, ok.next_action.action) == ("release", "finalise_asbuilt")
