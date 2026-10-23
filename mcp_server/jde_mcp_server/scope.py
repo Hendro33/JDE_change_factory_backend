@@ -171,15 +171,15 @@ def check_functional_scope(scope: dict, application: str, version: str, option: 
 
 
 # ---------------------------------------------------------------------
-# Environment binding (design update Section 5.1). DEV isolation is a
-# fact to be demonstrated per company, not inferred from an
-# environment simply being named DEV (Section 1's own warning about
-# OCM mappings and shared business data).
+# Environment binding (design update Section 5.1): JADE works in the one
+# DEV environment the company names. A JD Edwards instance cannot write
+# into another instance, so no separate isolation confirmation is asked
+# (decided by Hendro, 23 Oct 2026); the DEV-only rule itself stays.
 # ---------------------------------------------------------------------
 
 def check_environment_binding(scope: dict, environment: str) -> dict:
     """Raises ScopeViolation unless 'environment' is DEV and this
-    company's scope records a confirmed, non-empty DEV binding."""
+    company's scope names its DEV environment and path code."""
     if environment != "DEV":
         raise ScopeViolation(
             f"'{environment}' is not DEV. All JDE access and execution use "
@@ -189,15 +189,8 @@ def check_environment_binding(scope: dict, environment: str) -> dict:
     env = scope.get("environment") or {}
     if not env.get("dev_environment_id") or not env.get("dev_path_code"):
         raise ScopeViolation(
-            "this company's scope has no DEV environment id / path code -- DEV "
-            "isolation must be demonstrated, not assumed."
-        )
-    if not env.get("isolation_confirmed"):
-        raise ScopeViolation(
-            "this company's scope does not confirm DEV isolation. An environment "
-            "named DEV is not sufficient on its own -- its OCM mappings and "
-            "business-data sources must be confirmed not to affect another "
-            "environment (Section 1). This is a human decision, never an agent's."
+            "this company's scope does not name its DEV environment id and path code -- "
+            "JADE needs to know which JD Edwards environment is DEV."
         )
     return env
 
@@ -476,7 +469,6 @@ def describe_scope(company_id: str) -> dict:
         "saved": True,
         "routing_note": ROUTING_NOTE,
         "dev_environment": env.get("dev_environment_id"), "dev_path_code": env.get("dev_path_code"),
-        "dev_isolation_confirmed": bool(env.get("isolation_confirmed")),
         "functional_agent": {
             "allowed_kinds": fa.get("allowed_capabilities") or [],
             "allowed_kinds_note": "Any target within these kinds; no per-table, UDC or version listing needed.",

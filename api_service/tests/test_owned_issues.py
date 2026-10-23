@@ -138,10 +138,10 @@ def test_older_designs_get_their_evidence_gaps_sorted_by_owner(facts):
 
 
 def test_a_delivery_gate_refusal_replaces_record_applied(facts):
-    facts["gate"] = [issues._gate_issue("this company's scope does not confirm DEV isolation. An environment ...")]
+    facts["gate"] = [issues._gate_issue("this company's scope does not name its DEV environment id and path code -- ...")]
     lc = lifecycle.derive(_change(architect_decision=_decision(), **_proposed(approved=True)))
     assert lc.health == "blocked" and lc.next_action.action == "admin_setup" and lc.next_action.owner == "admin"
-    assert "DEV isolation" in lc.next_action.summary
+    assert "which JD Edwards environment is DEV" in lc.next_action.summary
     expired = issues._gate_issue("change C1 approval expired at 1700000000 -- propose it again")
     assert (expired.owner, expired.action_id) == ("product_manager", "approve_exact_change")
 
@@ -153,14 +153,13 @@ def test_jade_at_work_is_never_overridden(facts):
 
 
 def test_the_setup_list_has_one_task_per_gap_with_every_affected_story(facts):
-    setup = ResultIssue(title="DEV isolation is not confirmed", owner="administrator", blocks=True)
+    setup = ResultIssue(title="No approved test version for P4210 is set up in JADE", owner="administrator", blocks=True)
     a = _change(id="S-A", architect_decision=_decision(AgentResult(issues=[setup])), **_proposed())
     b = _change(id="S-B", architect_decision=_decision(AgentResult(issues=[setup])), **_proposed())
     for c in (a, b):
         c.lifecycle = lifecycle.derive(c)
     tasks = issues.setup_list([a, b])
-    # Review 23 Oct: DEV isolation is needed before JADE applies anything, not during design.
-    assert len(tasks) == 1 and [s["id"] for s in tasks[0]["stories"]] == ["S-A", "S-B"] and not tasks[0]["blocks"]
+    assert len(tasks) == 1 and [s["id"] for s in tasks[0]["stories"]] == ["S-A", "S-B"] and tasks[0]["blocks"]
     # JADE's own setup still blocks: no JD Edwards connection means no design can be checked.
     gap = ResultIssue(title="No JD Edwards connection is configured for this customer", owner="administrator", blocks=True)
     c = _change(id="S-C", architect_decision=_decision(AgentResult(issues=[gap])), **_proposed())
@@ -304,13 +303,13 @@ def test_issue_answers_are_refused_for_points_jade_or_the_gate_own(client, monke
     assert client.get("/changes/S-IS-GATE", headers=headers("vdb")).json()["lifecycle"]["nextAction"]["action"] \
         == "record_applied"
 
-    # DEV isolation withdrawn after approval: the next action is the Administrator's, not "record applied".
+    # The DEV environment no longer named after approval: the next action is the Administrator's, not "record applied".
     scope = _full_scope()
-    scope["environment"]["isolationConfirmed"] = False
+    scope["environment"]["devEnvironmentId"] = ""
     _save_scope(client, "vdb", scope)
     lc = client.get("/changes/S-IS-GATE", headers=headers("vdb")).json()["lifecycle"]
     assert lc["health"] == "blocked" and lc["nextAction"]["owner"] == "admin"
-    assert lc["nextAction"]["action"] == "admin_setup" and "DEV isolation" in lc["nextAction"]["summary"]
+    assert lc["nextAction"]["action"] == "admin_setup" and "which JD Edwards environment is DEV" in lc["nextAction"]["summary"]
     gate = next(i for i in lc["issues"] if i["source"] == "delivery_gate")
     r = client.post(f"/changes/S-IS-GATE/issues/{gate['id']}/resolution", headers=headers("vdb"),
                     json={"status": "resolved"})

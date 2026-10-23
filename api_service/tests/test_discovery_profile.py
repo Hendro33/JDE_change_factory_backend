@@ -237,7 +237,8 @@ def test_the_session_response_is_the_evidence_not_the_server_default(client):
     view = client.get("/admin/jde/profile", headers=headers("vdb")).json()
     pc = next(i for i in view["readiness"][0]["items"] if i["id"] == "path_code")
     assert pc["satisfied"] is True and "F00941" in pc["detail"], pc
-    assert items["OCM data-source routing and isolation"]["status"] == "attested"
+    # No isolation attestation is asked (23 Oct 2026): a JD Edwards instance cannot write into another.
+    assert "OCM data-source routing and isolation" not in items
     assert any("JPD920" in n for n in env["facets"]["notes"])
 
 

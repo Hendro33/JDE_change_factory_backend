@@ -17,7 +17,7 @@ Where issues come from:
   * the delivery gate itself (approval.authorise_functional_delivery), run
     read-only, so the next action never recommends a step its own
     prerequisites refuse (for example "record applied" on an expired
-    approval or without confirmed DEV isolation).
+    approval or without a named DEV environment).
 
 Answers and resolutions are recorded per story (document kind
 "issue_resolutions"), with who and when. Recording an answer never changes
@@ -59,7 +59,7 @@ _ACTION_FOR_KIND = {"business": "answer_issue", "decision": "decide_issue", "set
 
 # Sorting older evidence gaps (designs without a result block).
 _ADMIN_RE = re.compile(
-    r"\b(admin(istrator)?s?|approved reads?|discovery|isolation|approved test|test versions?|engagement scope|"
+    r"\b(admin(istrator)?s?|approved reads?|discovery|approved test|test versions?|engagement scope|"
     r"agent permissions?|start-?up pack|pack assignment|ai key|ai connection|jira connection|credential|"
     r"configure jade|capability catalogue|ocm)\b", re.I)
 _FINANCE_RE = re.compile(r"\b(g/?l\b|general ledger|aai|revenue account|object account|accounting|finance|"
@@ -76,7 +76,6 @@ _JADE_SETUP_RE = re.compile(
     r"(no (jd edwards|jde) connection|connection (is )?not (configured|set up)|not connected|credential|ai key|"
     r"ai connection|start-?up pack|pack assignment|approved reads?|approved test|test versions?|not (enabled|approved) for discovery|"
     r"discovery (is )?not (enabled|configured)|capability catalogue|engagement scope|jira connection|sample data)", re.I)
-_ISOLATION_RE = re.compile(r"(isolation|dev environment id|path code)", re.I)
 _JDE_FACT_RE = re.compile(
     r"(\bF\d{4,5}\b|table_browse|\budc\b|\baai\b|processing option|could not be (identified|read|confirmed|"
     r"determined|found)|returned null|not found|mapping|set-?up|configur|line type|document type|version)", re.I)
@@ -96,11 +95,6 @@ def _reclassify(issue: Issue, text: str) -> Issue:
             "action_id": None, "tab": "delivery"})
     if issue.kind != "setup":
         return issue
-    if _ISOLATION_RE.search(text) and not _JADE_SETUP_RE.search(text):
-        return issue.model_copy(update={
-            "blocks": False, "title": "DEV isolation is not confirmed yet.",
-            "consequence": "Needed before JADE applies anything in DEV; the design and its approval can go ahead.",
-            "action": "Confirm once, in Administration › Governance, that JD Edwards DEV cannot write to production data."})
     if _JDE_FACT_RE.search(text) and not _JADE_SETUP_RE.search(text):
         return issue.model_copy(update={
             "kind": "jade", "owner": "jade", "owner_label": "JADE", "blocks": False, "action_id": None,
@@ -315,12 +309,10 @@ def _gate_issue(message: str) -> Issue:
         title, owner, label, action, aid = ("The approval of this change has expired.", "product_manager",
                                             "Application Manager", "Approve the exact change again in Architecture "
                                             "Review; JADE re-checks it against DEV.", "approve_exact_change")
-    elif "isolation" in low or "dev environment id" in low or "path code" in low or "not dev" in low:
-        title, owner, label, action, aid = ("DEV isolation is not confirmed for this customer: JADE does not apply "
-                                            "anything in DEV until a person confirms DEV cannot write to production "
-                                            "data.", "admin",
-                                            "Administrator", "Confirm the DEV environment and its isolation in "
-                                            "Administration › Governance.", "admin_setup")
+    elif "dev environment id" in low or "path code" in low or "not dev" in low:
+        title, owner, label, action, aid = ("JADE does not know which JD Edwards environment is DEV for this "
+                                            "customer.", "admin", "Administrator", "Name the DEV environment and path "
+                                            "code in Administration › Governance.", "admin_setup")
     elif "authority" in low or "approval policy" in low or "role" in low:
         title, owner, label, action, aid = ("The approver no longer holds approval authority.", "product_manager",
                                             "Application Manager", "Approve the exact change again with a current "

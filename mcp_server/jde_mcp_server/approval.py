@@ -589,7 +589,7 @@ def preflight(change_id: str) -> dict:
           lambda: capability_catalog.require_deliverable_by_person(
               record.get("capability_id", ""), record.get("capability_revision", ""), record["environment"]))
     if scope is not None:
-        check("DEV environment bound and isolation confirmed", lambda: scope_module.check_environment_binding(scope, record["environment"]))
+        check("DEV environment named for this customer", lambda: scope_module.check_environment_binding(scope, record["environment"]))
         entry = check("Target is in the company's approved versions, or this kind of change is allowed",
                       lambda: scope_module.functional_entry(scope, record.get("capability_id", ""), op.get("application", ""),
                                                             op.get("version", ""), op.get("option", "")))
@@ -639,7 +639,7 @@ def _preflight_change_set(record: dict, check, checks: list[dict]) -> dict:
                   lambda: load_company_scope(company_for_story(record["story_id"])))
     scope = scope if isinstance(scope, dict) else None
     if scope is not None:
-        check("DEV environment bound and isolation confirmed",
+        check("DEV environment named for this customer",
               lambda: scope_module.check_environment_binding(scope, record["environment"]))
     for item in op.get("items") or []:
         name = f"{item['id']} {config_items.label(item)}"

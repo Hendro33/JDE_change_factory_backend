@@ -215,8 +215,8 @@ class TechnicalAgentScope(ApiModel):
 
 class EnvironmentBinding(ApiModel):
     """The one DEV environment this company's executions may target.
-    Isolation is a human (CNC) confirmation recorded with evidence; the
-    gate refuses to run until it is confirmed."""
+    The isolation fields are kept only so older saved scopes still load;
+    nothing reads them (no isolation confirmation is needed, 23 Oct 2026)."""
 
     dev_environment_id: str = ""
     dev_path_code: str = ""

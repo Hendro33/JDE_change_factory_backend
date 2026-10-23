@@ -606,10 +606,6 @@ def verify_environment(config: JdeProfileConfig, server_defaults: dict, session:
         else:
             item("Tools / server release", "recorded", "AIS server defaults",
                  "the server did not report a release, so it could not be compared", config.expected_tools_release, None)
-    routing = config.routing_isolation_confirmed and bool(config.isolation_evidence.strip())
-    item("OCM data-source routing and isolation", "attested" if routing else "recorded",
-         "customer/CNC attestation (optional; not observable through AIS)",
-         config.isolation_evidence.strip() if routing else "not attested (optional)")
     notes = ["defaultconfig describes server defaults only; it is recorded but never used as evidence of the session"]
     default_env, default_role = server_defaults.get("defaultEnvironment"), server_defaults.get("defaultRole")
     if default_env and default_env != config.environment:
@@ -624,8 +620,7 @@ def verify_environment(config: JdeProfileConfig, server_defaults: dict, session:
                        "tools_release": config.expected_tools_release, "path_code": config.path_code or None},
         "session_context": {**session, "source": "AIS v2 token-request response"},
         "server_defaults": {**server_defaults, "used_as_evidence": False},
-        "attested": {"runtime": config.runtime_attestation_evidence.strip() if attested else None,
-                     "ocm_routing_isolation": config.isolation_evidence.strip() if routing else None},
+        "attested": {"runtime": config.runtime_attestation_evidence.strip() if attested else None},
         "items": items, "missing_evidence": missing, "notes": notes,
         "mode": mode, "contract_basis": "Oracle AIS REST API v2 tokenrequest and defaultconfig (documented fields); "
                                         "response shapes to be confirmed against the customer's release",

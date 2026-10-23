@@ -246,16 +246,21 @@ def test_a_story_moved_to_another_company_after_approval_is_refused(client):
         _execute("S12-MOVED", change["change_id"])
 
 
-def test_an_unconfirmed_dev_binding_blocks_execution(client):
-    from jde_mcp_server.scope import ScopeViolation
+def test_an_unnamed_dev_environment_blocks_execution_but_isolation_is_not_asked(client):
+    """A JD Edwards instance cannot write into another, so no isolation
+    confirmation is needed (23 Oct 2026); JADE must still know which
+    environment is DEV."""
+    from jde_mcp_server.scope import ScopeViolation, check_environment_binding
 
+    env = {"dev_environment_id": "JDV920", "dev_path_code": "DV920", "isolation_confirmed": False}
+    assert check_environment_binding({"environment": env}, "DEV")["dev_environment_id"] == "JDV920"
     body = _full_scope()
-    body["environment"]["isolationConfirmed"] = False
+    body["environment"]["devEnvironmentId"] = ""
     _save_scope(client, "vdb", body)
     _approved_story("S12-ISO")
     change = _propose("S12-ISO")
     _approve(change["change_id"])
-    with pytest.raises(ScopeViolation, match="does not confirm DEV isolation"):
+    with pytest.raises(ScopeViolation, match="which JD Edwards environment is DEV"):
         _execute("S12-ISO", change["change_id"])
 
 

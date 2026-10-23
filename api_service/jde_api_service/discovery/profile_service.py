@@ -351,9 +351,6 @@ def prerequisites(profile: dict) -> list[dict]:
         item("purpose", "Environment purpose stated", "customer_attestation", True,
              "development environment" if config.environment_purpose == "development" else
              f"isolated trial environment -- approval: {config.trial_approval_reference}"),
-        item("routing_isolation", "Network route and data isolation confirmed by the customer/CNC", "customer_attestation",
-             config.routing_isolation_confirmed and config.isolation_evidence.strip(),
-             config.isolation_evidence.strip() or "not recorded (optional)", required=False),
         item("privilege", "JDE identity is narrowly privileged (read-only role)", "customer_attestation",
              config.privilege_confirmed and config.privilege_statement.strip(),
              config.privilege_statement.strip() or "not recorded (optional)", required=False),
@@ -484,9 +481,6 @@ def readiness(profile: dict) -> tuple[list[dict], bool]:
     trial_exception = (not restricted and nr.trial_exception and config.environment_purpose == "isolated_trial"
                        and bool(nr.trial_exception_reason.strip()))
     assurance = [
-        _item("routing_isolation", "Network route and data isolation confirmed by the customer/CNC",
-              "customer_attestation", config.routing_isolation_confirmed and config.isolation_evidence.strip(),
-              config.isolation_evidence.strip() or "not recorded", required=False),
         _item("privilege_statement", "Customer statement that the read user is narrowly privileged",
               "customer_attestation", config.privilege_confirmed and config.privilege_statement.strip(),
               config.privilege_statement.strip() or "not recorded", required=False),
