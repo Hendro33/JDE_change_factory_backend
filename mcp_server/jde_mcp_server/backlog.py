@@ -86,13 +86,20 @@ def propose_to_backlog(
     business_impact: dict,
     rough_complexity_signal: str,
     source: str = "",
+    story: Optional[dict] = None,
 ) -> dict:
     """Record a quality-gated story in the backlog. Sets status to
     'backlog' -- NOT 'approved'. Nothing further happens to it until a
-    human runs backlog_review.py."""
+    human runs backlog_review.py.
+
+    story: the full structured story exactly as the Check Agent passed it
+    (statement, context, criteria, test script, rules, assumptions, open
+    questions, ratings and their basis). Jade shows this one -- the story
+    that was actually checked -- rather than a later retelling of it."""
     record = {
         "story_id": story_id,
         "user_story": user_story,
+        "story_detail": story if isinstance(story, dict) else None,
         "business_impact": business_impact,          # Section 3.6 criteria
         "rough_complexity_signal": rough_complexity_signal,  # heuristic only, Section 3.6
         "source": source,

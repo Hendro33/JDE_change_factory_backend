@@ -58,6 +58,28 @@ class LifecycleStep(ApiModel):
     detail: str = ""
 
 
+class PastApproval(ApiModel):
+    by: Optional[str] = None
+    at: Optional[str] = None
+    expires_at: Optional[str] = None
+    superseded_at: Optional[str] = None
+    reason: str = ""
+
+
+class Authorisation(ApiModel):
+    """The CURRENT state of the exact change's authorisation, from the same
+    checks the delivery gate runs (services/authorisation.py). Every screen
+    shows this, never the bare approval record; earlier approvals are history."""
+    state: Literal["none", "pending", "valid", "used", "expired", "invalidated", "rejected"]
+    label: str
+    detail: str = ""
+    by: Optional[str] = None
+    at: Optional[str] = None
+    expires_at: Optional[str] = None
+    renewable: bool = False
+    history: list[PastApproval] = []
+
+
 class Lifecycle(ApiModel):
     phase: Phase
     phase_label: str
@@ -83,6 +105,10 @@ class Lifecycle(ApiModel):
     work_items: list[WorkItem] = []
     outcome_card: Optional[OutcomeCard] = None
     handoff_authorised: bool = False
+    authorisation: Optional[Authorisation] = None
+    # When the current step began: the latest recorded lifecycle event
+    # (services/timing.py). For a finished story, when it finished.
+    since: Optional[str] = None
     # While JADE works: what it is doing right now, from the run's own reads.
     activity: str = ""
 

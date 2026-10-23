@@ -59,7 +59,8 @@ def build(company_id: str, story_id: str) -> dict:
     content["requirement"] = {"title": change.title, "source": change.source,
                               "source_reference": change.source_reference,
                               "as_submitted": change.original_request, "state": change.state}
-    story = (review.history[-1].user_story if review and review.history else change.user_story)
+    # The same authoritative revision every screen shows (services/story_revision.py).
+    story = change.user_story
     content["user_story"] = story.model_dump(mode="json") if story else None
     content["approvals"] = {
         "business_domain": getattr(review, "business_domain_id", None) if review else change.business_domain_id,

@@ -141,6 +141,14 @@ def revisions(company_id: str, story_id: str) -> list[dict]:
             (company_id, story_id)).fetchall()]
 
 
+def latest_story_at(company_id: str, story_id: str) -> tuple[Optional[UserStory], str]:
+    """The latest person-applied revision and when it was made ("" if none)."""
+    with connection() as conn:
+        r = conn.execute("SELECT user_story, created_at FROM story_revisions WHERE company_id = ? AND story_id = ? "
+                         "ORDER BY revision DESC LIMIT 1", (company_id, story_id)).fetchone()
+    return (UserStory.model_validate(json.loads(r["user_story"])), r["created_at"] or "") if r else (None, "")
+
+
 def latest_story(company_id: str, story_id: str) -> Optional[UserStory]:
     with connection() as conn:
         r = conn.execute("SELECT user_story FROM story_revisions WHERE company_id = ? AND story_id = ? "

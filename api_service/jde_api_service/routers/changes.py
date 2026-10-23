@@ -138,17 +138,21 @@ def my_work(ctx: AuthContext = Depends(require_customer_access)) -> MyWork:
     open_ = [c for c in all_changes if c.lifecycle.phase != "done"]
     mine = [c for c in open_ if is_mine(c.lifecycle, roles)]
     mine_ids = {c.id for c in mine}
-    # Decisions first, then tasks; oldest-waiting first within each.
-    mine.sort(key=lambda c: (c.lifecycle.next_action.kind != "decision", c.updated_at))
+    # Decisions first, then tasks; longest-waiting first within each -- by when
+    # the current step began (services/timing.py), not a generic updated-at.
+    mine.sort(key=lambda c: (c.lifecycle.next_action.kind != "decision", c.lifecycle.since or c.created_at))
     cutoff = (datetime.now(timezone.utc) - timedelta(days=31)).isoformat()
     return MyWork(
         needs_you=mine,
         waiting_on_others=[c for c in open_ if c.id not in mine_ids
                            and c.lifecycle.next_action.owner not in ("jade", "none")],
         jade_working=[c for c in open_ if c.lifecycle.next_action.owner == "jade"],
-        in_progress_count=len(open_),
+        # User stories in progress; requests that are not a story yet are counted apart.
+        in_progress_count=len([c for c in open_ if c.lifecycle.phase != "understand"]),
+        requests_count=len([c for c in open_ if c.lifecycle.phase == "understand"]),
+        # Finished in the last 31 days: by when the story finished (its last recorded event).
         completed_this_month=[c for c in all_changes if c.lifecycle.phase == "done"
-                              and c.lifecycle.outcome != "rejected" and c.updated_at >= cutoff],
+                              and c.lifecycle.outcome != "rejected" and (c.lifecycle.since or "") >= cutoff],
         roles=sorted(roles),
     )
 

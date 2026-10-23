@@ -286,6 +286,10 @@ def apply(change, lc: Lifecycle) -> Lifecycle:
 
     if lc.phase in ("understand", "story_review") or (change.architect_decision is None and change.exact_change is None):
         return lc
+    # Resolved without a change: nothing is built, verified, accepted or released,
+    # so there are no work items and no delivery outcome to show.
+    if lc.outcome == "resolved_without_change" or lc.route == "Resolve without Change":
+        return lc
     tech = _tech_facts(change, lc)
     hs = handoff.state(change)
     accepted = acceptance.current(change, tech)

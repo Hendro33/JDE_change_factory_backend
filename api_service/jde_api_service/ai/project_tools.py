@@ -44,7 +44,8 @@ class ProjectTools:
         from jde_mcp_server.backlog import propose_to_backlog
 
         return propose_to_backlog(self._bound(a.get("story_id")), a.get("user_story", ""), a.get("business_impact") or {},
-                                  a.get("rough_complexity_signal", ""), a.get("source", ""))
+                                  a.get("rough_complexity_signal", ""), a.get("source", ""),
+                                  a.get("story") if isinstance(a.get("story"), dict) else None)
 
     def get_approved_story(self, a: dict) -> dict:
         from jde_mcp_server.backlog import get_approved_story
@@ -113,9 +114,12 @@ class ProjectTools:
              "Hand a story that passed EVERY quality criterion to Story Review. It does not approve it: an Application "
              "Manager places it in a business domain and its Domain Owner approves it. business_impact carries the five "
              "criteria (financial_impact, operational_reach, risk_compliance, strategic_alignment, urgency), each with "
-             "the evidence it was traced from, or empty.",
+             "the evidence it was traced from, or empty. story carries the complete structured story exactly as you checked "
+             "it (statement, business_context, acceptance_criteria, test_script, business_rules, assumptions, "
+             "open_questions, business_impact_rating, business_benefit_rating, rating_basis): this is the story Jade shows.",
              {"type": "object", "properties": {**s, "user_story": {"type": "string"}, "business_impact": obj,
-                                               "rough_complexity_signal": {"type": "string"}, "source": {"type": "string"}},
+                                               "rough_complexity_signal": {"type": "string"}, "source": {"type": "string"},
+                                               "story": obj},
               "required": ["story_id", "user_story", "business_impact", "rough_complexity_signal"]},
              self.propose_to_backlog),
             ("get_approved_story",

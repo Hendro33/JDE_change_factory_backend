@@ -40,6 +40,8 @@ DecisionFeedbackKind = Literal[
     # rather than silently amended. See domain_governance.py's
     # request_requirement_reconsideration.
     "requirement_reconsideration_requested",
+    # The Application Manager confirmed the Architect's "Resolve without Change".
+    "resolved_without_change",
 ]
 
 FeedbackReasonCode = Literal[

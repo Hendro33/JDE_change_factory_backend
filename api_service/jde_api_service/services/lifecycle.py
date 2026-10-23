@@ -562,6 +562,18 @@ def derive(change, company_id: Optional[str] = None) -> Lifecycle:
         lc = work_items.apply(change, lc)
     except Exception:  # noqa: BLE001
         pass
+    try:
+        from . import authorisation
+
+        lc = authorisation.apply(change, lc)
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        from . import timing
+
+        lc = timing.apply(change, lc)
+    except Exception:  # noqa: BLE001
+        pass
     if lc.next_action.owner == "jade":
         lc.activity = _activity(company_id, story_id)
     return lc
@@ -644,8 +656,11 @@ def _solution_onwards(change, company_id: str, story_id: str) -> Lifecycle:
             effect="With the answer, JADE re-runs solutioning."), route=route)
     elif route == "Resolve without Change":
         lc = _mk("solution_review", "waiting_decision", NextAction(
-            kind="decision", summary="JADE found this can be resolved without changing JDE. Review the explanation.",
-            owner="product_manager", action=None, tab="solution"), route=route)
+            kind="decision", summary="JADE found this can be resolved without changing JDE. Confirm it, or ask the "
+                                     "Architect to look again.",
+            owner="product_manager", action="confirm_no_change", tab="solution",
+            effect="The story closes as resolved without a change; JD Edwards is not touched and the business is told "
+                   "what already meets the need."), route=route)
     elif b is not None and b.get("status") not in (None, "current"):
         lc = _mk("solutioning", "blocked", NextAction(
             kind="task", summary="The story changed after the solution was designed. Re-run solutioning.",

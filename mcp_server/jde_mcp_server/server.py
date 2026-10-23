@@ -42,14 +42,15 @@ mcp = _MCPServerClass("jde-change-factory")
 # ---------------------------------------------------------------------
 
 @mcp.tool()
-def propose_to_backlog(story_id: str, user_story: str, business_impact: dict, rough_complexity_signal: str, source: str = "") -> dict:
+def propose_to_backlog(story_id: str, user_story: str, business_impact: dict, rough_complexity_signal: str, source: str = "",
+                       story: dict | None = None) -> dict:
     """Record a quality-gated story in the backlog for human review
     (Section 3.5, Phase 2). business_impact should carry the five
     criteria from Section 3.6 (financial, operational reach, risk &
     compliance, strategic alignment, urgency), each with the evidence
     it was traced from. This does NOT approve the story -- an Application
     Manager and the domain's Domain Owner decide in Story Review."""
-    return _propose_to_backlog(story_id, user_story, business_impact, rough_complexity_signal, source)
+    return _propose_to_backlog(story_id, user_story, business_impact, rough_complexity_signal, source, story)
 
 
 # ---------------------------------------------------------------------

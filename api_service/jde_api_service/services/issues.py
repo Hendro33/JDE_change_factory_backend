@@ -467,7 +467,7 @@ def _what_next(lc: Lifecycle, open_: list[Issue]) -> list[WorkLine]:
             title = i.title.rstrip(" .")
             text = f"{title} — {i.action}" if i.action and i.kind != "business" else i.title
         lines.append(WorkLine(owner=i.owner, who=i.owner_label, text=_short(text, 300), action=i.action_id,
-                              tab=i.tab, blocking=i.blocks))
+                              tab=i.tab, blocking=i.blocks, issue_id=i.id, issue_kind=i.kind))
     return lines
 
 

@@ -194,8 +194,22 @@ class ClaudeAgentRuntime:
                 if getattr(block, "name", None) in ("Task", "Agent") and isinstance(tool_input, dict) \
                         and tool_input.get("subagent_type"):
                     starts.append(RuntimeEvent("subagent_started", {"name": tool_input["subagent_type"],
-                                                                    "tool_use_id": getattr(block, "id", None)}, message))
+                                                                    "tool_use_id": getattr(block, "id", None),
+                                                                    "prompt": tool_input.get("prompt") or ""}, message))
             return starts or [RuntimeEvent("other", {}, message)]
+        if kind == "UserMessage":
+            # A delegated subagent's answer comes back to the main agent as a tool result.
+            results = []
+            for block in getattr(message, "content", None) or []:
+                if type(block).__name__ == "ToolResultBlock" and getattr(block, "tool_use_id", None):
+                    content = getattr(block, "content", None)
+                    if isinstance(content, list):
+                        content = "\n".join(str(c.get("text", "")) if isinstance(c, dict) else str(getattr(c, "text", c))
+                                            for c in content)
+                    results.append(RuntimeEvent("tool_result", {"tool_use_id": block.tool_use_id, "text": content or "",
+                                                                "is_error": bool(getattr(block, "is_error", False))},
+                                                message))
+            return results or [RuntimeEvent("other", {}, message)]
         if kind != "ResultMessage" and getattr(message, "subtype", None) is not None and hasattr(message, "data"):
             data = getattr(message, "data", None) or {}
             sub = getattr(message, "subtype", "")
@@ -284,6 +298,8 @@ class AgentRun:
         self.reported_model: Optional[str] = None
         self.credential_source: Optional[str] = None
         self.result: Optional[dict] = None
+        # The hand-offs to subagents, in order (set by the driver; see migration 20).
+        self.trace: list[dict] = []
         self.finished = False
         self._knowledge = None
 
@@ -442,12 +458,13 @@ class AgentRun:
         with db(immediate=True) as conn:
             conn.execute(
                 "UPDATE ai_runs SET status = ?, reported_model = ?, credential_source = ?, knowledge = ?, usage = ?, "
-                "cost_usd = ?, cost_basis = ?, error = ?, finished_at = ?, runtime = ?, output = ? WHERE run_id = ?",
+                "cost_usd = ?, cost_basis = ?, error = ?, finished_at = ?, runtime = ?, output = ?, trace = ? WHERE run_id = ?",
                 (status, reported_model, self.credential_source or "not reported by the runtime",
                  json.dumps(self.knowledge_log[:200]), json.dumps(usage), cost, basis,
                  (error or "")[:1000] or None, _now(), self._runtime_label(),
                  # The agent's full final answer, exactly as given (never cut).
-                 r.get("text") if isinstance(r.get("text"), str) else None, self.run_id))
+                 r.get("text") if isinstance(r.get("text"), str) else None,
+                 json.dumps(self.trace) if self.trace else None, self.run_id))
 
     def _runtime_label(self) -> str:
         try:
@@ -521,6 +538,8 @@ def list_runs(company_id: str, limit: int = 50) -> list[dict]:
         for k in ("roles", "packs", "knowledge", "usage", "models", "context", "notes"):
             d[k] = json.loads(d[k]) if d.get(k) else None
         output = d.pop("output", None)
+        trace = d.pop("trace", None)
+        d["handoffs"] = len(json.loads(trace)) if trace else 0
         d["output_chars"] = len(output) if output else 0
         # A quality signal for tuning the prompt, never a reason to discard it.
         d["output_long"] = bool(output) and len(output) > LONG_OUTPUT_CHARS
@@ -536,13 +555,18 @@ def run_output(company_id: str, run_id: str) -> Optional[dict]:
     """One run's full final answer (Administrators: troubleshooting and
     assessing agent performance)."""
     with db() as conn:
-        row = conn.execute("SELECT run_id, driver, story_id, status, error, started_at, finished_at, output FROM ai_runs "
+        row = conn.execute("SELECT run_id, driver, story_id, status, error, started_at, finished_at, output, trace FROM ai_runs "
                            "WHERE company_id = ? AND run_id = ?", (company_id, run_id)).fetchone()
     if row is None:
         return None
     d = dict(row)
     d["output_chars"] = len(d["output"]) if d.get("output") else 0
     d["output_long"] = d["output_chars"] > LONG_OUTPUT_CHARS
+    d["trace"] = json.loads(d["trace"]) if d.get("trace") else []
+    if d["trace"]:
+        from ..services.orchestration_driver import trace_findings
+
+        d["trace_findings"] = trace_findings(d["trace"])
     return d
 
 

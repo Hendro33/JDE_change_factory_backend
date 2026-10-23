@@ -13,6 +13,9 @@ class MyWork(ApiModel):
     waiting_on_others: list[Change] = []
     # Stories JADE itself is working on right now.
     jade_working: list[Change] = []
+    # User stories in progress (requests that are not a story yet excluded).
     in_progress_count: int = 0
+    # Incoming requests JADE has not turned into a user story yet.
+    requests_count: int = 0
     completed_this_month: list[Change] = []
     roles: list[str] = []

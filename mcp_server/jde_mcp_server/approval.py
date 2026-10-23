@@ -232,6 +232,10 @@ def list_pending_changes() -> list[dict]:
     return [rec for rec in all_records() if rec.get("status") == "pending"]
 
 
+def list_changes_for_story(story_id: str) -> list[dict]:
+    return [rec for rec in all_records() if rec.get("story_id") == story_id]
+
+
 def _load_for_company(change_id: str, company_id: str) -> dict:
     record = _load(change_id)
     if record is None:
@@ -266,8 +270,15 @@ def approve_change(
 
     with execution._locked(change_id):
         record = _load_for_company(change_id, company_id)
+        renewing = None
         if record["status"] != "pending":
-            raise ChangeApprovalError(f"change {change_id} is {record['status']}, not pending -- only a pending change can be approved")
+            # An approval that is no longer valid (expired, or the approver's
+            # authority or the policy changed) and was never used can be
+            # authorised again under the CURRENT policy. The earlier approval
+            # is kept in the record's history, never overwritten.
+            renewing = renewal_reason(record)
+            if renewing is None:
+                raise ChangeApprovalError(f"change {change_id} is {record['status']}, not pending -- only a pending change can be approved")
         scope = load_company_scope(company_id)
         policy = require_approval_policy(scope)
         held = set(approver_roles)
@@ -294,6 +305,12 @@ def approve_change(
 
         basis = binding.snapshot(record)
         now = time.time()
+        if renewing is not None:
+            record.setdefault("approval_history", []).append({
+                **{k: record.get(k) for k in ("status", "approved_by", "approved_at", "expires_at",
+                                              "approver_authority", "decision_note")},
+                "superseded_at": now, "superseded_because": renewing,
+            })
         record.update({
             "status": "approved",
             "approved_by": approved_by,
@@ -324,6 +341,54 @@ def reject_change(change_id: str, approved_by: str, note: str, *, company_id: st
         record.update({"status": "rejected", "approved_by": approved_by, "approved_at": time.time(), "decision_note": note})
         _save(change_id, record)
         return record
+
+
+def _live_problem(change_id: str) -> Optional[str]:
+    """Why an approved change's approval can no longer be used, or None."""
+    try:
+        _require_live_approval(change_id)
+    except Exception as exc:  # noqa: BLE001 -- refused, or unreadable scope/policy: not usable
+        return str(exc)
+    return None
+
+
+def _never_used(record: dict) -> bool:
+    from . import execution
+
+    return all(execution.effective_state(record, k) == "ready" for k in (execution.WRITE, execution.TEST))
+
+
+def renewal_reason(record: dict) -> Optional[str]:
+    """For an approved, never-used change whose approval is no longer valid:
+    why (it may be authorised again). Otherwise None."""
+    if record.get("status") != "approved" or not _never_used(record):
+        return None
+    return _live_problem(record["change_id"])
+
+
+def current_authorisation(change_id: str) -> dict:
+    """The CURRENT state of a change's authorisation, read-only, from the same
+    checks the delivery gate runs: none / pending / valid / used / expired /
+    invalidated / rejected, with the reason and the earlier approvals."""
+    record = _load(change_id)
+    if record is None:
+        return {"state": "none"}
+    out = {"state": record.get("status", "pending"), "by": record.get("approved_by"),
+           "at": record.get("approved_at"), "expires_at": record.get("expires_at"),
+           "history": list(record.get("approval_history") or [])}
+    if record.get("status") != "approved":
+        return out
+    if not _never_used(record):
+        out["state"] = "used"
+        return out
+    problem = _live_problem(change_id)
+    if problem is None:
+        out["state"] = "valid"
+    else:
+        low = problem.lower()
+        out["state"] = "expired" if "expired" in low or "no approval expiry" in low else "invalidated"
+        out["reason"] = problem
+    return out
 
 
 def _require_live_approval(change_id: str) -> tuple[dict, dict]:

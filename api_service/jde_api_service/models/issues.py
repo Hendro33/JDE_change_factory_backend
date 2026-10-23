@@ -120,3 +120,7 @@ class WorkLine(ApiModel):
     tab: Literal["overview", "story", "solution", "delivery", "evidence", "technical", "outcome"] = "overview"
     blocking: bool = False
     primary: bool = False
+    # The open point this line restates (None for the next action itself),
+    # so a screen that lists the open points does not say them twice.
+    issue_id: Optional[str] = None
+    issue_kind: Optional[str] = None

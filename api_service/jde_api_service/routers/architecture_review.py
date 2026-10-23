@@ -168,6 +168,13 @@ def start_architecture_review(
 def _pending_change_record(story_id: str) -> dict:
     pending = [c for c in approval.list_pending_changes() if c.get("story_id") == story_id]
     if not pending:
+        # An approval that expired or was invalidated before it was used is
+        # authorised again (approval.approve_change keeps the earlier one).
+        # Only the story's current (latest) exact change; never an earlier proposal.
+        records = approval.list_changes_for_story(story_id)
+        latest = max(records, key=lambda c: c.get("created_at", 0)) if records else None
+        if latest is not None and approval.renewal_reason(latest):
+            return latest
         raise HTTPException(
             status_code=409,
             detail=f"no exact change is currently pending approval for {story_id}",
@@ -423,3 +430,34 @@ def reconcile_test(
         "evidenceEntryHash": entry["evidence_entry_hash"],
     }
 
+
+@router.post("/changes/{change_id}/resolve-without-change", status_code=200)
+def confirm_resolved_without_change(
+    change_id: str, payload: GovernanceDecisionInput, ctx: AuthContext = Depends(require_write_access)
+) -> dict:
+    """The Application Manager confirms the Architect's finding that existing
+    JD Edwards functionality already meets the requirement (Section 15.6).
+    Before this existed, such a story waited for a decision no screen could
+    take (post-step-3 review, journey "resolved without a system change").
+    Terminal and recorded; JD Edwards is never touched."""
+    change = _require_queued_change(change_id, ctx.customer_id)
+    if not ({"product_manager", "admin"} & set(ctx.roles)):
+        raise HTTPException(status_code=403, detail="only the Application Manager confirms a resolution without change")
+    d = change.architect_decision
+    if d is None or d.recommended_route != "Resolve without Change":
+        raise HTTPException(status_code=409, detail="the Architect has not concluded that no change is needed")
+    from jde_mcp_server import backlog
+
+    finding = (d.result.conclusion if d.result and d.result.conclusion else d.existing_functionality_found) or ""
+    note = (payload.note or "").strip()
+    try:
+        backlog.resolve_without_change(change_id, (finding + (f" -- {note}" if note else "")).strip() or note,
+                                       resolved_by=ctx.identity.display_name)
+    except backlog.BacklogError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    get_decision_feedback_service().record(change_id=change_id, customer_id=ctx.customer_id,
+                                           kind="resolved_without_change", decided_by=ctx.identity.display_name,
+                                           identity_id=ctx.identity.id, note=payload.note)
+    out = get_change_service().get_for_customer(change_id, ctx.customer_id)
+    assert out is not None
+    return out.model_dump(mode="json", by_alias=True)

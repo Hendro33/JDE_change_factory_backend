@@ -193,6 +193,24 @@ _LEGACY_AC_LINE_RE = re.compile(r"^-\s*(AC\d+):\s*(.+?)(?:\s+verified_by:\s*(\S.
 _LEGACY_OPEN_Q_LINE_RE = re.compile(r"^\d+\.\s*(.+)$")
 
 
+def _checked_story(record: dict, run) -> Optional[UserStory]:
+    detail = record.get("story_detail")
+    if not isinstance(detail, dict) or not detail.get("statement"):
+        return None
+    from .orchestration_driver import _user_story_from_summary
+
+    try:
+        story = _user_story_from_summary({"user_story": detail})
+    except Exception:  # noqa: BLE001 -- malformed: fall back to the run's summary
+        return None
+    # Only the backend can verify citations and count revisions: keep the run's.
+    if run is not None and run.user_story is not None:
+        story.document_citations = run.user_story.document_citations
+        story.revision_count = max(story.revision_count, run.user_story.revision_count)
+    story.quality_status = "passed"
+    return story
+
+
 def _parse_legacy_backlog_story(raw: str) -> Optional[UserStory]:
     """Best-effort parser for stories entered directly as a backlog.py
     record (propose_to_backlog's user_story parameter is a plain string,
@@ -382,16 +400,23 @@ def _change_from_story(
     # orchestration_driver.py, the run record has the full enriched
     # story it actually produced; use that for display. Otherwise fall
     # back to the minimal reconstruction, as before.
-    if run and run.user_story and run.check_outcome == "proposed_to_backlog":
+    # The story the Check Agent actually passed (the backlog record's full
+    # story) is the one shown; the orchestrator's end-of-run summary only
+    # fills what that record does not carry (finding 3).
+    checked = _checked_story(record, run)
+    if checked is not None:
+        user_story = checked
+    elif run and run.user_story and run.check_outcome == "proposed_to_backlog":
         user_story = run.user_story
     else:
         user_story = _parse_legacy_backlog_story(statement) or UserStory(statement=statement, quality_status="passed")
-    # A person-applied story revision (process refinement) supersedes both.
-    from ..process import refinement
+    # The Domain Owner's edits and the Reviewer Agent's revision (User Story
+    # Review) and a person-applied process refinement supersede the run's
+    # story: the most recent of them is the one every view and agent uses.
+    from . import story_revision
 
-    revised = refinement.latest_story(customer_id, story_id)
-    if revised is not None:
-        user_story = revised
+    user_story = story_revision.authoritative(
+        user_story, domain_review_service.get(story_id) if domain_review_service else None, customer_id, story_id)
 
     # backlog.py's own record only ever carries the AI-generated
     # statement (propose_to_backlog's user_story parameter is a plain

@@ -859,4 +859,15 @@ MIGRATIONS: list[tuple[int, str]] = [
         ALTER TABLE ai_runs ADD COLUMN output TEXT;
         """,
     ),
+    (
+        20,
+        """
+        -- The hand-offs inside a run (post-step-3 review, finding 3): for each
+        -- subagent the main agent delegated to, what it was given and what it
+        -- returned, in full, so an intake run can be traced -- did each agent
+        -- run, did it receive the complete source, did a failed check lead to a
+        -- revision and a re-check. JSON list; never truncated.
+        ALTER TABLE ai_runs ADD COLUMN trace TEXT;
+        """,
+    ),
 ]

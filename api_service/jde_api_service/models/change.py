@@ -69,6 +69,8 @@ class UserStory(ApiModel):
     # AI proposals only; human confirmation lives in the domain review audit record.
     business_impact_rating: Optional[ImpactLevel] = None
     business_benefit_rating: Optional[BenefitLevel] = None
+    # What in the source the two proposed ratings rest on (the Improve Agent's own words).
+    rating_basis: str = ""
     statement: str
     business_context: str = ""
     acceptance_criteria: list[AcceptanceCriterion] = []

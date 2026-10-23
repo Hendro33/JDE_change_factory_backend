@@ -283,7 +283,7 @@ def test_subagent_starts_are_recognised_from_the_delegation_call_and_the_task_fr
         sdk.ToolUseBlock(id="tu-1", name="Task", input={"subagent_type": "check-agent", "prompt": "check"}),
     ], model="m")
     assert [(e.kind, e.data) for e in ClaudeAgentRuntime.translate_all(call)] == [
-        ("subagent_started", {"name": "check-agent", "tool_use_id": "tu-1"})]
+        ("subagent_started", {"name": "check-agent", "tool_use_id": "tu-1", "prompt": "check"})]
 
     frame = sdk.TaskStartedMessage(subtype="task_started", data={"subagent_type": "check-agent"}, task_id="k",
                                    description="check", uuid="u", session_id="s", tool_use_id="tu-1")
