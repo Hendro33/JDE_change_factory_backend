@@ -536,7 +536,10 @@ def _with_lifecycle(change: Change) -> Change:
     return attach(classification_service.apply(change))
 
 
+import threading
+
 _LIST_CACHE: dict[str, tuple] = {}
+_LIST_LOCKS: dict[str, "threading.RLock"] = {}
 _DATA_VERSION = [0]
 
 
@@ -596,14 +599,17 @@ class ChangeService:
         import time
 
         ttl = _list_cache_seconds()
-        key = (customer_id, _DATA_VERSION[0])
-        hit = _LIST_CACHE.get(customer_id)
-        if ttl > 0 and hit is not None and hit[0] == key and time.monotonic() - hit[1] < ttl:
-            return list(hit[2])
-        out = self._list_for_customer(customer_id)
-        if ttl > 0:
+        if ttl <= 0:
+            return self._list_for_customer(customer_id)
+        # Requests arriving together wait for one derivation instead of each doing it.
+        with _LIST_LOCKS.setdefault(customer_id, threading.RLock()):
+            key = (customer_id, _DATA_VERSION[0])
+            hit = _LIST_CACHE.get(customer_id)
+            if hit is not None and hit[0] == key and time.monotonic() - hit[1] < ttl:
+                return list(hit[2])
+            out = self._list_for_customer(customer_id)
             _LIST_CACHE[customer_id] = (key, time.monotonic(), out)
-        return list(out)
+            return list(out)
 
     def _list_for_customer(self, customer_id: str) -> list[Change]:
         stories = self._stories_for_customer(customer_id)
