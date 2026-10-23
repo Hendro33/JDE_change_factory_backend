@@ -291,3 +291,54 @@ def test_backlog_capacity_reports_measured_cost_only(client):
     body = r.json()
     assert body["architectRunsMeasured"] == 0 and body["averageArchitectRunUsd"] is None
     assert "inSolutioning" in body and "monthSpendUsd" in body
+
+
+def test_f02_the_test_step_follows_its_own_gate(client):
+    """HW-006 in the preview: applied in DEV, the approval then expired; the
+    next action still said "Test and record" while recording was refused."""
+    import time
+
+    from jde_mcp_server import approval
+
+    from .test_recorded_delivery import _applied, _change as approved_change
+    from .fixtures.fake_ais import apply_in_dev
+
+    rec = approved_change(client, "S-AUD-TST")
+    apply_in_dev("vdb", "P4210", "CIQ0001", "PDOCTYPE", "SO")
+    assert _applied(client, "S-AUD-TST", note="set in DEV").status_code == 200
+    lc = _lc(client, "S-AUD-TST")
+    assert lc["nextAction"]["action"] == "run_or_record_test" and "record_test" in lc["allowedActions"]
+    record = approval._load(rec["change_id"])  # noqa: SLF001
+    record["expires_at"] = time.time() - 1
+    approval._save(rec["change_id"], record)  # noqa: SLF001
+    lc = _lc(client, "S-AUD-TST")
+    assert lc["health"] == "blocked" and lc["nextAction"]["action"] == "approve_exact_change", lc["nextAction"]
+    assert "record_test" not in lc["allowedActions"] and lc["actionBlockers"]["record_test"]
+    r = client.post("/changes/S-AUD-TST/delivery/test-result", headers=headers("vdb"),
+                    json={"passed": True, "evidenceReference": "TEST-1", "note": "order entered"})
+    assert r.status_code == 409
+
+
+def test_f07_a_story_finished_under_the_earlier_workflow_states_what_was_not_recorded(client):
+    """HW-001 on DEV: Done/Delivered, while the outcome asked for an acceptance
+    nobody could give. The recorded facts stay; the missing checkpoints are
+    stated; nothing is asked and nothing is manufactured."""
+    from jde_mcp_server import backlog
+
+    from .test_recorded_delivery import _applied, _change as approved_change
+    from .fixtures.fake_ais import apply_in_dev
+
+    approved_change(client, "S-AUD-HIST")
+    apply_in_dev("vdb", "P4210", "CIQ0001", "PDOCTYPE", "SO")
+    assert _applied(client, "S-AUD-HIST", note="set in DEV").status_code == 200
+    rec = backlog._load("S-AUD-HIST")  # noqa: SLF001 -- a record closed by the earlier workflow (fixture)
+    rec["state"] = "CLOSED"
+    backlog._save("S-AUD-HIST", rec)  # noqa: SLF001
+    change = client.get("/changes/S-AUD-HIST", headers=headers("vdb")).json()
+    lc = change["lifecycle"]
+    assert lc["phase"] == "done" and lc["outcome"] == "delivered"
+    assert any(g.startswith("Accepted by the business: not recorded") for g in lc["completionGaps"]), lc["completionGaps"]
+    card = lc["outcomeCard"]
+    assert card["businessAccepted"]["done"] is False and "Nothing is asked" in card["whatToDoNow"]
+    assert not lc["nextAction"]["action"]
+    assert backlog._load("S-AUD-HIST")["state"] == "CLOSED"  # noqa: SLF001 -- reading changed nothing

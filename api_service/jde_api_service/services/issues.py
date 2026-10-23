@@ -349,7 +349,7 @@ def _dedupe(items: Iterable[Issue]) -> list[Issue]:
 # ---------------------------------------------------------------------
 # Issues from the delivery gate (run read-only)
 # ---------------------------------------------------------------------
-_DELIVERY_ACTIONS = {"record_applied", "run_agents_or_record", "agents_running"}
+_DELIVERY_ACTIONS = {"record_applied", "run_agents_or_record", "agents_running", "run_or_record_test"}
 
 
 def _gate_issue(message: str) -> Issue:
@@ -398,7 +398,11 @@ def delivery_gate_issues(change, lc: Lifecycle) -> list[Issue]:
         return []
     try:
         from jde_mcp_server import approval
-        approval.authorise_functional_delivery(ap.approval_id)
+        if lc.next_action.action == "run_or_record_test":
+            # The test of an applied change has its own gate (audit F02, HW-006).
+            approval.require_change_covers_test(ap.approval_id, None)
+        else:
+            approval.authorise_functional_delivery(ap.approval_id)
     except Exception as exc:  # noqa: BLE001 -- every refusal becomes an owned blocker
         return [_gate_issue(str(exc))]
     return []

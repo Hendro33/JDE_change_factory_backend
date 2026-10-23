@@ -29,6 +29,20 @@ def _delivery_refusal(change) -> Optional[str]:
     return None
 
 
+def _test_refusal(change) -> Optional[str]:
+    """The test gate's refusal for an applied change, or None."""
+    ap = change.change_approval
+    if ap is None or ap.status != "approved" or not ap.approval_id:
+        return "The exact change is not approved."
+    try:
+        from jde_mcp_server import approval
+
+        approval.require_change_covers_test(ap.approval_id, None)
+    except Exception as exc:  # noqa: BLE001
+        return str(exc)
+    return None
+
+
 def apply(change, lc: Lifecycle) -> Lifecycle:
     allowed: list[str] = []
     blocked: dict[str, str] = {}
@@ -43,6 +57,16 @@ def apply(change, lc: Lifecycle) -> Lifecycle:
                 allowed.append(action)
             else:
                 blocked[action] = reason or "The delivery check refuses it now."
+    if ec is not None and lc.phase in ("delivery", "validation") and ex is not None and ex.write_state == "applied" \
+            and ex.test_state not in ("completed",):
+        refusal = _test_refusal(change)
+        gate = next((i for i in lc.issues if i.source == "delivery_gate" and i.resolution is None), None)
+        reason = (gate.title + " " + gate.action).strip() if gate else refusal
+        for action in ("record_test", "run_test"):
+            if refusal is None:
+                allowed.append(action)
+            else:
+                blocked[action] = reason or "The test check refuses it now."
     if lc.route in ("Technical Agent", "Mixed") and lc.phase == "delivery":
         if lc.next_action.action == "start_technical_prepare":
             allowed.append("start_technical_prepare")
