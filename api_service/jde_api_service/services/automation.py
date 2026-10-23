@@ -7,10 +7,11 @@ Routine agent work needs no "start the next stage" clicks:
   domain already happens in that run (orchestration_driver.place_in_domain);
   when the agents cannot place it, the Application Manager gets the
   assignment task (lifecycle "assign_domain").
-* Reassessment -- solutioning runs again by itself when the answers to its
-  open points are in, when the story changed after the design, when the
-  customer's setup changed while the design was waiting on it, or after a run
-  of its own failed for a passing reason. Duplicate runs are refused (a run
+* Reassessment -- solutioning runs again by itself when the story changed
+  after the design, when the customer's setup changed while the design was
+  waiting on it, or after a run of its own failed for a passing reason.
+  Answers to open points do not start a run: the Application Manager re-runs
+  the Architect when ready (the button at the top of the solution). Duplicate runs are refused (a run
   already in progress is never started twice; an input that was already
   reassessed is not reassessed again), and at most MAX_RUNS automatic runs of
   one kind per story per 24 hours start -- after that a person takes over.
@@ -61,8 +62,8 @@ def _env_int(name: str, default: int) -> int:
 
 
 def settle_seconds() -> int:
-    """How long JADE waits after the last answer or setup change before it
-    reassesses -- people often answer several points in a row."""
+    """How long JADE waits after a setup change before it reassesses --
+    several settings are often saved in a row."""
     return _env_int("JDE_AUTOMATION_SETTLE_SECONDS", 60)
 
 
@@ -253,15 +254,6 @@ def _sig(*parts: Any) -> str:
     return hashlib.sha256("|".join(str(p or "") for p in parts).encode()).hexdigest()[:16]
 
 
-def _latest_answer_at(change, company_id: str) -> Optional[str]:
-    from . import issues
-
-    decided = change.architect_decision.decided_at if change.architect_decision else ""
-    times = [r.get("at", "") for r in issues.resolutions(company_id, change.id).values()
-             if r.get("answer") and r.get("at", "") > (decided or "")]
-    return max(times) if times else None
-
-
 def _open_blocking(lc: Lifecycle, kinds: Optional[set[str]] = None) -> list:
     return [i for i in lc.issues if i.resolution is None and i.blocks and i.owner not in ("jade", "none")
             and (kinds is None or i.kind in kinds)]
@@ -350,12 +342,9 @@ def _solution_candidate(change, lc: Lifecycle, company_id: str, state: dict, set
     approved = change.change_approval is not None and change.change_approval.status == "approved"
     if approved:
         return None    # past authorisation: the re-check before delivery takes over
-    answered = _latest_answer_at(change, company_id)
-    if answered and not _open_blocking(lc):
-        due = (_parse(answered) or _now()) + timedelta(seconds=settle_seconds())
-        return ("solutioning", "answers recorded",
-                "The open points are answered; JADE reassesses the solution with the answers by itself.", due,
-                _sig("solutioning", "answers", decided, answered))
+    # Answers do NOT start a run by themselves (Hendro, 23 Oct evening): the
+    # Application Manager decides when enough is answered and presses "Run the
+    # Architect again" at the top of the solution.
     changed_at = settings.get("setup_changed_at")
     if changed_at and changed_at > decided and _open_blocking(lc, {"setup"}):
         due = (_parse(changed_at) or _now()) + timedelta(seconds=settle_seconds())

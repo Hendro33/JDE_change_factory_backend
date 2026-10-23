@@ -1,7 +1,8 @@
 """Redesign step 4: routine work runs by itself.
 
-Intake starts by itself; answers, a changed story, a changed setup or a
-passing failure make solutioning run again by itself -- once per input, at
+Intake starts by itself; a changed story, a changed setup or a passing
+failure make solutioning run again by itself (answers do not: the
+Application Manager re-runs the Architect) -- once per input, at
 most MAX_RUNS times a day; approved changes are re-checked before delivery
 and someone is told only when something changed; notifications follow the
 lifecycle. The switch per customer turns all of it off.
@@ -9,7 +10,6 @@ lifecycle. The switch per customer turns all of it off.
 
 from __future__ import annotations
 
-import asyncio
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
@@ -54,59 +54,54 @@ def _answered(facts, change):
                                      "answer": "5110", "by": "Ellen", "at": _iso()}}
 
 
-def test_answers_make_reassessment_jades_work_not_a_task(facts, monkeypatch, automation_on):
+def test_answers_never_start_a_run_the_manager_reruns(facts, monkeypatch, automation_on):
+    """Hendro, 23 Oct evening: an answer to one of several points restarted the
+    Architect. Answers now never start a run; the Application Manager re-runs."""
     _no_baseline(monkeypatch)
     monkeypatch.setattr(automation, "settings_for", lambda c: dict(ON))
     monkeypatch.setattr(automation, "state_of", lambda c, s: {})
-    change = _change(architect_decision=_decision(AgentResult(issues=[FINANCE])), **_proposed())
+    other = ResultIssue(title="Which branch plants?", owner="business", who="Sales", blocks=False)
+    change = _change(architect_decision=_decision(AgentResult(issues=[FINANCE, other])), **_proposed())
     _answered(facts, change)
     lc = lifecycle.derive(change)
-    assert lc.automation is not None and lc.automation.state == "scheduled" and lc.automation.kind == "solutioning"
-    assert lc.automation.reason == "answers recorded"
-    assert lc.next_action.owner == "jade" and lc.next_action.kind == "none"
-    assert not lifecycle.is_mine(lc, {"product_manager"})
-    assert lc.what_next[0].owner == "jade"
+    assert lc.automation is None
+    assert lc.next_action.action == "rerun_solutioning" and lc.next_action.owner == "product_manager"
+
+
+def _setup_waiting(facts):
+    setup = ResultIssue(title="No approved test version is set up in JADE for this customer", owner="setup",
+                        blocks=True, action="Set it up in Administration")
+    change = _change(architect_decision=_decision(AgentResult(issues=[setup])), **_proposed())
+    base = issues.apply(change, lifecycle._solution_onwards(change, "c1", "S-1"), "c1")
+    return change, base, {**ON, "setup_changed_at": _iso(), "setup_changed": "governance scope saved"}
 
 
 def test_the_same_input_is_never_reassessed_twice_and_runs_are_capped(facts, monkeypatch, automation_on):
     _no_baseline(monkeypatch)
-    change = _change(architect_decision=_decision(AgentResult(issues=[FINANCE])), **_proposed())
-    _answered(facts, change)
-    base = issues.apply(change, lifecycle._solution_onwards(change, "c1", "S-1"), "c1")
-    plan = automation.plan_for(change, base, "c1", state={}, settings=dict(ON))
+    change, base, later = _setup_waiting(facts)
+    plan = automation.plan_for(change, base, "c1", state={}, settings=later)
+    assert plan.state == "scheduled"
     # Already run for exactly this input: nothing is planned again.
     done = {"runs": [{"kind": "solutioning", "at": _iso(), "signature": plan.signature}]}
-    assert automation.plan_for(change, base, "c1", state=done, settings=dict(ON)) is None
+    assert automation.plan_for(change, base, "c1", state=done, settings=later) is None
     # Three automatic runs today: a person takes over, with the reason shown.
     busy = {"runs": [{"kind": "solutioning", "at": _iso(i), "signature": f"x{i}"} for i in range(3)]}
-    capped = automation.plan_for(change, base, "c1", state=busy, settings=dict(ON))
+    capped = automation.plan_for(change, base, "c1", state=busy, settings=later)
     assert capped.state == "capped" and "by hand" in capped.label
-    monkeypatch.setattr(automation, "settings_for", lambda c: dict(ON))
+    monkeypatch.setattr(automation, "settings_for", lambda c: later)
     monkeypatch.setattr(automation, "state_of", lambda c, s: busy)
     lc = lifecycle.derive(change)
-    assert lc.next_action.action == "rerun_solutioning" and lc.next_action.owner == "product_manager"
-    assert capped.label in lc.open_items
+    assert lc.next_action.owner != "jade" and capped.label in lc.open_items
     # Switched off for this customer: nothing is planned at all.
-    assert automation.plan_for(change, base, "c1", state={}, settings={**ON, "enabled": False}) is None
+    assert automation.plan_for(change, base, "c1", state={}, settings={**later, "enabled": False}) is None
 
 
-def test_answers_still_blocking_or_settling_wait(facts, monkeypatch, automation_on):
+def test_a_setup_change_waits_to_settle(facts, monkeypatch, automation_on):
     _no_baseline(monkeypatch)
-    other = ResultIssue(title="Which branch plants?", owner="business", who="Sales", blocks=True)
-    change = _change(architect_decision=_decision(AgentResult(issues=[FINANCE, other])), **_proposed())
-    first = lifecycle.derive(change).issues
-    fin = next(i for i in first if i.title == FINANCE.title)
-    facts["resolutions"] = {fin.id: {"issue_id": fin.id, "issue_title": fin.title, "status": "answered",
-                                     "answer": "5110", "by": "Ellen", "at": _iso()}}
-    base = issues.apply(change, lifecycle._solution_onwards(change, "c1", "S-1"), "c1")
-    assert automation.plan_for(change, base, "c1", state={}, settings=dict(ON)) is None   # one still blocks
-    facts["resolutions"] = {}
-    _answered(facts, _change(architect_decision=_decision(AgentResult(issues=[FINANCE])), **_proposed()))
     monkeypatch.setenv("JDE_AUTOMATION_SETTLE_SECONDS", "600")
-    change = _change(architect_decision=_decision(AgentResult(issues=[FINANCE])), **_proposed())
-    base = issues.apply(change, lifecycle._solution_onwards(change, "c1", "S-1"), "c1")
-    plan = automation.plan_for(change, base, "c1", state={}, settings=dict(ON))
-    assert plan.state == "scheduled" and plan.due_at > _iso()   # waits for more answers first
+    change, base, later = _setup_waiting(facts)
+    plan = automation.plan_for(change, base, "c1", state={}, settings=later)
+    assert plan.state == "scheduled" and plan.due_at > _iso()
 
 
 def test_a_setup_change_reassesses_a_design_waiting_on_setup(facts, monkeypatch, automation_on):
@@ -226,7 +221,7 @@ def test_a_switched_off_agent_is_logged_once_and_not_retried(client, automation_
 # ---------------------------------------------------------------------
 # Reassessment end to end
 # ---------------------------------------------------------------------
-def test_answers_reassess_the_solution_once_without_a_click(client, monkeypatch):
+def test_answers_leave_the_rerun_to_the_application_manager(client, monkeypatch):
     from jde_mcp_server import approval
 
     from ._discovery import ready_company
@@ -240,24 +235,16 @@ def test_answers_reassess_the_solution_once_without_a_click(client, monkeypatch)
 
     monkeypatch.setenv("JDE_ROUTINE_AUTOMATION", "true")
     monkeypatch.setenv("JDE_AUTOMATION_SETTLE_SECONDS", "0")
+    started: list = []
+    monkeypatch.setattr(automation, "_launch", lambda fn, kw, **_: started.append(kw))
     lc = client.get("/changes/S-AU-1", headers=headers("vdb")).json()["lifecycle"]
     issue = next(i for i in lc["issues"] if i["ownerLabel"] == "Finance")
     r = client.post(f"/changes/S-AU-1/issues/{issue['id']}/resolution", headers=headers("vdb"),
                     json={"status": "answered", "answer": "Object account 5110"})
     lc = r.json()["lifecycle"]
-    assert lc["nextAction"]["owner"] == "jade" and lc["automation"]["reason"] == "answers recorded"
-
-    prompts: list[str] = []
-
-    def run_now(fn, kw, **_):
-        prompts.append(_scripted_architect(monkeypatch, kw["story_id"], _summary(issue_blocks=False))["prompt"])
-    monkeypatch.setattr(automation, "_launch", run_now)
-    assert automation.sweep("vdb", recheck=False)["started"] == ["S-AU-1"]
-    assert "Object account 5110" in prompts[0]
-    # The new design is newer than the answer: nothing more to do.
-    assert automation.sweep("vdb", recheck=False)["started"] == []
-    lc = client.get("/changes/S-AU-1", headers=headers("vdb")).json()["lifecycle"]
-    assert lc["automation"] is None and lc["nextAction"]["owner"] != "jade"
+    assert lc["automation"] is None
+    assert lc["nextAction"]["action"] == "rerun_solutioning" and lc["nextAction"]["owner"] == "product_manager"
+    assert automation.sweep("vdb", recheck=False)["started"] == [] and started == []
 
 
 # ---------------------------------------------------------------------

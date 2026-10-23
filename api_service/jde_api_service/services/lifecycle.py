@@ -659,7 +659,7 @@ def _solution_onwards(change, company_id: str, story_id: str) -> Lifecycle:
         lc = _mk("solution_review", "blocked", NextAction(
             kind="decision", summary="JADE needs a business answer before it can propose a solution.",
             owner="domain_owner", action="clarify", tab="solution",
-            effect="With the answer, JADE re-runs solutioning."), route=route)
+            effect="Record the answer, then run the Architect again so the solution uses it."), route=route)
     elif route == "Resolve without Change":
         lc = _mk("solution_review", "waiting_decision", NextAction(
             kind="decision", summary="JADE found this can be resolved without changing JDE. Confirm it, or ask the "

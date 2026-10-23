@@ -488,7 +488,8 @@ def _adjust_next_action(change, lc: Lifecycle, open_: list[Issue], done: dict[st
             kind=kind, summary=summary, owner=first.owner, owner_label=first.owner_label or OWNER_LABELS.get(first.owner, ""),
             action=first.action_id, tab=first.tab,
             effect=("Authorising the implementation becomes available once the open points that block it are "
-                    "answered; JADE then reassesses the solution."))
+                    "answered and the Architect has run again with the answers (the button at the top of the "
+                    "solution)."))
         return
     # Everything that blocked is answered, but the design predates the answers.
     decided = change.architect_decision.decided_at if change.architect_decision else ""
