@@ -110,6 +110,7 @@ class ArchitectureReviewService:
         answer: str,
         kind: ConversationTurnKind,
         identity_id: Optional[str] = None,
+        proposed_question: Optional[str] = None,
     ) -> Optional[ArchitectureReviewRun]:
         """"Ask Jade about this solution" -- same append-only evidence
         convention as domain_review_service.append_conversation_turn.
@@ -128,10 +129,23 @@ class ArchitectureReviewService:
                 answer=answer,
                 kind=kind,
                 proposed_user_story=None,
+                proposed_question=proposed_question if kind == "propose_question" else None,
                 asked_at=_now(),
                 identity_id=identity_id,
             )
         )
+        run.updated_at = _now()
+        self._save(run)
+        return run
+
+    def mark_turn_applied(self, story_id: str, turn_id: str, *, by: str) -> Optional[ArchitectureReviewRun]:
+        run = self.get(story_id)
+        if run is None:
+            return None
+        turn = next((t for t in run.conversation if t.turn_id == turn_id), None)
+        if turn is None:
+            return None
+        turn.applied_by, turn.applied_at = by, _now()
         run.updated_at = _now()
         self._save(run)
         return run

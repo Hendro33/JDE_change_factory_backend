@@ -304,7 +304,10 @@ def outcome(change, lc: Lifecycle, tech: dict, hs: dict, accepted: Optional[dict
     headline = (result.business_summary if result and result.business_summary else
                 change.user_story.statement if change.user_story else change.title)
     key, url = _jira(change)
-    return OutcomeCard(headline=headline, what_changed=changed, verified=verified, dev_verified=dev,
+    crit_state = ("verified in DEV with the change as a whole" + (f" ({dev.by})" if dev.by else "")) if dev.done else "not verified yet"
+    criteria = [{"text": a.text, "state": crit_state, "verified": dev.done}
+                for a in (change.user_story.acceptance_criteria if change.user_story else [])]
+    return OutcomeCard(headline=headline, what_changed=changed, verified=verified, dev_verified=dev, criteria=criteria,
                        business_accepted=acc, released=rel, not_accepted=not_acc, what_to_do_now=todo,
                        jira_key=key, jira_url=url)
 

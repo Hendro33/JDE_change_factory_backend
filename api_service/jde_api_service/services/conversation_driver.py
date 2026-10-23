@@ -165,11 +165,13 @@ _SOLUTION_ALLOWED_TOOLS = [
 _SOLUTION_ANSWER_SCHEMA_INSTRUCTIONS = """
 Respond with ONLY a single fenced json code block (nothing before or after it) with EXACTLY this shape -- no extra top-level keys, no commentary outside the block:
 {
-  "answer": "<a direct, conversational answer to the question -- plain text>",
-  "kind": "explanation" | "recommend_reanalysis"
+  "answer": "<a direct, conversational answer to the question -- plain text; short by default, with a comparison when the question needs one>",
+  "kind": "explanation" | "recommend_reanalysis" | "propose_question",
+  "question_for_business": "<only for propose_question: the one question to put to the Domain Owner, in business words, answerable in a sentence>"
 }
 Ratings are proposals for human confirmation only. Business impact: Low = local and limited, Medium = several related activities, High = cross-domain or business-critical. Business benefit: Small = modest local improvement, Medium = meaningful team/process improvement, High = substantial cross-domain or strategic value. Use null when evidence is insufficient. Never assume low impact or high benefit from missing evidence.
 kind is "explanation" whenever you are only answering or clarifying why the current recommended route/implementation spec is what it is -- do not call propose_change or resolve_without_change, you have no tools for that here; just explain the existing decision.
+kind is "propose_question" when the conversation shows that only the business can settle something the design depends on: propose that one question (a person decides whether to send it; nothing is sent by you).
 kind is "recommend_reanalysis" ONLY when what was said is genuinely new information that could change which route is right, or a correction to something the existing analysis got wrong -- you are NOT re-running the analysis yourself here, only flagging that a fresh Architecture Review run looks warranted. Say in the answer, in plain language, what specifically should be re-examined.
 """.strip()
 
@@ -254,7 +256,10 @@ async def ask_about_solution(
 
             summary = _extract_json(final_text)
             answer = summary.get("answer") or ""
-            kind = _coerce_enum(summary.get("kind"), {"explanation", "recommend_reanalysis"}, "explanation")
+            kind = _coerce_enum(summary.get("kind"), {"explanation", "recommend_reanalysis", "propose_question"}, "explanation")
+            proposed_question = str(summary.get("question_for_business") or "").strip() or None
+            if kind == "propose_question" and not proposed_question:
+                kind = "explanation"
     except AiNotConfigured as exc:
         raise ConversationError(str(exc)) from exc
     except Exception as exc:
@@ -262,4 +267,4 @@ async def ask_about_solution(
             agent_run_service.fail(run.run_id, str(exc))
         raise
     agent_run_service.complete(run.run_id)
-    return {"answer": answer, "kind": kind}
+    return {"answer": answer, "kind": kind, "proposed_question": proposed_question if kind == "propose_question" else None}

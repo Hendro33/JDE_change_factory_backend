@@ -99,7 +99,7 @@ class StoryVersion(ApiModel):
 #                              endpoint (POST .../architecture-review),
 #                              never applies anything itself.
 # ---------------------------------------------------------------------
-ConversationTurnKind = Literal["explanation", "proposed_amendment", "recommend_reanalysis"]
+ConversationTurnKind = Literal["explanation", "proposed_amendment", "recommend_reanalysis", "propose_question"]
 
 
 class ConversationTurn(ApiModel):
@@ -112,6 +112,11 @@ class ConversationTurn(ApiModel):
     # UserStory, never a partial diff, so the review surface is always
     # "here is the whole requirement as Jade would revise it."
     proposed_user_story: Optional[UserStory] = None
+    # Solution conversation (register C11): a previewed proposal to put one
+    # question to the business; applied only by a person, and recorded.
+    proposed_question: Optional[str] = None
+    applied_by: Optional[str] = None
+    applied_at: Optional[str] = None
     asked_at: str
     identity_id: Optional[str] = None
 

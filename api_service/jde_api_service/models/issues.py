@@ -116,7 +116,8 @@ class Issue(ApiModel):
     proposed_answer: str = ""
     # Where it came from: the Architect's result, Jade's own checks of the
     # records, or the delivery gate.
-    source: Literal["architect", "design_evidence", "design_quality", "delivery_gate", "lifecycle", "story"] = "architect"
+    source: Literal["architect", "design_evidence", "design_quality", "delivery_gate", "lifecycle", "story",
+                    "conversation"] = "architect"
     tab: Literal["overview", "story", "solution", "delivery", "evidence", "technical", "outcome"] = "solution"
     # A decision's alternatives, as the agent stated them (register E4).
     options: list[str] = []

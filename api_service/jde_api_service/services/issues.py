@@ -268,6 +268,34 @@ def _from_gap(g: dict) -> Optional[Issue]:
     return _reclassify(issue, text)
 
 
+CONVERSATION_KIND = "conversation_questions"
+
+
+def add_conversation_question(company_id: str, story_id: str, *, question: str, by: str, turn_id: str) -> None:
+    """A question the solution conversation proposed and a person sent (register C11)."""
+    from jde_mcp_server import docstore
+
+    doc_id = _doc_id(company_id, story_id)
+    with docstore.transaction():
+        doc = docstore.get(CONVERSATION_KIND, doc_id) or {"company_id": company_id, "story_id": story_id, "questions": []}
+        doc["questions"].append({"question": question.strip(), "by": by, "turn_id": turn_id, "at": _now()})
+        docstore.put(CONVERSATION_KIND, doc_id, doc, company_id=company_id)
+
+
+def conversation_issues(change) -> list[Issue]:
+    try:
+        from jde_mcp_server import docstore
+
+        doc = docstore.get(CONVERSATION_KIND, _doc_id(change.customer_id, change.id)) or {}
+    except Exception:  # noqa: BLE001
+        return []
+    return [Issue(id=_id("conversation", q["question"]), kind="business", title=_short(q["question"], 300),
+                  consequence=f"Sent from the solution conversation by {q['by']}.", owner="domain_owner",
+                  owner_label="Domain Owner", action="Answer it here; JADE passes the answer to the Architect.",
+                  action_id="answer_issue", blocks=False, source="conversation", tab="story")
+            for q in doc.get("questions", [])]
+
+
 def story_issues(change) -> list[Issue]:
     """The user story's open questions as owned questions for its Domain Owner
     (review 23 Oct): answered in place, the answer recorded and passed to the
@@ -532,6 +560,7 @@ def apply(change, lc: Lifecycle, company_id: Optional[str] = None) -> Lifecycle:
     issues += delivery_gate_issues(change, lc)
     if lc.phase != "understand":
         issues += story_issues(change)
+        issues += conversation_issues(change)
     issues = _dedupe(issues)
     if not change.business_domain_id:
         # No domain yet, so no Domain Owner may answer (register C3): the

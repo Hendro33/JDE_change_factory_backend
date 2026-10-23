@@ -143,6 +143,19 @@ _OUTCOME_TITLES = {"delivered": "Delivered", "resolved_without_change": "Resolve
                    "rejected": "Closed: not going ahead"}
 
 
+def _momentum(before: dict, change) -> str:
+    """A quiet confirmation that work moved on by itself, with how long it took
+    (register L16): "Solution ready, 4 minutes after your answer"."""
+    try:
+        started = datetime.fromisoformat(str(before.get("at")).replace("Z", "+00:00"))
+        minutes = max(1, round((_now() - started).total_seconds() / 60))
+    except (TypeError, ValueError):
+        return "JADE finished its part."
+    what = "Solution ready" if getattr(change, "architect_decision", None) else "JADE finished its part"
+    took = f"{minutes} minute{'s' if minutes != 1 else ''}" if minutes < 120 else f"{round(minutes / 60)} hours"
+    return f"{what}, {took} after it started."
+
+
 def observe(company_id: str, change, lc) -> bool:
     """Compare this story's lifecycle with the one seen last time and record
     at most one notification for the change. The first sighting of a story
@@ -178,7 +191,7 @@ def observe(company_id: str, change, lc) -> bool:
                    story_id=change.id, tab=lc.next_action.tab, domain_id=domain, key=key)
     if owner in HUMAN_OWNERS and now["kind"] in ("decision", "task") and (
             before.get("owner") != owner or before.get("action") != now["action"]):
-        lead = "JADE finished its part. " if finished else ""
+        lead = f"{_momentum(before, change)} " if finished else ""
         return add(company_id, kind="decision" if now["kind"] == "decision" else "task", audience=[owner],
                    title=title, text=lead + now["summary"], story_id=change.id, tab=lc.next_action.tab,
                    domain_id=domain, key=key)

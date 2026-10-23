@@ -253,3 +253,33 @@ def test_application_manager_can_ask_about_both_the_requirement_and_the_solution
     # The two conversations are independent sidecars -- asking about the
     # solution never touched the requirement's own conversation, or vice versa.
     assert len(requirement.json()["conversation"]) == 1
+
+
+async def _fake_solution_question(*, prompt, options):
+    yield _result("```json\n" + json.dumps({"answer": "Only Finance can say which account freight revenue belongs to.",
+                                            "kind": "propose_question",
+                                            "question_for_business": "Which revenue account should freight post to?"})
+                  + "\n```")
+
+
+def test_a_solution_conversation_proposes_a_question_a_person_sends(client, monkeypatch):
+    """Register C11: the conversation never changes the work by itself; it
+    proposes one question, the AM sends it, and it becomes an owned question."""
+    change_id = _to_application_manager_approved_with_analysis(client, monkeypatch)
+    monkeypatch.setattr(sdk, "query", _fake_solution_question)
+    r = client.post(f"/changes/{change_id}/architecture-review/ask", headers=headers(customer="bwm"),
+                    json={"question": "Why is the account open?"})
+    assert r.status_code == 200, r.text
+    turn = r.json()["conversation"][-1]
+    assert turn["kind"] == "propose_question" and turn["proposedQuestion"].startswith("Which revenue account")
+    before = client.get(f"/changes/{change_id}", headers=headers(customer="bwm")).json()["lifecycle"]["issues"]
+    assert not any(i["source"] == "conversation" for i in before)   # nothing changed by talking
+    r = client.post(f"/changes/{change_id}/architecture-review/conversation/{turn['turnId']}/apply",
+                    headers=headers(customer="bwm"))
+    assert r.status_code == 200, r.text
+    assert r.json()["conversation"][-1]["appliedBy"]
+    issues = client.get(f"/changes/{change_id}", headers=headers(customer="bwm")).json()["lifecycle"]["issues"]
+    q = [i for i in issues if i["source"] == "conversation"]
+    assert q and q[0]["owner"] == "domain_owner" and q[0]["title"].startswith("Which revenue account")
+    assert client.post(f"/changes/{change_id}/architecture-review/conversation/{turn['turnId']}/apply",
+                       headers=headers(customer="bwm")).status_code == 409

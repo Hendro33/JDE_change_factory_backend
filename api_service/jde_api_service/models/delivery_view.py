@@ -61,5 +61,8 @@ class OutcomeCard(ApiModel):
     # A recorded "not accepted", with the reason, until it is resolved.
     not_accepted: Optional[OutcomeStep] = None
     what_to_do_now: str = ""
+    # Each acceptance criterion with how far it is verified (register C12). The
+    # DEV test covers the change as a whole; that is said, not claimed per criterion.
+    criteria: list[dict] = []
     jira_key: str = ""
     jira_url: str = ""

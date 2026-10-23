@@ -126,7 +126,32 @@ async def ask_about_solution_endpoint(
         answer=result["answer"],
         kind=result["kind"],
         identity_id=ctx.identity.id,
+        proposed_question=result.get("proposed_question"),
     )
+    assert updated is not None
+    return updated
+
+
+@router.post("/changes/{change_id}/architecture-review/conversation/{turn_id}/apply", response_model=ArchitectureReviewRun)
+def apply_solution_proposal(change_id: str, turn_id: str, ctx: AuthContext = Depends(require_write_access)) -> ArchitectureReviewRun:
+    """Register C11: a person applies what the conversation proposed. A
+    proposed question becomes an owned question for the business on the story,
+    recorded with who applied it; nothing else changes."""
+    from ..services import issues as issues_service
+
+    _require_queued_change(change_id, ctx.customer_id)
+    if not (ctx.roles & {"product_manager", "admin"}):
+        raise HTTPException(status_code=403, detail="the Application Manager applies a proposal from the conversation")
+    run_service = get_architecture_review_service()
+    run = run_service.get(change_id)
+    turn = next((t for t in (run.conversation if run else []) if t.turn_id == turn_id), None)
+    if turn is None or turn.kind != "propose_question" or not turn.proposed_question:
+        raise HTTPException(status_code=404, detail="no proposal to apply on that turn")
+    if turn.applied_at:
+        raise HTTPException(status_code=409, detail="this proposal was already applied")
+    issues_service.add_conversation_question(ctx.customer_id, change_id, question=turn.proposed_question,
+                                             by=ctx.identity.display_name, turn_id=turn_id)
+    updated = run_service.mark_turn_applied(change_id, turn_id, by=ctx.identity.display_name)
     assert updated is not None
     return updated
 
