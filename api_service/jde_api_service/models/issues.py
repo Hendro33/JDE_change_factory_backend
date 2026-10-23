@@ -105,7 +105,7 @@ class Issue(ApiModel):
     proposed_answer: str = ""
     # Where it came from: the Architect's result, Jade's own checks of the
     # records, or the delivery gate.
-    source: Literal["architect", "design_evidence", "delivery_gate", "lifecycle"] = "architect"
+    source: Literal["architect", "design_evidence", "delivery_gate", "lifecycle", "story"] = "architect"
     tab: Literal["overview", "story", "solution", "delivery", "evidence", "technical", "outcome"] = "solution"
     resolution: Optional[IssueResolution] = None
 

@@ -67,6 +67,48 @@ _FINANCE_RE = re.compile(r"\b(g/?l\b|general ledger|aai|revenue account|object a
 _DECISION_RE = re.compile(r"\b(which (code|value|option|version|line type|document type)|choose|choice|naming|"
                           r"design choice|new (line type|code|version|document type)|preferred approach|"
                           r"alternative)\b", re.I)
+# Review 23 Oct: only JADE's OWN setup is an Administrator item. A JD Edwards fact
+# the design needs (a table row, a UDC value, an AAI mapping, a processing
+# option) is part of the solution: JADE confirms it in DEV or sets it up as a
+# configuration item. A build the agents cannot automate goes to the people who
+# implement it (the hand-off), it does not block the story.
+_JADE_SETUP_RE = re.compile(
+    r"(no (jd edwards|jde) connection|connection (is )?not (configured|set up)|not connected|credential|ai key|"
+    r"ai connection|start-?up pack|pack assignment|approved reads?|approved test|test versions?|not (enabled|approved) for discovery|"
+    r"discovery (is )?not (enabled|configured)|capability catalogue|engagement scope|jira connection|sample data)", re.I)
+_ISOLATION_RE = re.compile(r"(isolation|dev environment id|path code)", re.I)
+_JDE_FACT_RE = re.compile(
+    r"(\bF\d{4,5}\b|table_browse|\budc\b|\baai\b|processing option|could not be (identified|read|confirmed|"
+    r"determined|found)|returned null|not found|mapping|set-?up|configur|line type|document type|version)", re.I)
+_BUILD_RE = re.compile(
+    r"(cannot (be )?(built|build|automat)|can't (be )?(built|build|automat)|platform limitation|automation cannot|"
+    r"\bdeveloper\b|\bomw\b|manual(ly)? (build|implement)|change control|human implementation)", re.I)
+
+
+def _reclassify(issue: Issue, text: str) -> Issue:
+    """Who really acts on an open point (review 23 Oct)."""
+    if issue.kind not in ("setup", "decision", "business"):
+        return issue
+    if _BUILD_RE.search(text):
+        return issue.model_copy(update={
+            "kind": "delivery", "owner": "product_manager", "owner_label": "Application Manager", "blocks": False,
+            "action": "Delivered by people: it is part of the hand-off for manual implementation.",
+            "action_id": None, "tab": "delivery"})
+    if issue.kind != "setup":
+        return issue
+    if _ISOLATION_RE.search(text) and not _JADE_SETUP_RE.search(text):
+        return issue.model_copy(update={
+            "blocks": False, "title": "DEV isolation is not confirmed yet.",
+            "consequence": "Needed before JADE applies anything in DEV; the design and its approval can go ahead.",
+            "action": "Confirm once, in Administration › Governance, that JD Edwards DEV cannot write to production data."})
+    if _JDE_FACT_RE.search(text) and not _JADE_SETUP_RE.search(text):
+        return issue.model_copy(update={
+            "kind": "jade", "owner": "jade", "owner_label": "JADE", "blocks": False, "action_id": None,
+            "action": "Part of the solution: JADE confirms it in DEV or sets it up as a configuration item.",
+            "tab": "solution"})
+    return issue
+
+
 _JADE_RE = re.compile(r"(no action for people|unsupported citation|jade's own read|could not be completed|"
                       r"reads it again)", re.I)
 
@@ -169,11 +211,12 @@ def _from_result_issue(ri: ResultIssue) -> Issue:
     role, kind, label = _OWNER_WORDS.get(ri.owner, _OWNER_WORDS["business"])
     if kind == "business" and _FINANCE_RE.search(f"{ri.title} {ri.who}") and not ri.who:
         label = "Finance"
-    return Issue(id=_id(kind, ri.title), kind=kind, title=_short(ri.title, 300), consequence=ri.consequence,
-                 owner=role, owner_label=ri.who.strip() or label, action=ri.action,
-                 action_id=_ACTION_FOR_KIND.get(kind), blocks=ri.blocks and kind != "jade",
-                 proposed_answer=ri.proposed_answer, source="architect",
-                 tab="story" if kind == "business" else "solution")
+    issue = Issue(id=_id(kind, ri.title), kind=kind, title=_short(ri.title, 300), consequence=ri.consequence,
+                  owner=role, owner_label=ri.who.strip() or label, action=ri.action,
+                  action_id=_ACTION_FOR_KIND.get(kind), blocks=ri.blocks and kind != "jade",
+                  proposed_answer=ri.proposed_answer, source="architect",
+                  tab="story" if kind == "business" else "solution")
+    return _reclassify(issue, f"{ri.title} {ri.consequence} {ri.action} {ri.who}")
 
 
 def _from_gap(g: dict) -> Optional[Issue]:
@@ -201,10 +244,25 @@ def _from_gap(g: dict) -> Optional[Issue]:
               "setup": "Fix it in Administration; every story it blocks continues afterwards.",
               "decision": "Choose, then run the Architect again.",
               "business": "Answer the question in JADE."}[kind]
-    return Issue(id=_id(kind, title), kind=kind, title=_short(title, 300), consequence=_short(consequence, 300),
-                 owner=role, owner_label=label, action=action, action_id=_ACTION_FOR_KIND.get(kind),
-                 blocks=bool(step) and kind != "jade", source="design_evidence",
-                 tab="story" if kind == "business" else "solution")
+    issue = Issue(id=_id(kind, title), kind=kind, title=_short(title, 300), consequence=_short(consequence, 300),
+                  owner=role, owner_label=label, action=action, action_id=_ACTION_FOR_KIND.get(kind),
+                  blocks=bool(step) and kind != "jade", source="design_evidence",
+                  tab="story" if kind == "business" else "solution")
+    return _reclassify(issue, text)
+
+
+def story_issues(change) -> list[Issue]:
+    """The user story's open questions as owned questions for its Domain Owner
+    (review 23 Oct): answered in place, the answer recorded and passed to the
+    Architect -- not loose text nobody owns. Never blocking: the Domain Owner
+    may approve the story with a question open; the Architect then sees it."""
+    us = change.user_story
+    if us is None:
+        return []
+    return [Issue(id=_id("story", q), kind="business", title=_short(q, 300), owner="domain_owner",
+                  owner_label="Domain Owner", action="Answer it here; JADE passes the answer to the Architect.",
+                  action_id="answer_issue", blocks=False, source="story", tab="story")
+            for q in us.open_questions if q and q.strip()]
 
 
 def design_issues(change, baseline: Optional[dict]) -> list[Issue]:
@@ -229,9 +287,9 @@ def design_issues(change, baseline: Optional[dict]) -> list[Issue]:
         # Setup gaps the Architect listed as dependencies (as its prompt asks).
         for dep in d.dependencies_and_conflicts or []:
             if _ADMIN_RE.search(dep):
-                out.append(Issue(id=_id("setup", dep), kind="setup", title=_short(dep, 300), owner="admin",
-                                 owner_label="Administrator", action="Fix it in Administration.",
-                                 action_id="admin_setup", source="design_evidence"))
+                out.append(_reclassify(Issue(id=_id("setup", dep), kind="setup", title=_short(dep, 300), owner="admin",
+                                             owner_label="Administrator", action="Fix it in Administration.",
+                                             action_id="admin_setup", source="design_evidence"), dep))
     return _dedupe(out)
 
 
@@ -258,7 +316,9 @@ def _gate_issue(message: str) -> Issue:
                                             "Application Manager", "Approve the exact change again in Architecture "
                                             "Review; JADE re-checks it against DEV.", "approve_exact_change")
     elif "isolation" in low or "dev environment id" in low or "path code" in low or "not dev" in low:
-        title, owner, label, action, aid = ("DEV isolation is not confirmed for this customer.", "admin",
+        title, owner, label, action, aid = ("DEV isolation is not confirmed for this customer: JADE does not apply "
+                                            "anything in DEV until a person confirms DEV cannot write to production "
+                                            "data.", "admin",
                                             "Administrator", "Confirm the DEV environment and its isolation in "
                                             "Administration › Governance.", "admin_setup")
     elif "authority" in low or "approval policy" in low or "role" in low:
@@ -388,6 +448,8 @@ def apply(change, lc: Lifecycle, company_id: Optional[str] = None) -> Lifecycle:
                     i.blocks = False
             issues += found
     issues += delivery_gate_issues(change, lc)
+    if lc.phase != "understand":
+        issues += story_issues(change)
     issues = _dedupe(issues)
     done = resolutions(company_id, change.id) if issues else {}
     for i in issues:

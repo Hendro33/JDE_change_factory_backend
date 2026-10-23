@@ -80,7 +80,7 @@ def test_pdf_docx_and_txt_are_read_with_citable_sections(client):
     ("macro.docx", _docs.docx([("p", "x")], macro=True), "macros"),
     ("fake.txt", b"\x00\x01\x02binary", "not a valid TXT"),
     ("../../etc/passwd.txt", b"ok", None),  # path components are stripped, not followed
-])
+], ids=["pdf", "exe", "docx-macro", "txt-binary", "path"])  # stable ids: the docx embeds its build time
 def test_content_type_and_names_are_validated(client, name, data, reason):
     r = _upload(client, name, data)
     if reason is None:

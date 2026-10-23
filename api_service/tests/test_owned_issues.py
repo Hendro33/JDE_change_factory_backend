@@ -159,7 +159,29 @@ def test_the_setup_list_has_one_task_per_gap_with_every_affected_story(facts):
     for c in (a, b):
         c.lifecycle = lifecycle.derive(c)
     tasks = issues.setup_list([a, b])
-    assert len(tasks) == 1 and [s["id"] for s in tasks[0]["stories"]] == ["S-A", "S-B"] and tasks[0]["blocks"]
+    # Review 23 Oct: DEV isolation is needed before JADE applies anything, not during design.
+    assert len(tasks) == 1 and [s["id"] for s in tasks[0]["stories"]] == ["S-A", "S-B"] and not tasks[0]["blocks"]
+    # JADE's own setup still blocks: no JD Edwards connection means no design can be checked.
+    gap = ResultIssue(title="No JD Edwards connection is configured for this customer", owner="administrator", blocks=True)
+    c = _change(id="S-C", architect_decision=_decision(AgentResult(issues=[gap])), **_proposed())
+    c.lifecycle = lifecycle.derive(c)
+    assert issues.setup_list([c])[0]["blocks"]
+
+
+def test_jde_facts_are_part_of_the_solution_and_build_limits_go_to_people(facts):
+    """Review 23 Oct: an AAI mapping JADE could not read is solution work, not
+    an Administrator setup item; a build the agents cannot automate is manual
+    implementation, not a blocker."""
+    aai = ResultIssue(title="The AAI item-number column alias in F0012 could not be identified via table_browse",
+                      owner="administrator", blocks=True, action="Fix it in Administration")
+    build = ResultIssue(title="Technical Agent automation cannot build this (platform limitation)", owner="administrator",
+                        blocks=True, action="Assign a developer to build and promote the ER changes through OMW")
+    lc = lifecycle.derive(_change(architect_decision=_decision(AgentResult(issues=[aai, build])), **_proposed()))
+    by = {i.title[:20]: i for i in lc.issues}
+    a, b = by["The AAI item-number "], by["Technical Agent auto"]
+    assert a.kind == "jade" and not a.blocks and "part of the solution" in a.action.lower()
+    assert b.kind == "delivery" and not b.blocks and b.owner == "product_manager"
+    assert lc.health != "blocked"
 
 
 def test_results_are_read_leniently_and_never_cut():
