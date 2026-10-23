@@ -48,6 +48,9 @@ class ResultChange(ApiModel):
     current: str = ""
     proposed: str = ""
     status: ValueStatus = "proposed"
+    # Evidence status per value (audit F03): "verified" speaks for the current
+    # value only; the target can still be unknown, which is shown separately.
+    target_known: bool = True
 
 
 class ResultIssue(ApiModel):
@@ -69,6 +72,12 @@ class AgentResult(ApiModel):
     changes: list[ResultChange] = []
     issues: list[ResultIssue] = []
     uncertainty: list[str] = []
+    # Story questions the Architect's discovery answered (question, answer,
+    # evidence): they are retired with that answer instead of staying open.
+    answered_questions: list[dict] = []
+    # The business projection (audit F08): what changes in the business's work
+    # and the outcome, without JD Edwards names, codes or delivery mechanics.
+    business_summary: str = ""
     # True when Jade derived this from an older result that had no result
     # block (the agent did not write it in these parts).
     derived: bool = False
@@ -105,7 +114,7 @@ class Issue(ApiModel):
     proposed_answer: str = ""
     # Where it came from: the Architect's result, Jade's own checks of the
     # records, or the delivery gate.
-    source: Literal["architect", "design_evidence", "delivery_gate", "lifecycle", "story"] = "architect"
+    source: Literal["architect", "design_evidence", "design_quality", "delivery_gate", "lifecycle", "story"] = "architect"
     tab: Literal["overview", "story", "solution", "delivery", "evidence", "technical", "outcome"] = "solution"
     resolution: Optional[IssueResolution] = None
 

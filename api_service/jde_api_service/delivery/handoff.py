@@ -37,6 +37,12 @@ from typing import Any, Optional
 
 KIND = "human_handoffs"
 HUMAN_ROUTE = "Human Implementation"
+# No JD Edwards change, but the requirement may still need work by people (a
+# guide written and published, training, a process step, a check). Audit
+# 23 Oct (F00): that work is handed over and recorded like any other, and the
+# business accepts the outcome, before the story closes.
+NO_CHANGE_ROUTE = "Resolve without Change"
+PEOPLE_ROUTES = (HUMAN_ROUTE, NO_CHANGE_ROUTE)
 TECHNICAL_ROUTES = {"Technical Agent", "Mixed"}
 RECORDER_ROLES = ("product_manager", "admin", "cnc_operator")
 
@@ -46,6 +52,12 @@ _MILESTONE_RE = re.compile(r"\b(cnc|omw|check[- ]?in|build|activat|deploy|promot
 # On every route, promotion beyond DEV is the release hand-over after the
 # as-built record (done by CNC outside Jade), not work recorded before it.
 _RELEASE_RE = re.compile(r"\b(promot\w*|production|after the as-built)", re.I)
+
+
+# Steps of a no-change design that are not work for anyone ("no change needed",
+# "nothing to configure") -- not hand-off items.
+_NO_WORK_RE = re.compile(r"^\s*(no (jd edwards |jde )?(change|configuration|development)|nothing (to|is) "
+                         r"(change|configure|build))", re.I)
 
 
 class HandoffRefused(Exception):
@@ -108,6 +120,8 @@ def items_for(change, design_revision: Optional[int] = None) -> list[dict]:
         texts = [s for s in (spec.sequence if spec else []) if s.strip()]
         if not texts:
             texts = ["Implement the solution as specified"]
+    elif route == NO_CHANGE_ROUTE:
+        texts = [s for s in (spec.sequence if spec else []) if s.strip() and not _NO_WORK_RE.search(s)]
     for h in (spec.human_actions_required if spec else []):
         h = h.strip()
         if not h or h in texts:
@@ -115,10 +129,23 @@ def items_for(change, design_revision: Optional[int] = None) -> list[dict]:
         if _RELEASE_RE.search(h) or (route in TECHNICAL_ROUTES and _MILESTONE_RE.search(h)):
             continue
         texts.append(h)
+    from ..services.design_quality import is_decision_step
+
+    try:
+        recorded = {r["item_id"] for r in _load(change.customer_id, change.id).get("completions", [])}
+    except Exception:  # noqa: BLE001 -- no record yet
+        recorded = set()
     out = []
     for i, t in enumerate(texts, start=1):
         digest = hashlib.sha256(t.strip().lower().encode()).hexdigest()[:6]
-        out.append({"id": f"H{rev}-{i}-{digest}", "position": i, "text": t, "design_revision": rev})
+        item_id = f"H{rev}-{i}-{digest}"
+        # A decision that determines scope, or approving the design itself, is
+        # not implementation work (audit F06): it is settled before
+        # authorisation. Ids keep their original position, and anything already
+        # recorded stays visible with its evidence.
+        if is_decision_step(t) and item_id not in recorded:
+            continue
+        out.append({"id": item_id, "position": i, "text": t, "design_revision": rev})
     return out
 
 
@@ -128,6 +155,10 @@ def authorisation(change) -> Optional[dict]:
     if d is None:
         return None
     route = d.recommended_route
+    if route == NO_CHANGE_ROUTE:
+        c = no_change_confirmation(change)
+        return {"kind": "no_change_confirmation", "by": c["by"], "at": c["at"],
+                "design_revision": c.get("design_revision")} if c else None
     if route == HUMAN_ROUTE or route in TECHNICAL_ROUTES:
         try:
             from ..discovery import baseline
@@ -145,6 +176,41 @@ def authorisation(change) -> Optional[dict]:
     if ap is not None and ap.status == "approved":
         return {"kind": "exact_change", "by": ap.approved_by or "", "at": ap.approved_at or ""}
     return None
+
+
+def no_change_confirmation(change) -> Optional[dict]:
+    """The Application Manager's confirmation of the current no-change
+    finding, or None. A newer design asks again."""
+    rev = _design_revision(change)
+    rows = [r for r in _load(change.customer_id, change.id).get("no_change_confirmations", [])
+            if r.get("design_revision") == rev]
+    return rows[-1] if rows else None
+
+
+def confirm_no_change(change, *, actor_name: str, actor_user_id: str, roles: set[str], note: str) -> dict:
+    """Confirm the Architect's finding that no JD Edwards change is needed.
+    It authorises the remaining work by people, if any; it never closes the
+    story (the business accepts the outcome first)."""
+    if not roles & {"product_manager", "admin"}:
+        raise HandoffRefused("only the Application Manager confirms a resolution without change")
+    d = change.architect_decision
+    if d is None or d.recommended_route != NO_CHANGE_ROUTE:
+        raise HandoffRefused("the Architect has not concluded that no change is needed")
+    if no_change_confirmation(change) is not None:
+        raise HandoffRefused("this finding is already confirmed")
+    rev = _design_revision(change)
+    items = items_for(change, rev)
+    entry = {"design_revision": rev, "by": actor_name, "by_user_id": actor_user_id, "at": _now(),
+             "note": note.strip()[:1000], "work_items": [i["text"] for i in items]}
+    entry["evidence_entry_hash"] = _evidence(
+        change.id, actor_name, "no JD Edwards change needed: finding confirmed"
+        + (f"; {len(items)} item(s) of work by people remain" if items else "")
+        + (f" -- {entry['note']}" if entry["note"] else ""), "no_change_confirmed")
+    doc = _load(change.customer_id, change.id)
+    doc.setdefault("no_change_confirmations", []).append(entry)
+    doc.setdefault("history", []).append({"event": "no_change_confirmed", **entry})
+    _save(doc)
+    return entry
 
 
 def state(change) -> dict:
@@ -390,8 +456,10 @@ def verify(change, *, passed: bool, evidence_reference: str, note: str, actor_na
     """The person's verification of a Human Implementation result."""
     _require(roles)
     st = state(change)
-    if st["route"] != HUMAN_ROUTE:
+    if st["route"] not in PEOPLE_ROUTES:
         raise HandoffRefused("this route is verified through its own test, not here")
+    if not st["items"]:
+        raise HandoffRefused("there is no work by people to verify on this story")
     if not st["all_complete"]:
         raise HandoffRefused("record every hand-off item as completed first")
     if not note.strip() or len(evidence_reference.strip()) < 3:

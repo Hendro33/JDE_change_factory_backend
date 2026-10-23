@@ -100,7 +100,63 @@ def approve_design(company_id: str, story_id: str, design_revision: int, *, acto
     return row
 
 
+# A completed run is not a usable result (audit 23 Oct, F02): these reported
+# outcomes mean no package was prepared, and why.
+STOPPED_OUTCOMES = {
+    "blocked_missing_evidence": "The Technical Agent needs evidence it does not have",
+    "clarification_required": "The Technical Agent needs answers before it can prepare the package",
+    "blocked_unsupported": "The Technical Agent cannot prepare this change",
+    "inconclusive": "The Technical Agent could not reach a safe result",
+}
+
+
+def stopped_outcome(company_id: str, story_id: str) -> Optional[dict]:
+    """The latest Technical Agent run, when it completed WITHOUT a package
+    because it reported a blocking outcome -- and whether anything it could
+    use has changed since (a new source export, a newer design, answers).
+    None when there is no such run, or a package was prepared after it."""
+    runs = store.runs_for(company_id, story_id)
+    last = runs[0] if runs else None
+    if not last or last.get("status") != "completed":
+        return None
+    out = last.get("outcome") or {}
+    kind = out.get("kind")
+    if kind not in STOPPED_OUTCOMES:
+        return None
+    finished = last.get("finished_at") or last.get("started_at") or ""
+    packages = [p for p in store.packages_for(company_id, story_id) if (p.get("created_at") or "") > finished]
+    if packages:
+        return None
+    changed: list[str] = []
+    try:
+        newer = [a for a in artifact_store.list_for(company_id, all_domains=True) if (a.get("uploaded_at") or "") > finished]
+        if newer:
+            changed.append(f"{len(newer)} source document(s) added since")
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        a = assignment(company_id, story_id)
+        if a.get("design_revision") and last.get("design_revision") and a["design_revision"] != last["design_revision"]:
+            changed.append("a newer design")
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        from ..services import issues
+
+        if any((r.get("at") or "") > finished for r in issues.resolutions(company_id, story_id).values()):
+            changed.append("answers recorded since")
+    except Exception:  # noqa: BLE001
+        pass
+    return {"kind": kind, "label": STOPPED_OUTCOMES[kind], "explanation": out.get("explanation", ""),
+            "questions": out.get("questions") or [], "finished_at": finished, "run_id": last.get("run_id"),
+            "changed": changed}
+
+
 def start_run(company_id: str, story_id: str, *, purpose: str, initiated_by: str) -> dict:
+    stopped = stopped_outcome(company_id, story_id)
+    if stopped and not stopped["changed"] and stopped["kind"] != "inconclusive":
+        raise TechnicalRefused(f"{stopped['label']}: {stopped['explanation']} -- nothing it needs has changed "
+                               "since it stopped; provide it first (a source export, an answer or a new design)")
     a = assignment(company_id, story_id)
     approved = a["design_approval"]
     if not approved or approved.get("design_revision") != a["design_revision"]:
@@ -386,6 +442,9 @@ def work_view(company_id: str, story_id: str) -> dict[str, Any]:
                        "enforcement": cap.get("technical_enforcement")},
         "runs": store.runs_for(company_id, story_id), "packages": packages, "human_actions": human,
         "environment": env,
+        # The latest run stopped without a package (audit F02): shown as the
+        # blocker, and a restart is offered only once something it needs changed.
+        "stopped": stopped_outcome(company_id, story_id),
     }
 
 

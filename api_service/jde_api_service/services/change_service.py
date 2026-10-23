@@ -456,6 +456,7 @@ def _change_from_story(
         processing_error=run.error if run else None,
         business_domain_id=domain_review.business_domain_id if domain_review else None,
         domain_review_stage=domain_review.stage if domain_review else None,
+        backlog_hold=domain_review.hold.model_dump(mode="json") if domain_review and domain_review.hold else None,
         architecture_review_stage=architecture_run.stage if architecture_run else None,
         architecture_review_error=architecture_run.error if architecture_run else None,
         user_story=user_story,

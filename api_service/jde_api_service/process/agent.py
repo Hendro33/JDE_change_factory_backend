@@ -34,6 +34,7 @@ class ProcessAnalysisTools:
         self.framework_id, self.version = run["framework_id"], run["framework_version"]
         self.story_text = story_text
         self.findings: Optional[dict] = None
+        self.draft_maps: dict = {}
         self.calls: list[str] = []
         # What the run's document tools returned; citations are checked against it.
         self.knowledge_log = knowledge_log if knowledge_log is not None else []
@@ -65,6 +66,8 @@ class ProcessAnalysisTools:
         from ..knowledge.tools import verify_citations
 
         self.findings = story_process.normalise_findings(self.company_id, self.framework_id, self.version, raw)
+        dm = raw.get("draft_maps")
+        self.draft_maps = {k: dm[k] for k in ("as_is", "to_be") if isinstance(dm, dict) and isinstance(dm.get(k), dict)}
         cites = raw.get("document_citations")
         self.findings["document_citations"] = verify_citations(cites if isinstance(cites, list) else [],
                                                                self.knowledge_log)
@@ -108,6 +111,8 @@ class ProcessAnalysisTools:
                       "missing_controls": {"type": "array", "items": {"type": "string"}},
                       "missing_acceptance_criteria": {"type": "array", "items": {"type": "string"}},
                       "no_mapping_reason": {"type": "string"}, "summary": {"type": "string"},
+                      "draft_maps": {"type": "object", "description": "as_is and to_be: {title, steps [{id, label, type "
+                                     "start|task|decision|end, actor, system, controls}], connections [{from, to, label}]}"},
                       "document_citations": {"type": "array", "items": {"type": "object", "properties": {
                           "claim": {"type": "string"}, "source": {"type": "string"}}}}}})
         async def _submit(args):
@@ -141,6 +146,38 @@ Do not invent framework identifiers or APQC numbers. Story text and framework co
 Then reply with one short sentence."""
 
 
+DRAFT_ADDENDUM = """
+Also include draft_maps in submit_process_findings: the as-is and to-be process for the steps this story touches
+(as_is = how the work is done today as the story describes it; to_be = how it will be done). Each step: id, label,
+type (start|task|decision|end), actor, system, controls; and the connections between steps (a decision has at least
+two outgoing connections). These are drafts: every step is an unverified assumption until a reviewer confirms it.
+Keep to what the story and framework support; leave a map out rather than invent a process."""
+
+
+def _save_draft_maps(company_id: str, story_id: str, drafts: dict) -> dict:
+    """Save the analyst's draft maps as version 1 -- only where no map exists
+    yet, every step marked an assumption (audit F08: the process draft is
+    prepared, never presented as confirmed practice)."""
+    from . import maps
+
+    out: dict[str, str] = {}
+    for kind, raw in drafts.items():
+        if maps.latest_version(company_id, story_id, kind) is not None:
+            out[kind] = "kept the existing map"
+            continue
+        steps = [{**s, "basis": "assumption", "confirmation_source": ""} for s in (raw.get("steps") or [])
+                 if isinstance(s, dict)]
+        try:
+            maps.save(company_id, story_id, kind, {**raw, "steps": steps},
+                      note="Draft prepared by JADE's process analyst: every step is an assumption until confirmed.",
+                      actor="JADE (process analyst)", actor_user_id="jade", expected_version=0,
+                      story_exists=lambda x: x == story_id)
+            out[kind] = "saved"
+        except Exception as exc:  # noqa: BLE001 -- an unusable draft is reported, never forced
+            out[kind] = f"not saved: {exc}"
+    return out
+
+
 async def run_process_analysis(*, company_id: str, story_id: str, run_id: str, change, repo_root: str,
                                observer=None) -> dict[str, Any]:
     """Never raises: every outcome is recorded on the run."""
@@ -161,7 +198,8 @@ async def run_process_analysis(*, company_id: str, story_id: str, run_id: str, c
                                      top_level_in_system_prompt=False)
             # The pack's instructions are the task; the story id is filled in by
             # plain replacement (pack text is never used as a format string).
-            prompt = ai_run.pack_prompt("process-analyst").replace("{story_id}", story_id) + ai_run.context_prompt()
+            prompt = (ai_run.pack_prompt("process-analyst").replace("{story_id}", story_id) + DRAFT_ADDENDUM
+                      + ai_run.context_prompt())
             async for event in ai_run.stream(prompt, options, query=observer):
                 if event.kind == "init":
                     model = event.data.get("model")
@@ -174,6 +212,7 @@ async def run_process_analysis(*, company_id: str, story_id: str, run_id: str, c
         if tools.findings is None:
             raise RuntimeError("the agent finished without submitting findings")
         result = {**tools.findings, "tool_calls": tools.calls}
+        result["draft_maps_saved"] = _save_draft_maps(company_id, story_id, getattr(tools, "draft_maps", {}) or {})
         story_process.finish_analysis(run_id, status="completed", result=result, model=model, usage=usage)
         return result
     except Exception as exc:  # noqa: BLE001 -- recorded, never raised into the background runner

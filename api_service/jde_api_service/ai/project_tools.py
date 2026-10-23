@@ -27,6 +27,10 @@ class StoryMismatch(RuntimeError):
     pass
 
 
+class FidelityRefused(ValueError):
+    """propose_to_backlog refused: the story changed the source's meaning."""
+
+
 class ProjectTools:
     def __init__(self, *, company_id: str, story_id: Optional[str]) -> None:
         self.company_id, self.story_id = company_id, story_id
@@ -43,6 +47,25 @@ class ProjectTools:
     def propose_to_backlog(self, a: dict) -> dict:
         from jde_mcp_server.backlog import propose_to_backlog
 
+        from ..services import fidelity
+
+        # The deterministic floor under the Check Agent (audit F04): the story
+        # keeps the source's conditions and every criterion traces to it.
+        # Checked against the stored original request, not the agent's retelling.
+        story_id = self._bound(a.get("story_id"))
+        source = a.get("source", "")
+        try:
+            from ..services.registry import get_change_request_service
+
+            origin = get_change_request_service().get(story_id)
+            if origin is not None and origin.raw_content:
+                source = origin.raw_content
+        except Exception:  # noqa: BLE001 -- no stored request: the agent's verbatim copy is checked
+            pass
+        failures = fidelity.check(source, a.get("story") if isinstance(a.get("story"), dict) else {})
+        if failures:
+            raise FidelityRefused("Not proposed: the story does not keep the meaning of the source. Return it to the "
+                                  "Improve Agent with these failures: " + " | ".join(failures))
         return propose_to_backlog(self._bound(a.get("story_id")), a.get("user_story", ""), a.get("business_impact") or {},
                                   a.get("rough_complexity_signal", ""), a.get("source", ""),
                                   a.get("story") if isinstance(a.get("story"), dict) else None)
@@ -126,8 +149,10 @@ class ProjectTools:
              "The approved story record. Refuses a story that people have not approved for delivery.",
              {"type": "object", "properties": s, "required": ["story_id"]}, self.get_approved_story),
             ("resolve_without_change",
-             "End the story: existing JD Edwards functionality or configuration already satisfies it. Name exactly what "
-             "does. Nothing in JD Edwards is touched.",
+             "Record the finding that no JD Edwards change is needed: existing functionality or configuration already "
+             "satisfies it. Name exactly what does. This does NOT close the story: any work the requirement still needs "
+             "(a guide, training, a process step, a check) stays in your implementation sequence for people, and the "
+             "business accepts the outcome. Nothing in JD Edwards is touched.",
              {"type": "object", "properties": {**s, "resolution_note": {"type": "string"}, "resolved_by": {"type": "string"}},
               "required": ["story_id", "resolution_note"]}, self.resolve_without_change),
             ("propose_change",

@@ -167,9 +167,19 @@ def record_acceptance(change_id: str, payload: AcceptanceInput, ctx: AuthContext
         require_domain_owner_access(ctx, change.business_domain_id)
     effective = roles if acting_as_owner else roles - {"domain_owner"}
     try:
-        acceptance.record(change, decision=payload.decision, note=payload.note, on_behalf_of=payload.on_behalf_of,
-                          actor_name=ctx.identity.display_name, actor_user_id=ctx.identity.id, roles=effective,
-                          tech=_tech(change))
+        entry = acceptance.record(change, decision=payload.decision, note=payload.note,
+                                  on_behalf_of=payload.on_behalf_of, actor_name=ctx.identity.display_name,
+                                  actor_user_id=ctx.identity.id, roles=effective, tech=_tech(change))
     except _REFUSALS as exc:
         raise _refused(exc) from None
+    route = change.architect_decision.recommended_route if change.architect_decision else None
+    if route == "Resolve without Change" and entry["decision"] == "accepted" and change.state == "APPROVED":
+        # The business accepted: only now does a no-change story close (audit 23 Oct, F00).
+        from jde_mcp_server import backlog
+
+        d = change.architect_decision
+        finding = (d.result.conclusion if d.result and d.result.conclusion else d.existing_functionality_found) or ""
+        who = entry.get("on_behalf_of") or ctx.identity.display_name
+        backlog.close_resolved(change_id, (finding + f" -- accepted by the business ({who})").strip(" -"),
+                               resolved_by=ctx.identity.display_name)
     return _change(change_id, ctx)

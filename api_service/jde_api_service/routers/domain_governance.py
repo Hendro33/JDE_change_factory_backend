@@ -38,6 +38,7 @@ from ..dependencies import (
     require_role,
     require_write_access,
 )
+from ..models.base import ApiModel
 from ..models.business_domain import BusinessDomain
 from ..models.delivery_queue import DeliveryQueueEntry
 from ..models.domain_review import (
@@ -492,6 +493,85 @@ def application_manager_approve(
         initiated_by=ctx.identity.id,
     )
     return updated
+
+
+class HoldInput(ApiModel):
+    reason: str = ""
+
+
+class BulkSendInput(ApiModel):
+    change_ids: list[str]
+    note: str = ""
+
+
+class BulkSendResult(ApiModel):
+    change_id: str
+    sent: bool
+    detail: str = ""
+
+
+@router.post("/changes/{change_id}/domain-review/hold", response_model=DomainReview)
+def hold_in_backlog(change_id: str, payload: HoldInput,
+                    ctx: AuthContext = Depends(require_role("product_manager"))) -> DomainReview:
+    """Backlog Review (design 22-23 Oct): hold an approved story instead of
+    sending it to architecture now. The approval gate stays; nothing about
+    the story changes; who held it, when and why is recorded."""
+    _change_with_story(change_id, ctx.customer_id)
+    reason = payload.reason.strip()
+    if len(reason) < 3:
+        raise HTTPException(status_code=422, detail="Say why it is held, so the next reader knows.")
+    with _transition(change_id, {"ready_for_application_manager", "domain_owner_approved"},
+                     lambda r: require_current_role(ctx, "product_manager")):
+        pass
+    return get_domain_review_service().set_hold(change_id, ctx.identity.display_name, reason,
+                                                identity_id=ctx.identity.id)
+
+
+@router.post("/changes/{change_id}/domain-review/release-hold", response_model=DomainReview)
+def release_backlog_hold(change_id: str, payload: HoldInput,
+                         ctx: AuthContext = Depends(require_role("product_manager"))) -> DomainReview:
+    _change_with_story(change_id, ctx.customer_id)
+    return get_domain_review_service().release_hold(change_id, ctx.identity.display_name, payload.reason.strip())
+
+
+@router.post("/backlog/send-to-architecture", response_model=list[BulkSendResult])
+def send_to_architecture(payload: BulkSendInput, background_tasks: BackgroundTasks,
+                         ctx: AuthContext = Depends(require_role("product_manager"))) -> list[BulkSendResult]:
+    """Backlog Review bulk action: authorise several approved stories at once.
+    Each one goes through exactly the single-story gate (same checks, same
+    record, same Architect start); one refusal never blocks the others, and
+    every result is reported."""
+    results: list[BulkSendResult] = []
+    for change_id in dict.fromkeys(payload.change_ids):
+        try:
+            application_manager_approve(change_id, GovernanceDecisionInput(note=payload.note), background_tasks, ctx)
+            results.append(BulkSendResult(change_id=change_id, sent=True))
+        except HTTPException as exc:
+            results.append(BulkSendResult(change_id=change_id, sent=False, detail=str(exc.detail)))
+    return results
+
+
+@router.get("/backlog/capacity")
+def backlog_capacity(ctx: AuthContext = Depends(require_customer_access)) -> dict:
+    """What sending more stories costs: stories JADE is solutioning now, this
+    month's AI spend against the customer's budget, and the measured average
+    Architect run cost (None until runs were measured -- never guessed)."""
+    from ..ai import connection as ai_connection
+    from ..persistence.db import connection as db_connection
+
+    changes = [c for c in get_change_service().list_for_customer(ctx.customer_id) if c.lifecycle]
+    solutioning = len([c for c in changes if c.lifecycle.phase in ("solutioning", "solution_review")])
+    try:
+        limits = ai_connection.view(ctx.customer_id).get("limits") or {}
+    except Exception:  # noqa: BLE001 -- no AI connection configured yet
+        limits = {}
+    with db_connection() as conn:
+        row = conn.execute("SELECT COUNT(*) AS n, AVG(cost_usd) AS a FROM ai_runs WHERE company_id = ? AND "
+                           "driver = 'architecture_driver' AND cost_usd IS NOT NULL", (ctx.customer_id,)).fetchone()
+    return {"inSolutioning": solutioning, "monthSpendUsd": ai_connection.month_spend(ctx.customer_id),
+            "monthlyBudgetUsd": limits.get("monthly_usd"),
+            "architectRunsMeasured": int(row["n"] or 0),
+            "averageArchitectRunUsd": round(float(row["a"]), 3) if row["a"] is not None else None}
 
 
 @router.post("/changes/{change_id}/domain-review/application-manager-reject", response_model=DomainReview)

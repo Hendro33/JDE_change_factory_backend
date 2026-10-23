@@ -187,6 +187,22 @@ def items(change, lc: Lifecycle, tech: dict, hs: dict, accepted: Optional[dict],
     return out
 
 
+def _no_change_items(change, hs: dict, accepted: Optional[dict]) -> list[WorkItem]:
+    out = _handoffs(change, hs)
+    if hs["items"]:
+        v = hs.get("verification")
+        out.append(WorkItem(id="H-VERIFY", title="Check the result against the acceptance criteria",
+                            owner_kind="person", who="Application Manager",
+                            state="done" if v and v["passed"] else "failed" if v else "todo",
+                            detail=(v or {}).get("note", ""), depends_on=[i["id"] for i in hs["items"]],
+                            action="record_handoff_verification", group="verification"))
+    out.append(WorkItem(id="ACCEPT", title="Accept the outcome", owner_kind="business", who="Domain Owner",
+                        state=("done" if accepted["decision"] == "accepted" else "failed") if accepted else "todo",
+                        detail=(accepted or {}).get("note", ""), depends_on=[w.id for w in out],
+                        action="accept_outcome", group="acceptance"))
+    return out
+
+
 def _jira(change) -> tuple[str, str]:
     import re
 
@@ -259,7 +275,21 @@ def outcome(change, lc: Lifecycle, tech: dict, hs: dict, accepted: Optional[dict
     rel = OutcomeStep(done=True, by=final.get("generated_by", ""), at=final.get("generated_at", ""),
                       detail="As-built record final; promotion beyond DEV is done by CNC outside JADE") if final \
         else OutcomeStep()
-    if not dev.done:
+    finished = lc.phase == "done"
+    missing: list[str] = []
+    if finished:
+        # A story finished under an earlier workflow (audit F07): the facts it
+        # has stay as recorded; a checkpoint it never recorded is stated, not
+        # asked for and never manufactured.
+        earlier = "not recorded: the story was finished under an earlier workflow"
+        for label, step in (("Verified in DEV", dev), ("Accepted by the business", acc), ("Handed over for release", rel)):
+            if not step.done:
+                step.detail = earlier
+                missing.append(f"{label}: {earlier}.")
+    if finished and missing:
+        todo = ("Finished. Nothing is asked of you. Some checkpoints were not recorded when it was finished; the "
+                "Application Manager can reconcile it deliberately.")
+    elif not dev.done:
         todo = "The change is being verified in DEV. Nothing is needed from the business yet."
     elif not_acc is not None:
         todo = "The business did not accept the outcome. The Application Manager is correcting it."
@@ -270,7 +300,8 @@ def outcome(change, lc: Lifecycle, tech: dict, hs: dict, accepted: Optional[dict
     else:
         todo = "Done. The change is handed over for release to production by CNC."
     result = change.architect_decision.result if change.architect_decision else None
-    headline = (result.conclusion if result and result.conclusion else
+    # The business result, not the proposed technical work (audit HW-005/F08).
+    headline = (result.business_summary if result and result.business_summary else
                 change.user_story.statement if change.user_story else change.title)
     key, url = _jira(change)
     return OutcomeCard(headline=headline, what_changed=changed, verified=verified, dev_verified=dev,
@@ -286,9 +317,14 @@ def apply(change, lc: Lifecycle) -> Lifecycle:
 
     if lc.phase in ("understand", "story_review") or (change.architect_decision is None and change.exact_change is None):
         return lc
-    # Resolved without a change: nothing is built, verified, accepted or released,
-    # so there are no work items and no delivery outcome to show.
+    # No JD Edwards change: nothing is built or released, but the work people
+    # still do for the requirement (if any) and the business acceptance are
+    # work items (audit 23 Oct, F00).
     if lc.outcome == "resolved_without_change" or lc.route == "Resolve without Change":
+        hs = handoff.state(change)
+        accepted = acceptance.current(change, {})
+        lc.work_items = _no_change_items(change, hs, accepted) if hs["authorisation"] or hs["items"] else []
+        lc.handoff_authorised = hs["authorisation"] is not None
         return lc
     tech = _tech_facts(change, lc)
     hs = handoff.state(change)
@@ -296,5 +332,10 @@ def apply(change, lc: Lifecycle) -> Lifecycle:
     final = _final(change)
     lc.work_items = items(change, lc, tech, hs, accepted, final)
     lc.outcome_card = outcome(change, lc, tech, hs, accepted, final, lc.work_items)
+    if lc.phase == "done" and lc.outcome == "delivered" and lc.outcome_card is not None:
+        card = lc.outcome_card
+        lc.completion_gaps = [f"{label}: {step.detail}." for label, step in
+                              (("Verified in DEV", card.dev_verified), ("Accepted by the business", card.business_accepted),
+                               ("Handed over for release", card.released)) if not step.done and step.detail]
     lc.handoff_authorised = hs["authorisation"] is not None
     return lc

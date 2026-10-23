@@ -387,6 +387,9 @@ class Change(ApiModel):
     # Live status of an in-flight/completed Architecture Review run
     # (architecture_driver.py), presentational only -- same relationship
     # as processing_stage above has to Receive/Improve/Check.
+    # Backlog Review: the Application Manager holds an approved story (who, when, why).
+    backlog_hold: Optional[dict] = None
+
     architecture_review_stage: Optional[Literal["analyzing", "done", "failed"]] = None
     architecture_review_error: Optional[str] = None
 

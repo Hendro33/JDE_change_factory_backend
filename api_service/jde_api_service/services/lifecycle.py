@@ -160,6 +160,13 @@ def _story_review(change) -> Lifecycle:
     if stage == "domain_owner_rejected":
         return _mk("done", "closed", NextAction(kind="none", summary="The Domain Owner decided this requirement should not proceed."),
                    outcome="rejected")
+    if stage in ("domain_owner_approved", "ready_for_application_manager") and getattr(change, "backlog_hold", None):
+        h = change.backlog_hold
+        # Parked deliberately: not a waiting decision, so no queue or bell nags about it.
+        return _mk("story_review", "waiting", NextAction(
+            kind="none", summary=f"On hold in Backlog Review ({h.get('by')}): {h.get('reason')}",
+            owner="product_manager", action="authorise_delivery", tab="story",
+            effect="When it is sent to architecture, JADE starts solutioning."))
     if stage in ("domain_owner_approved", "ready_for_application_manager"):
         return _mk("story_review", "waiting_decision", NextAction(
             kind="decision", summary="Authorise JADE to work on this approved story.",
@@ -210,6 +217,24 @@ def _delivery_steps(route: Optional[str], tech: dict, change, final: Optional[di
             failed=bool(acc) and acc["decision"] == "not_accepted")
         return ok or bool(final)
 
+    if route == "Resolve without Change":
+        hs = _handoff_state(change)
+        n = len(hs["items"])
+        v = hs["verification"]
+        confirmed = hs["authorisation"] is not None
+        if n:
+            done = hs["all_complete"]
+            add("build", "Work by people (no JD Edwards change)", done, confirmed and not done,
+                f"{sum(1 for i in hs['items'] if i.get('completion'))} of {n} items recorded")
+            verified = bool(v) and v["passed"]
+            add("validation", "Checked against the acceptance criteria", verified, done and not v,
+                (v or {}).get("note", "")[:120], failed=bool(v) and not v["passed"])
+        else:
+            verified = confirmed
+            steps.append(LifecycleStep(id="build", label="Build", state="skipped",
+                                       detail="Not needed: no JD Edwards change"))
+        accept(verified)
+        return steps
     if route == "Human Implementation":
         hs = _handoff_state(change)
         done = hs["all_complete"]
@@ -339,6 +364,135 @@ def _human_route(change, company_id: str, story_id: str, route: str) -> Lifecycl
                delivery_steps=steps, route=route)
 
 
+def _no_change_closure_gaps(change) -> list[str]:
+    """What a story closed as resolved without change does not have on record,
+    compared with the current completion rules (audit 23 Oct, F00). Earlier
+    workflows closed such stories on the Architect's finding alone."""
+    gaps: list[str] = []
+    try:
+        from ..delivery import handoff
+        from . import acceptance
+
+        hs = handoff.state(change)
+        open_ = [i["text"] for i in hs["items"] if not i.get("completion")]
+        if open_:
+            gaps.append(f"{len(open_)} step{'s' if len(open_) > 1 else ''} of work in the design "
+                        f"{'were' if len(open_) > 1 else 'was'} never recorded as done (first: {open_[0]}).")
+        if not any(r.get("decision") == "accepted" for r in acceptance.history(change)):
+            gaps.append("No business acceptance is recorded: it was closed before JADE asked the business.")
+    except Exception:  # noqa: BLE001 -- a record without hand-off data: nothing to state
+        pass
+    return gaps
+
+
+def _no_change_route(change, route: str) -> Lifecycle:
+    """No JD Edwards change is needed -- a route, not a delivered outcome
+    (audit 23 Oct, F00). The Application Manager confirms the finding; any
+    work the requirement still needs is done and recorded by people and
+    checked; the business accepts the outcome; only then does it close."""
+    hs = _handoff_state(change)
+    steps = _delivery_steps(route, {}, change, None)
+    items, open_ = hs["items"], [i for i in hs["items"] if not i.get("completion")]
+    if hs["authorisation"] is None:
+        if items:
+            summary = (f"JADE found no JD Edwards change is needed, but {len(items)} step"
+                       f"{'s' if len(items) > 1 else ''} of work remain{'s' if len(items) == 1 else ''} for people "
+                       f"(first: {items[0]['text']}). Confirm the finding to hand that work over, or ask the "
+                       "Architect to look again.")
+            effect = "The remaining work goes to a named person; the story closes only when it is done, checked and "\
+                     "accepted by the business."
+        else:
+            summary = ("JADE found standard JD Edwards already meets this need. Confirm the finding, or ask the "
+                       "Architect to look again.")
+            effect = "The business is asked to confirm it meets their need; JD Edwards is not touched."
+        return _mk("solution_review", "waiting_decision", NextAction(
+            kind="decision", summary=summary, owner="product_manager", action="confirm_no_change", tab="solution",
+            effect=effect), route=route, delivery_steps=steps)
+    if open_:
+        nxt = open_[0]
+        return _mk("delivery", "waiting", NextAction(
+            kind="task", summary=(f"Waiting for {nxt.get('implementer') or 'the person who does it'}: {nxt['text']} "
+                                  f"({len(items) - len(open_)} of {len(items)} recorded). Record each item when it is "
+                                  "done."),
+            owner="product_manager", action="record_handoff", tab="delivery",
+            effect="Each item is recorded with its evidence; then the result is checked against the acceptance "
+                   "criteria."), delivery_steps=steps, route=route)
+    v = hs["verification"]
+    if items and v is None:
+        return _mk("validation", "waiting", NextAction(
+            kind="task", summary="The work is recorded. Check the result against the acceptance criteria and record it.",
+            owner="product_manager", action="record_handoff_verification", tab="delivery",
+            effect="The check is recorded as evidence; then the business is asked to accept the outcome."),
+            delivery_steps=steps, route=route)
+    if items and not v["passed"]:
+        return _mk("validation", "failed", NextAction(
+            kind="task", summary=f"The result did not pass the check: {v['note']}",
+            owner="product_manager", action="rerun_solutioning", tab="solution",
+            effect="Correct it and run the Architect again."), delivery_steps=steps, route=route)
+    acc = _acceptance_of(change, {})
+    if acc is None:
+        return _mk("validation", "waiting_decision", NextAction(
+            kind="decision", summary=("The work is done and checked. Confirm it meets the business need, then accept "
+                                      "the outcome.") if items else
+                                     ("JADE found standard JD Edwards already meets this need. Check that it does "
+                                      "for the business, then accept the outcome."),
+            owner="domain_owner", action="accept_outcome", tab="outcome",
+            effect="Once accepted, the story closes as resolved without a change to JD Edwards."),
+            delivery_steps=steps, route=route)
+    if acc["decision"] != "accepted":
+        return _mk("validation", "blocked", NextAction(
+            kind="task", summary=f"The business did not accept the outcome: {acc['note']}",
+            owner="product_manager", action="rerun_solutioning", tab="solution",
+            effect="Agree the correction with the business, then run the Architect again."),
+            delivery_steps=steps, route=route)
+    # Accepted: closed by the acceptance itself (routers/delivery_work.py).
+    return _mk("done", "done", NextAction(kind="none", summary="Resolved without a change to JDE, and accepted by "
+                                                               "the business."),
+               outcome="resolved_without_change", delivery_steps=steps, route=route)
+
+
+def _technical_stopped(company_id: str, story_id: str) -> Optional[dict]:
+    try:
+        from ..technical import service as tservice
+
+        return tservice.stopped_outcome(company_id, story_id)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _stopped_technical(stopped: dict, steps: list, route: str) -> Lifecycle:
+    """A completed Technical Agent run that reported it could not prepare a
+    package (audit 23 Oct, F02): blocked, with what is missing and who
+    provides it. Starting again is offered only once something it needs has
+    changed (technical/service.stopped_outcome)."""
+    first = (stopped["explanation"] or "").split(". ")[0].strip().rstrip(".")
+    kind = stopped["kind"]
+    if stopped["changed"] or kind == "inconclusive":
+        why = (" since it stopped: " + ", ".join(stopped["changed"])) if stopped["changed"] else ""
+        return _mk("delivery", "waiting", NextAction(
+            kind="task", summary=f"{stopped['label']}{(': ' + first) if first else ''}. Something changed{why}; "
+                                 "start it again.",
+            owner="product_manager", action="start_technical_prepare", tab="delivery",
+            effect="JADE prepares the package with what is available now."), delivery_steps=steps, route=route,
+            open_items=[stopped["explanation"][:400]] if stopped["explanation"] else [])
+    if kind == "blocked_missing_evidence":
+        na = NextAction(kind="task", summary=f"{stopped['label']}: {first}." if first else stopped["label"] + ".",
+                        owner="admin", owner_label="Administrator", action="provide_technical_evidence",
+                        tab="technical",
+                        effect="Add the missing source export (Administration › JD Edwards › documents); JADE can "
+                               "then start the implementation again.")
+    elif kind == "clarification_required":
+        na = NextAction(kind="task", summary=f"{stopped['label']}: " + "; ".join(stopped["questions"][:2] or [first]),
+                        owner="product_manager", owner_label="Application Manager", action="answer_issue",
+                        tab="solution", effect="Record the answers; JADE can then start the implementation again.")
+    else:  # blocked_unsupported
+        na = NextAction(kind="task", summary=f"{stopped['label']}: {first}. Route it to implementation by a person.",
+                        owner="product_manager", owner_label="Application Manager", action="rerun_solutioning",
+                        tab="solution", effect="Run the Architect again for a specification a developer implements.")
+    return _mk("delivery", "blocked", na, delivery_steps=steps, route=route,
+               open_items=[stopped["explanation"][:400]] if stopped["explanation"] else [])
+
+
 def _technical_route(change, company_id: str, story_id: str, design: dict, route: str) -> Lifecycle:
     tech = _technical_facts(company_id, story_id)
     final = _asbuilt_final(company_id, story_id)
@@ -355,6 +509,9 @@ def _technical_route(change, company_id: str, story_id: str, design: dict, route
         if tech.get("running"):
             return _mk("delivery", "in_progress", _jade("JADE is preparing the implementation.", "delivery"),
                        delivery_steps=steps, route=route)
+        stopped = _technical_stopped(company_id, story_id)
+        if stopped is not None:
+            return _stopped_technical(stopped, steps, route)
         return _mk("delivery", "waiting", NextAction(
             kind="task", summary="Start the implementation: JADE prepares the exact change package.",
             owner="product_manager", action="start_technical_prepare", tab="delivery",
@@ -540,7 +697,8 @@ def derive(change, company_id: Optional[str] = None) -> Lifecycle:
         lc = _mk("done", "closed", NextAction(kind="none", summary="Not authorised for delivery."), outcome="rejected")
     elif state == "RESOLVED_WITHOUT_CHANGE":
         lc = _mk("done", "done", NextAction(kind="none", summary="Resolved without a change to JDE."),
-                 outcome="resolved_without_change")
+                 outcome="resolved_without_change", route="Resolve without Change")
+        lc.completion_gaps = _no_change_closure_gaps(change)
     elif state == "CLOSED":
         lc = _mk("done", "done", NextAction(kind="none", summary="Delivered and closed."), outcome="delivered")
     elif state == "BACKLOG_READY":
@@ -572,6 +730,12 @@ def derive(change, company_id: Optional[str] = None) -> Lifecycle:
         from . import authorisation
 
         lc = authorisation.apply(change, lc)
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        from . import eligibility
+
+        lc = eligibility.apply(change, lc)
     except Exception:  # noqa: BLE001
         pass
     try:
@@ -661,12 +825,7 @@ def _solution_onwards(change, company_id: str, story_id: str) -> Lifecycle:
             owner="domain_owner", action="clarify", tab="solution",
             effect="Record the answer, then run the Architect again so the solution uses it."), route=route)
     elif route == "Resolve without Change":
-        lc = _mk("solution_review", "waiting_decision", NextAction(
-            kind="decision", summary="JADE found this can be resolved without changing JDE. Confirm it, or ask the "
-                                     "Architect to look again.",
-            owner="product_manager", action="confirm_no_change", tab="solution",
-            effect="The story closes as resolved without a change; JD Edwards is not touched and the business is told "
-                   "what already meets the need."), route=route)
+        lc = _no_change_route(change, route)
     elif b is not None and b.get("status") not in (None, "current"):
         lc = _mk("solutioning", "blocked", NextAction(
             kind="task", summary="The story changed after the solution was designed. Re-run solutioning.",

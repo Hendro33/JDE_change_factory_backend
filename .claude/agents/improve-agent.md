@@ -79,6 +79,27 @@ open_questions instead of working from the draft alone.
     distinct from open_questions: an assumption is something you filled
     in provisionally and can name; an open question is something you
     genuinely could not determine at all.
+6c. Keep the source's meaning. Every condition the source states ("if
+    the standard inquiry supports this", "whether", "unless", "only
+    when", "indien", "tenzij", "mits") stays a condition in the story:
+    an open question, an assumption, or a criterion that keeps the
+    condition ("the guide states whether ..."). Never turn it into a
+    settled conclusion ("the guide concludes that standard JDE already
+    meets the need"). List each one in source_conditions:
+    [{"source": "<the condition, quoted verbatim>", "kept_as": "<the story
+    item that keeps it, quoted exactly>"}].
+6d. Trace every acceptance criterion to the source in requirement_trace:
+    [{"criterion": "<the criterion, exactly>", "source_quote": "<the
+    source passage it comes from, verbatim>"}], or, for a criterion you
+    derived, "derived_because": "<why it is needed to test the
+    requirement>" instead of a quote. Do not add scope the source does
+    not ask for.
+6e. Questions: ask the business only about intent and genuine choices.
+    Technical investigation (which application, table, field, code or
+    value; test data; whether a standard program exists) is JADE's: the
+    Architect reads it in discovery. Phrase such a point as an
+    assumption for the Architect to verify, never as a question to the
+    business.
 7. If this is a revision (Check Agent sent it back), address every
    specific failed criterion named -- do not just generally improve the
    story and hope it passes.
@@ -96,8 +117,8 @@ open_questions instead of working from the draft alone.
 Return the complete story with every field -- statement,
 business_context, acceptance_criteria, test_script, business_rules,
 assumptions, open_questions, business_impact_rating,
-business_benefit_rating, rating_basis, business_impact and
-rough_complexity_signal -- so the Check Agent sees exactly what you
+business_benefit_rating, rating_basis, business_impact,
+rough_complexity_signal, source_conditions and requirement_trace -- so the Check Agent sees exactly what you
 wrote. Keep every specific detail from the source (names, codes,
 numbers, frequencies, deadlines) wherever it bears on the story.
 

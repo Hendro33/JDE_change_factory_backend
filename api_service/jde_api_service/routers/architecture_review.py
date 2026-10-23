@@ -39,6 +39,7 @@ from ..models.change import (
     RecordAppliedInput,
     RecordTestResultInput,
 )
+from ..models.base import ApiModel
 from ..models.domain_review import GovernanceDecisionInput
 from ..services.architecture_driver import run_architecture_review
 from ..services.conversation_driver import ConversationError, ask_about_solution
@@ -435,29 +436,53 @@ def reconcile_test(
 def confirm_resolved_without_change(
     change_id: str, payload: GovernanceDecisionInput, ctx: AuthContext = Depends(require_write_access)
 ) -> dict:
-    """The Application Manager confirms the Architect's finding that existing
-    JD Edwards functionality already meets the requirement (Section 15.6).
-    Before this existed, such a story waited for a decision no screen could
-    take (post-step-3 review, journey "resolved without a system change").
-    Terminal and recorded; JD Edwards is never touched."""
-    change = _require_queued_change(change_id, ctx.customer_id)
-    if not ({"product_manager", "admin"} & set(ctx.roles)):
-        raise HTTPException(status_code=403, detail="only the Application Manager confirms a resolution without change")
-    d = change.architect_decision
-    if d is None or d.recommended_route != "Resolve without Change":
-        raise HTTPException(status_code=409, detail="the Architect has not concluded that no change is needed")
-    from jde_mcp_server import backlog
+    """The Application Manager confirms the Architect's finding that no JD
+    Edwards change is needed (Section 15.6). Audit 23 Oct (F00): this does
+    NOT close the story. Any work the requirement still needs is handed to
+    people and recorded; the business accepts the outcome; the acceptance
+    closes it. JD Edwards is never touched."""
+    from ..delivery import handoff
 
-    finding = (d.result.conclusion if d.result and d.result.conclusion else d.existing_functionality_found) or ""
-    note = (payload.note or "").strip()
+    change = _require_queued_change(change_id, ctx.customer_id)
     try:
-        backlog.resolve_without_change(change_id, (finding + (f" -- {note}" if note else "")).strip() or note,
-                                       resolved_by=ctx.identity.display_name)
-    except backlog.BacklogError as exc:
-        raise HTTPException(status_code=409, detail=str(exc))
+        handoff.confirm_no_change(change, actor_name=ctx.identity.display_name, actor_user_id=ctx.identity.id,
+                                  roles=set(ctx.roles), note=payload.note or "")
+    except handoff.HandoffRefused as exc:
+        status = 403 if "only the Application Manager" in str(exc) else 409
+        raise HTTPException(status_code=status, detail=str(exc))
     get_decision_feedback_service().record(change_id=change_id, customer_id=ctx.customer_id,
                                            kind="resolved_without_change", decided_by=ctx.identity.display_name,
                                            identity_id=ctx.identity.id, note=payload.note)
+    out = get_change_service().get_for_customer(change_id, ctx.customer_id)
+    assert out is not None
+    return out.model_dump(mode="json", by_alias=True)
+
+
+class ReopenInput(ApiModel):
+    reason: str
+
+
+@router.post("/changes/{change_id}/reopen-resolved", status_code=200)
+def reopen_resolved(change_id: str, payload: ReopenInput, ctx: AuthContext = Depends(require_write_access)) -> dict:
+    """Deliberately reopen a story an earlier workflow closed as resolved
+    without change before its work was done or the business accepted it.
+    Recorded with who, when and why; the earlier closure stays in history."""
+    from jde_mcp_server import backlog
+    from jde_mcp_server.evidence import capture_evidence
+
+    if not ({"product_manager", "admin"} & set(ctx.roles)):
+        raise HTTPException(status_code=403, detail="only the Application Manager reopens a resolved story")
+    if get_change_service().get_for_customer(change_id, ctx.customer_id) is None:
+        raise HTTPException(status_code=404, detail="This story could not be found.")
+    try:
+        backlog.reopen_resolved(change_id, payload.reason, ctx.identity.display_name)
+    except backlog.BacklogError as exc:
+        raise HTTPException(status_code=409 if "only a story" in str(exc) else 422, detail=str(exc))
+    try:
+        capture_evidence(change_id, {"event": "reopened", "stage": "closure", "actor": ctx.identity.display_name,
+                                     "detail": f"reopened to finish the work: {payload.reason.strip()}"})
+    except Exception:  # noqa: BLE001
+        pass
     out = get_change_service().get_for_customer(change_id, ctx.customer_id)
     assert out is not None
     return out.model_dump(mode="json", by_alias=True)

@@ -116,6 +116,16 @@ class ConversationTurn(ApiModel):
     identity_id: Optional[str] = None
 
 
+class BacklogHold(ApiModel):
+    """The Application Manager put an approved story on hold in Backlog
+    Review: not sent to architecture now, and why. Releasing it clears it
+    (the earlier holds stay in hold_history)."""
+    by: str
+    identity_id: Optional[str] = None
+    at: str
+    reason: str
+
+
 class DomainReview(ApiModel):
     rating_confirmations: list[RatingConfirmation] = []
     change_id: str
@@ -132,6 +142,8 @@ class DomainReview(ApiModel):
     conversation: list[ConversationTurn] = []
     domain_owner_approval: Optional[ApprovalRecord] = None
     application_manager_approval: Optional[ApprovalRecord] = None
+    hold: Optional[BacklogHold] = None
+    hold_history: list[dict] = []
     updated_at: str
 
 

@@ -71,11 +71,12 @@ def get_approved_story(story_id: str) -> dict:
 
 @mcp.tool()
 def resolve_without_change(story_id: str, resolution_note: str, resolved_by: str) -> dict:
-    """Terminal route (Section 15.6): the Architect determined existing
-    JDE functionality or configuration already satisfies the
-    requirement, so no Functional or Technical Agent action is needed.
-    JDE is never touched. Requires an approved story_id -- this ends a
-    story that went through Phase 2, it doesn't bypass Phase 2."""
+    """Route (Section 15.6): the Architect determined existing JDE
+    functionality or configuration already satisfies the requirement, so
+    no Functional or Technical Agent action is needed. JDE is never
+    touched. Records the finding only: the story stays open until the
+    Application Manager confirms it, any remaining work (a guide,
+    training, a check) is done, and the business accepts the outcome."""
     return _resolve_without_change(story_id, resolution_note, resolved_by)
 
 

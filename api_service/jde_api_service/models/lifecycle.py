@@ -125,5 +125,13 @@ class Lifecycle(ApiModel):
     activity: str = ""
     # Routine work JADE starts by itself (redesign step 4); None = nothing due.
     automation: Optional[AutomationPlan] = None
+    # A finished story whose record lacks a checkpoint the current workflow
+    # requires (audit 23 Oct, F00/F07): stated, never invented or silently
+    # reopened. The Application Manager may reopen it deliberately.
+    completion_gaps: list[str] = []
+    # Controls that act on JD Edwards or start an agent: whether the backend
+    # accepts them now, and why not (services/eligibility.py).
+    allowed_actions: list[str] = []
+    action_blockers: dict[str, str] = {}
 
 

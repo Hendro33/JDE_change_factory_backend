@@ -220,8 +220,31 @@ class DomainReviewService:
             identity_id=identity_id,
         )
         review.stage = "application_manager_approved"
+        if review.hold is not None:   # sending it to architecture releases the hold, on the record
+            review.hold_history.append({**review.hold.model_dump(mode="json"), "released_by": approved_by,
+                                        "released_at": _now(), "release_note": "sent to architecture"})
+            review.hold = None
         review.updated_at = _now()
         self._save(review)
+        return review
+
+    def set_hold(self, change_id: str, by: str, reason: str, identity_id: Optional[str] = None) -> DomainReview:
+        from ..models.domain_review import BacklogHold
+
+        review = self._require(change_id)
+        review.hold = BacklogHold(by=by, identity_id=identity_id, at=_now(), reason=reason)
+        review.updated_at = _now()
+        self._save(review)
+        return review
+
+    def release_hold(self, change_id: str, by: str, note: str = "") -> DomainReview:
+        review = self._require(change_id)
+        if review.hold is not None:
+            review.hold_history.append({**review.hold.model_dump(mode="json"), "released_by": by,
+                                        "released_at": _now(), "release_note": note})
+            review.hold = None
+            review.updated_at = _now()
+            self._save(review)
         return review
 
     def record_domain_owner_rejection(

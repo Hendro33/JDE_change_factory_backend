@@ -147,8 +147,13 @@ def parse_result(raw: Any) -> Optional[AgentResult]:
                 proposed_answer=str(i.get("proposed_answer") or "")))
         elif isinstance(i, str) and i.strip():
             issues.append(ResultIssue(title=i.strip()))
+    answered = [{"question": str(q.get("question", "")).strip(), "answer": str(q.get("answer", "")).strip(),
+                 "evidence": str(q.get("evidence", "")).strip()}
+                for q in (raw.get("answered_questions") or []) if isinstance(q, dict) and str(q.get("question", "")).strip()]
     return AgentResult(conclusion=str(raw.get("conclusion") or "").strip(), changes=changes, issues=issues,
-                       uncertainty=[str(u) for u in (raw.get("uncertainty") or []) if str(u).strip()])
+                       uncertainty=[str(u) for u in (raw.get("uncertainty") or []) if str(u).strip()],
+                       answered_questions=answered,
+                       business_summary=str(raw.get("business_summary") or "").strip())
 
 
 def _first_sentences(text: str, n: int = 2) -> str:
@@ -250,13 +255,57 @@ def story_issues(change) -> list[Issue]:
     (review 23 Oct): answered in place, the answer recorded and passed to the
     Architect -- not loose text nobody owns. Never blocking: the Domain Owner
     may approve the story with a question open; the Architect then sees it."""
+    from .design_quality import classify_story_question
+
     us = change.user_story
     if us is None:
         return []
-    return [Issue(id=_id("story", q), kind="business", title=_short(q, 300), owner="domain_owner",
-                  owner_label="Domain Owner", action="Answer it here; JADE passes the answer to the Architect.",
-                  action_id="answer_issue", blocks=False, source="story", tab="story")
-            for q in us.open_questions if q and q.strip()]
+    out = []
+    for q in us.open_questions:
+        if not (q and q.strip()):
+            continue
+        if classify_story_question(q) == "jade":
+            # Technical investigation (audit F05): JADE answers it from discovery,
+            # nobody in the business is asked.
+            out.append(Issue(id=_id("story", q), kind="jade", title=_short(q, 300), owner="jade", owner_label="JADE",
+                             action="JADE answers this from discovery in the solution run.", action_id=None,
+                             blocks=False, source="story", tab="story"))
+        else:
+            out.append(Issue(id=_id("story", q), kind="business", title=_short(q, 300), owner="domain_owner",
+                             owner_label="Domain Owner", action="Answer it here; JADE passes the answer to the Architect.",
+                             action_id="answer_issue", blocks=False, source="story", tab="story"))
+    return out
+
+
+_TECH_SENTENCE_RE = re.compile(
+    r"(\b[PRFBNTV]\d{4,6}\b|\b[PRFBN]5[5-9]\w+|\budc\b|\b\d{2}/[A-Z0-9]{1,3}\b|processing option|\bomw\b|\bais\b|"
+    r"\bversion [A-Z0-9]{4,}|\bube\b|business function|data item|\btable\b|\bF\d{4}|\baai\b|technical agent|"
+    r"functional agent|object|orchestration|path code|\bcnc\b|\bdev\b environment)", re.I)
+
+
+def business_projection(change) -> str:
+    """The business view of the design (audit F08): the Architect's
+    business_summary, or -- for designs written before it existed -- the
+    conclusion's sentences that carry no technical names. Empty when every
+    sentence is technical (the view then shows the route in plain words)."""
+    d = change.architect_decision
+    if d is None or d.result is None:
+        return ""
+    if d.result.business_summary:
+        return d.result.business_summary
+    parts = re.split(r"(?<=[.!?])\s+", (d.result.conclusion or "").strip())
+    return " ".join(p for p in parts if p and not _TECH_SENTENCE_RE.search(p))
+
+
+def _target_status(change) -> None:
+    """Mark change rows whose target is not known (audit F03)."""
+    from .design_quality import _UNKNOWN_TARGET_RE
+
+    d = change.architect_decision
+    if d is None or d.result is None:
+        return
+    for c in d.result.changes:
+        c.target_known = not _UNKNOWN_TARGET_RE.search(c.proposed or "")
 
 
 def design_issues(change, baseline: Optional[dict]) -> list[Issue]:
@@ -431,8 +480,15 @@ def apply(change, lc: Lifecycle, company_id: Optional[str] = None) -> Lifecycle:
         # one, marked as derived (a copy; the stored design is untouched).
         if d.result is None:
             change.architect_decision = d.model_copy(update={"result": result_for(change, b)})
+        _target_status(change)
+        if change.architect_decision.result is not None and not change.architect_decision.result.business_summary:
+            change.architect_decision.result.business_summary = business_projection(change)
         if lc.phase not in ("understand", "story_review", "done"):
             found = design_issues(change, b)
+            if lc.phase in ("solutioning", "solution_review"):
+                from .design_quality import design_quality_issues
+
+                found = found + design_quality_issues(change)
             # Once the change is past approval, design-time gaps are context,
             # not blockers: the delivery gate decides what blocks from here.
             if lc.phase in ("delivery", "validation", "release"):
@@ -444,10 +500,20 @@ def apply(change, lc: Lifecycle, company_id: Optional[str] = None) -> Lifecycle:
         issues += story_issues(change)
     issues = _dedupe(issues)
     done = resolutions(company_id, change.id) if issues else {}
+    from .design_quality import discovery_answer
+
     for i in issues:
         r = done.get(i.id)
         if r is not None:
             i.resolution = IssueResolution.model_validate(r)
+        elif i.source == "story":
+            # Retired by discovery (audit F05): the Architect's design answered it.
+            found = discovery_answer(change, i.title)
+            if found and found["answer"]:
+                i.resolution = IssueResolution(issue_id=i.id, issue_title=i.title, issue_kind=i.kind, status="answered",
+                                               answer=found["answer"] + (f" (evidence: {found['evidence']})"
+                                                                         if found["evidence"] else ""),
+                                               by="JADE (discovery)", at=found["at"] or "")
     open_ = [i for i in issues if i.resolution is None]
     lc.issues = issues
     _adjust_next_action(change, lc, open_, done)

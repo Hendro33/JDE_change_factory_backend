@@ -78,10 +78,12 @@ def test_journey_resolved_without_a_system_change(client, monkeypatch):
     r = client.post(f"/changes/{s}/resolve-without-change", headers=headers("vdb"), json={"note": "Agreed."})
     assert r.status_code == 200, r.text
     lc = r.json()["lifecycle"]
-    assert lc["phase"] == "done" and lc["outcome"] == "resolved_without_change"
-    # Nothing to authorise and nothing was changed in JD Edwards.
-    assert lc["authorisation"] is None and not lc["workItems"] and lc["outcomeCard"] is None
-    # A second confirmation is refused: the ending is terminal.
+    _screen_rules(lc)
+    # Audit 23 Oct (F00): confirming is not closing. The design's remaining step goes to a person first.
+    assert lc["phase"] != "done" and lc["nextAction"]["action"] == "record_handoff"
+    # Nothing to authorise in JD Edwards and nothing was changed there.
+    assert lc["authorisation"] is None and lc["outcomeCard"] is None
+    # A second confirmation is refused.
     assert client.post(f"/changes/{s}/resolve-without-change", headers=headers("vdb"), json={"note": ""}).status_code == 409
 
 

@@ -104,12 +104,48 @@ If the evidence contradicts the story, or a business question must be answered b
 Add one more top-level key, "result": what a busy Application Manager reads first. It does not replace the fields above; it is their readable summary.
   "result": {
     "conclusion": "<one or two plain sentences: what you recommend and why, conclusion first; no tool names, observation ids or hashes>",
+    "business_summary": "<for the business, one or two sentences: what changes in their daily work and the outcome they get. No JD Edwards object names, codes, tables, versions or delivery mechanics (those stay in the application view)>",
     "changes": [{"what": "<the setting or object in business words, with its JDE name>", "current": "<the value now, or '' if not read>", "proposed": "<the value after the change>", "status": "verified" | "not_yet_verified" | "proposed"}],
     "issues": [{"title": "<the open point, said once, in one line>", "consequence": "<what it affects if unresolved>", "owner": "jade" | "business" | "decision" | "administrator" | "delivery", "who": "<the person or team, e.g. Finance, the requester, the Application Manager>", "action": "<what resolves it>", "blocks": true | false, "proposed_answer": "<your supported proposal, or ''>"}],
-    "uncertainty": ["<only uncertainty that could change the decision>"]
+    "uncertainty": ["<only uncertainty that could change the decision>"],
+    "answered_questions": [{"question": "<a story open question, exactly as written>", "answer": "<what discovery showed>", "evidence": "<OBS-.../ART-... id>"}]
   }
-Owners: "jade" = a read or lookup problem you could not resolve yourself (say what you tried; nobody else is asked); "business" = a business fact only the business can confirm, whose answer changes the design: the title IS the question, ending with "?", in business words without table, program or tool names; "action" lists the two or three answer options and what each changes; "proposed_answer" is your recommended option in one sentence -- never ask what the story, its rules, its assumptions or recorded answers already settle, and never ask how JD Edwards works or is configured (read it); "decision" = a design choice for the Application Manager, with your recommendation in proposed_answer; "administrator" = setup of JADE itself only (connection, credentials, approved reads, test versions, agent permissions, DEV isolation) -- JD Edwards set-up the solution needs (UDC values, AAIs, line types, versions, processing options) is part of the solution, never an administrator item; "delivery" = something people must do outside Jade (a build, an OMW promotion, a manual step) -- it goes into human_actions_required and never blocks. At most three issues: only what a person must actually decide or answer. Set "blocks" true only when the implementation cannot be authorised or delivered safely without it. Every gap in evidence.gaps that needs a person appears here once, with its owner. "status" is "verified" only for a value you read in DEV in this run; a value you could not read is "not_yet_verified", never "none".
+answered_questions: every open question of the story your discovery answered (a table, field, code, value, standard application, candidate test data). It is retired with your answer; nobody is asked it again. Leave out what you did not actually read.
+Owners: "jade" = a read or lookup problem you could not resolve yourself (say what you tried; nobody else is asked); "business" = a business fact only the business can confirm, whose answer changes the design: the title IS the question, ending with "?", in business words without table, program or tool names; "action" lists the two or three answer options and what each changes; "proposed_answer" is your recommended option in one sentence -- never ask what the story, its rules, its assumptions or recorded answers already settle, and never ask how JD Edwards works or is configured (read it); "decision" = a design choice for the Application Manager, with your recommendation in proposed_answer; "administrator" = setup of JADE itself only (connection, credentials, approved reads, test versions, agent permissions, DEV isolation) -- JD Edwards set-up the solution needs (UDC values, AAIs, line types, versions, processing options) is part of the solution, never an administrator item; "delivery" = something people must do outside Jade (a build, an OMW promotion, a manual step) -- it goes into human_actions_required and never blocks. At most three issues: only what a person must actually decide or answer. Set "blocks" true only when the implementation cannot be authorised or delivered safely without it. Every gap in evidence.gaps that needs a person appears here once, with its owner. "status" is "verified" only for a value you read in DEV in this run; a value you could not read is "not_yet_verified", never "none". "status" speaks for the CURRENT value only: when the target value is not known yet, write "unknown" in "proposed" -- such a row is not an exact specification and the design cannot be authorised with it.
+Rules that keep the design executable (Jade checks them and blocks authorisation when broken):
+- Standard first: never recommend custom development (Technical Agent, Mixed or Human Implementation builds) while standard behaviour is unconfirmed. Not found in the records you inspected does not mean it does not exist. When standard behaviour is unresolved, the next work is a targeted verification: say exactly what to test, and route "Clarification Required" or a verification step -- not a build "regardless".
+- One executor per piece of work: each step in sequence names who does it (JADE's Functional Agent, the Technical Agent, a named person or team). The same build never appears under two executors.
+- The Technical Agent prepares changes to EXISTING customer objects from their uploaded source export; it never originates a new object. A new report, program or table is created by a developer (human_actions_required); say what JADE can do with it afterwards.
+- Decisions that determine scope (rates, thresholds, mappings, choices between options) are issues to resolve BEFORE authorisation (owner "business" or "decision"), never steps in sequence or human_actions_required. Approving the design is the gate itself, never a step.
+- Keep every condition the story states open as a condition; never conclude on it.
 """.strip()
+
+
+async def _prepare_process_draft(story_id: str, customer_id: Optional[str], initiated_by: Optional[str],
+                                 repo_root: str) -> None:
+    """Audit F08: the process draft is prepared during the analysis, not left
+    for a person to start. Once per story, only where routine automation is on
+    for the customer, the process analyst is enabled, a framework is active and
+    no map or analysis exists yet. Never raises; never blocks the design."""
+    try:
+        from ..process import agent as process_agent, maps, story as story_process
+        from . import agent_settings, automation
+        from .registry import get_change_service
+
+        if not customer_id or not automation.enabled(customer_id):
+            return
+        agent_settings.require_enabled(customer_id, "process-analyst")
+        if story_process.runs(customer_id, story_id) or any(
+                maps.latest_version(customer_id, story_id, k) for k in maps.KINDS):
+            return
+        change = get_change_service().get_for_customer(story_id, customer_id)
+        if change is None:
+            return
+        run = story_process.start_analysis(customer_id, story_id, initiated_by=initiated_by or "jade")
+        await process_agent.run_process_analysis(company_id=customer_id, story_id=story_id, run_id=run["run_id"],
+                                                 change=change, repo_root=repo_root)
+    except Exception:  # noqa: BLE001 -- the draft is a convenience; the design stands without it
+        return
 
 
 def _capability_block() -> str:
@@ -338,6 +374,7 @@ async def run_architecture_review(
                                summary=summary, agent_run_id=agent_run.run_id, initiated_by=initiated_by,
                                proposed_change_id=proposed_during(story_id, run_started))
         agent_run_service.complete(agent_run.run_id)
+        await _prepare_process_draft(story_id, customer_id, initiated_by, repo_root)
     except Exception as exc:  # noqa: BLE001 -- always recorded, never raised into the background task runner
         run_service.fail(story_id, str(exc))
         if agent_run is not None:

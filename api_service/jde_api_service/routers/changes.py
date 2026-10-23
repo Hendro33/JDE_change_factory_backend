@@ -144,7 +144,7 @@ def my_work(ctx: AuthContext = Depends(require_customer_access)) -> MyWork:
     cutoff = (datetime.now(timezone.utc) - timedelta(days=31)).isoformat()
     return MyWork(
         needs_you=mine,
-        waiting_on_others=[c for c in open_ if c.id not in mine_ids
+        waiting_on_others=[c for c in open_ if c.id not in mine_ids and not c.backlog_hold
                            and c.lifecycle.next_action.owner not in ("jade", "none")],
         jade_working=[c for c in open_ if c.lifecycle.next_action.owner == "jade"],
         # User stories in progress; requests that are not a story yet are counted apart.
@@ -202,6 +202,18 @@ def resolve_issue(change_id: str, issue_id: str, payload: ResolveIssueInput,
                                      answer=payload.answer, by=ctx.identity.display_name,
                                      by_user_id=ctx.identity.id)
     return get_change_service().get_for_customer(change_id, ctx.customer_id)
+
+
+@router.get("/completion-gaps")
+def completion_gaps(ctx: AuthContext = Depends(require_customer_access)) -> list[dict]:
+    """Finished stories whose record lacks a checkpoint the current workflow
+    requires (audit 23 Oct): for the Application Manager to review. Nothing is
+    changed by listing them."""
+    if not set(ctx.roles) & {"admin", "product_manager"}:
+        raise HTTPException(status_code=403, detail="This list is for Administrators and Application Managers.")
+    return [{"id": c.id, "title": c.title, "outcome": c.lifecycle.outcome, "gaps": c.lifecycle.completion_gaps}
+            for c in get_change_service().list_for_customer(ctx.customer_id)
+            if c.lifecycle and c.lifecycle.completion_gaps]
 
 
 @router.get("/setup-list")

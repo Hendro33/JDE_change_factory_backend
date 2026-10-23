@@ -69,6 +69,21 @@ def basis(change, tech: Optional[dict] = None) -> Optional[str]:
         if not v or not v.get("passed"):
             return None
         parts.update(design_revision=v.get("design_revision"), verification=v.get("evidence_entry_hash") or v["at"])
+    elif route == "Resolve without Change":
+        # No JD Edwards change (audit 23 Oct, F00): the outcome to accept is the
+        # confirmed finding plus, where the requirement needed it, the people's
+        # work, recorded and verified.
+        from ..delivery import handoff
+
+        st = handoff.state(change)
+        c = handoff.no_change_confirmation(change)
+        if c is None:
+            return None
+        v = st["verification"]
+        if st["items"] and not (st["all_complete"] and v and v.get("passed")):
+            return None
+        parts.update(design_revision=c.get("design_revision"), confirmation=c.get("evidence_entry_hash") or c["at"],
+                     verification=(v or {}).get("evidence_entry_hash") or (v or {}).get("at"))
     else:
         ec = change.exact_change
         ex = ec.execution if ec else None
@@ -99,7 +114,9 @@ def record(change, *, decision: str, note: str, on_behalf_of: str, actor_name: s
         raise AcceptanceRefused("the decision is 'accepted' or 'not_accepted'")
     b = basis(change, tech)
     if b is None:
-        raise AcceptanceRefused("there is no verified outcome to accept yet: it is verified in DEV first")
+        raise AcceptanceRefused("there is no verified outcome to accept yet: it must be verified in DEV first (or, for a "
+                                "resolution without change, the finding confirmed and any remaining work recorded "
+                                "and checked)")
     if decision == "not_accepted" and len(note.strip()) < 5:
         raise AcceptanceRefused("say what does not work for the business, so the Application Manager can act on it")
     is_owner = "domain_owner" in roles

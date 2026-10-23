@@ -50,7 +50,9 @@ _ALLOWED_TRANSITIONS = {
     "BACKLOG_READY": {"APPROVED", "REJECTED"},
     "APPROVED": {"RESOLVED_WITHOUT_CHANGE"},  # further transitions (ARCHITECTING etc.) happen via approval.py once a change is proposed
     "REJECTED": set(),
-    "RESOLVED_WITHOUT_CHANGE": set(),
+    # Only through reopen_resolved(): an explicit, recorded decision to finish
+    # work an earlier workflow closed too soon (audit 23 Oct, F00).
+    "RESOLVED_WITHOUT_CHANGE": {"APPROVED"},
 }
 
 
@@ -178,7 +180,7 @@ def reject(story_id: str, decided_by: str, note: str) -> dict:
 # terminal: a resolved story does not later become an executed one
 # under the same story_id.
 # ---------------------------------------------------------------------
-def _resolve_without_change_unlocked(story_id: str, resolution_note: str, resolved_by: str) -> dict:
+def _close_resolved_unlocked(story_id: str, resolution_note: str, resolved_by: str) -> dict:
     if not resolution_note:
         raise BacklogError("resolve_without_change requires a note explaining what existing capability satisfies the requirement")
     record = require_approved(story_id)
@@ -192,16 +194,58 @@ def _resolve_without_change_unlocked(story_id: str, resolution_note: str, resolv
     _save(story_id, record)
     return record
 
-def resolve_without_change(story_id: str, resolution_note: str, resolved_by: str) -> dict:
+
+def propose_no_change(story_id: str, resolution_note: str, proposed_by: str) -> dict:
+    """The Architect's finding that no JD Edwards change is needed (Section
+    15.6). Audit 23 Oct (F00): this is a ROUTE, not a delivered outcome. The
+    story stays open: the Application Manager confirms the finding, any work
+    the requirement still needs (a guide to write and publish, training, a
+    process change, a check) is done and recorded by people, and the business
+    accepts the outcome. Only then is the story closed (close_resolved)."""
+    if not resolution_note:
+        raise BacklogError("resolve_without_change requires a note explaining what existing capability satisfies the requirement")
     with docstore.transaction():
-        return _resolve_without_change_unlocked(story_id, resolution_note, resolved_by)
+        record = require_approved(story_id)
+        record["no_change_proposal"] = {"note": resolution_note, "by": proposed_by, "at": time.time()}
+        _save(story_id, record)
+        return record
 
 
+def resolve_without_change(story_id: str, resolution_note: str, resolved_by: str) -> dict:
+    """The Architect's tool. Records the no-change finding; never closes the
+    story by itself (see propose_no_change)."""
+    return propose_no_change(story_id, resolution_note, resolved_by)
 
-# ---------------------------------------------------------------------
-# Phase 3 gate. Every Architect/Functional/Technical Agent tool calls
-# this FIRST, before touching JDE. This is Gate 2 as code.
-# ---------------------------------------------------------------------
+
+def close_resolved(story_id: str, resolution_note: str, resolved_by: str) -> dict:
+    """Terminal: called by the API only once the finding is confirmed, the
+    remaining work is recorded and the business accepted the outcome."""
+    with docstore.transaction():
+        return _close_resolved_unlocked(story_id, resolution_note, resolved_by)
+
+
+def reopen_resolved(story_id: str, reason: str, reopened_by: str) -> dict:
+    """Reopen a story closed as resolved without change, to finish work the
+    earlier workflow closed too soon. Explicit and recorded; nothing else is
+    changed (the earlier closure stays in the history)."""
+    if len((reason or "").strip()) < 5:
+        raise BacklogError("say why the story is reopened")
+    with docstore.transaction():
+        record = _load(story_id)
+        if record is None or record.get("state") != "RESOLVED_WITHOUT_CHANGE":
+            raise BacklogError("only a story closed as resolved without change can be reopened here")
+        _set_state(record, "APPROVED")
+        history = list(record.get("closure_history") or [])
+        history.append({"event": "reopened", "reason": reason.strip(), "by": reopened_by, "at": time.time(),
+                        "earlier_resolution": {k: record.get(k) for k in ("resolution_note", "resolved_by",
+                                                                            "resolved_at")}})
+        record.update({"status": "approved", "closure_history": history})
+        for k in ("resolution_note", "resolved_by", "resolved_at"):
+            record.pop(k, None)
+        _save(story_id, record)
+        return record
+
+
 def require_approved(story_id: str) -> dict:
     record = _load(story_id)
     if record is None:
