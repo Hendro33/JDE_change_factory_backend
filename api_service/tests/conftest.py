@@ -10,6 +10,8 @@ import pytest
 # Routine automation starts agent runs by itself; off for every test (also the
 # unit tests that use no fixture); tests of it switch it on with monkeypatch.
 os.environ["JDE_ROUTINE_AUTOMATION"] = "false"
+# Tests change records directly between requests: no list cache (register K13).
+os.environ["JDE_LIST_CACHE_SECONDS"] = "0"
 
 _HERE = Path(__file__).resolve().parent
 _MCP_SERVER_SRC = _HERE.parent.parent / "mcp_server"

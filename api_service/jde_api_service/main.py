@@ -163,6 +163,12 @@ async def _refuse_writes_while_paused(request: Request, call_next):
                 content={"detail": f"Jade is briefly paused for maintenance ({paused.get('reason', 'backup')}); "
                                    "nothing was changed -- try again in a moment."},
             )
+        from .services.change_service import bump_data_version
+
+        bump_data_version()                       # before: reads racing this write derive again
+        response = await call_next(request)
+        bump_data_version()                       # after: the write is visible on the next read
+        return response
     return await call_next(request)
 
 

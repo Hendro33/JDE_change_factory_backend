@@ -536,6 +536,25 @@ def _with_lifecycle(change: Change) -> Change:
     return attach(classification_service.apply(change))
 
 
+_LIST_CACHE: dict[str, tuple] = {}
+_DATA_VERSION = [0]
+
+
+def bump_data_version() -> None:
+    """Any write through the API: lists are derived again on the next read."""
+    _DATA_VERSION[0] += 1
+    _LIST_CACHE.clear()
+
+
+def _list_cache_seconds() -> float:
+    import os
+
+    try:
+        return float(os.environ.get("JDE_LIST_CACHE_SECONDS", "2"))
+    except ValueError:
+        return 2.0
+
+
 class ChangeService:
     def __init__(
         self,
@@ -570,6 +589,23 @@ class ChangeService:
         return out
 
     def list_for_customer(self, customer_id: str) -> list[Change]:
+        """Every change of the customer with its lifecycle. Deriving every
+        lifecycle is the costly part, and one page asks for it several times
+        at once (register K13): the result is kept for a moment, and any
+        write through the API clears it (bump_data_version)."""
+        import time
+
+        ttl = _list_cache_seconds()
+        key = (customer_id, _DATA_VERSION[0])
+        hit = _LIST_CACHE.get(customer_id)
+        if ttl > 0 and hit is not None and hit[0] == key and time.monotonic() - hit[1] < ttl:
+            return list(hit[2])
+        out = self._list_for_customer(customer_id)
+        if ttl > 0:
+            _LIST_CACHE[customer_id] = (key, time.monotonic(), out)
+        return list(out)
+
+    def _list_for_customer(self, customer_id: str) -> list[Change]:
         stories = self._stories_for_customer(customer_id)
         promoted_ids = {c.id for c in stories}
         requests = [
