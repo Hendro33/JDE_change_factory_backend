@@ -170,8 +170,29 @@ def design_quality_issues(change) -> list[Issue]:
             "It never invents missing source.",
             "Assign the new object to a developer (JADE can prepare later changes to it from its export), or "
             "choose a route that changes an existing object; then run the Architect again.", "decide_issue"))
+    # E7 -- low confidence is confirmed by a person before the route is authorised.
+    threshold = confidence_threshold()
+    if d.recommended_route != "Clarification Required" and d.confidence is not None and d.confidence < threshold:
+        out.append(_issue(
+            "decision", f"Confirm the route: JADE's confidence in \"{d.recommended_route}\" is {d.confidence:.2f}.",
+            f"Below the confidence threshold of {threshold:.2f}: a person confirms the route before authorisation.",
+            "Record that you agree with the route (or ask JADE on the solution why), then authorise.", "decide_issue"))
     seen: set[str] = set()
     return [i for i in out if not (i.id in seen or seen.add(i.id))]
+
+
+DEFAULT_CONFIDENCE_THRESHOLD = 0.6
+
+
+def confidence_threshold() -> float:
+    """The confidence below which a route needs human confirmation (V11 §4.3).
+    Default 0.6; JDE_ROUTE_CONFIDENCE_THRESHOLD overrides it."""
+    import os
+
+    try:
+        return float(os.environ.get("JDE_ROUTE_CONFIDENCE_THRESHOLD", DEFAULT_CONFIDENCE_THRESHOLD))
+    except ValueError:
+        return DEFAULT_CONFIDENCE_THRESHOLD
 
 
 def classify_story_question(question: str) -> str:

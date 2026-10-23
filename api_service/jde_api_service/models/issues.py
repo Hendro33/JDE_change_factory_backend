@@ -65,6 +65,8 @@ class ResultIssue(ApiModel):
     action: str = ""
     blocks: bool = False
     proposed_answer: str = ""
+    # A decision's real alternatives (register E4): two or three options.
+    options: list[str] = []
 
 
 class AgentResult(ApiModel):
@@ -116,6 +118,10 @@ class Issue(ApiModel):
     # records, or the delivery gate.
     source: Literal["architect", "design_evidence", "design_quality", "delivery_gate", "lifecycle", "story"] = "architect"
     tab: Literal["overview", "story", "solution", "delivery", "evidence", "technical", "outcome"] = "solution"
+    # A decision's alternatives, as the agent stated them (register E4).
+    options: list[str] = []
+    # Returned to the Architect (register E6): JADE reads it; nobody is asked.
+    returned: bool = False
     resolution: Optional[IssueResolution] = None
 
 

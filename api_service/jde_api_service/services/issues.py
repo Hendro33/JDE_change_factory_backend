@@ -144,7 +144,8 @@ def parse_result(raw: Any) -> Optional[AgentResult]:
                 title=str(i["title"]).strip(), consequence=str(i.get("consequence") or ""),
                 owner=str(i.get("owner") or "business").strip().lower(), who=str(i.get("who") or ""),
                 action=str(i.get("action") or ""), blocks=bool(i.get("blocks")),
-                proposed_answer=str(i.get("proposed_answer") or "")))
+                proposed_answer=str(i.get("proposed_answer") or ""),
+                options=[str(o).strip() for o in (i.get("options") or []) if str(o).strip()][:4]))
         elif isinstance(i, str) and i.strip():
             issues.append(ResultIssue(title=i.strip()))
     answered = [{"question": str(q.get("question", "")).strip(), "answer": str(q.get("answer", "")).strip(),
@@ -214,8 +215,25 @@ def _from_result_issue(ri: ResultIssue) -> Issue:
                   owner=role, owner_label=ri.who.strip() or label, action=ri.action,
                   action_id=_ACTION_FOR_KIND.get(kind), blocks=ri.blocks and kind != "jade",
                   proposed_answer=ri.proposed_answer, source="architect",
-                  tab="story" if kind == "business" else "solution")
-    return _reclassify(issue, f"{ri.title} {ri.consequence} {ri.action} {ri.who}")
+                  tab="story" if kind == "business" else "solution", options=list(ri.options))
+    issue = _reclassify(issue, f"{ri.title} {ri.consequence} {ri.action} {ri.who}")
+    return _return_to_jade(issue)
+
+
+def _return_to_jade(issue: Issue) -> Issue:
+    """Register E6: a question about how JD Edwards is set up is JADE's to read,
+    never a person's. It goes back to the Architect (the next run is told) and
+    is not shown to anyone as their question."""
+    if issue.kind not in ("business", "decision"):
+        return issue
+    from .design_quality import classify_story_question
+
+    if classify_story_question(issue.title) != "jade":
+        return issue
+    return issue.model_copy(update={
+        "kind": "jade", "owner": "jade", "owner_label": "JADE", "blocks": False, "action_id": None,
+        "action": "Returned to JADE: it reads this in DEV on the next solution run; nobody is asked.",
+        "returned": True})
 
 
 def _from_gap(g: dict) -> Optional[Issue]:
@@ -456,6 +474,18 @@ def answers_for_prompt(company_id: str, story_id: str) -> str:
     for r in sorted(rows, key=lambda r: r["at"]):
         lines.append(f"- Q: {r['issue_title']}\n  A ({r['by']}, {r['at'][:10]}): {r['answer']}")
     return "\n".join(lines)
+
+
+def returned_for_prompt(change) -> str:
+    """Questions JADE returned to the Architect (register E6), for its next run."""
+    d = change.architect_decision
+    if d is None or d.result is None:
+        return ""
+    back = [i.title for i in (_from_result_issue(r) for r in d.result.issues) if i.returned]
+    if not back:
+        return ""
+    return ("Questions your previous design raised that JADE did NOT pass to people, because they ask how JD Edwards "
+            "is set up -- read them yourself in DEV (discovery_read) and use the result:\n" + "\n".join(f"- {t}" for t in back))
 
 
 # ---------------------------------------------------------------------
