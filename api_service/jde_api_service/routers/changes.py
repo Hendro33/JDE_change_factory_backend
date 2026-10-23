@@ -85,6 +85,13 @@ async def enhance_change(
     if existing is not None and existing.stage in ("receiving", "improving", "checking"):
         raise HTTPException(status_code=409, detail=f"enhancement already in progress for {change_id}")
 
+    # Register B3: a Domain Owner's correction is never silently overwritten by a later run.
+    from ..services.registry import get_domain_review_service
+
+    review = get_domain_review_service().get(change_id)
+    if review is not None and any(v.label == "domain_owner_edit" for v in review.history):
+        raise HTTPException(status_code=409, detail="The Domain Owner corrected this story; a new intake run would "
+                            "replace their version. Ask for changes on the story instead.")
     from ..services import agent_settings
 
     try:

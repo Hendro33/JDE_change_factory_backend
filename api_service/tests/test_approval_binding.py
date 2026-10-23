@@ -199,3 +199,14 @@ def test_an_approval_from_before_bindings_existed_is_not_eligible(client):
     approval._save(change["change_id"], record)
     with pytest.raises(BindingInvalid, match="no recorded approval basis"):
         _execute("S-BIND-LEGACY", change["change_id"])
+
+
+def test_e9_a_material_change_comes_back_with_what_changed(client, monkeypatch):
+    _setup(client, "S-BIND-E9")
+    _design_with_change(client, monkeypatch, "S-BIND-E9")
+    with sim_edit("vdb", "drift before approval") as est:
+        est["processing_options"]["P4210|CIQ0001"]["PCREDCHK"] = "0"
+    client.post("/changes/S-BIND-E9/architecture-review/refresh-evidence", headers=headers("vdb"))
+    lc = client.get("/changes/S-BIND-E9", headers=headers("vdb")).json()["lifecycle"]
+    assert lc["nextAction"]["action"] == "rerun_solutioning"
+    assert any(i.startswith("What changed:") for i in lc["openItems"]), lc["openItems"]

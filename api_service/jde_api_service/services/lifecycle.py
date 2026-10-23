@@ -828,10 +828,14 @@ def _solution_onwards(change, company_id: str, story_id: str) -> Lifecycle:
     elif route == "Resolve without Change":
         lc = _no_change_route(change, route)
     elif b is not None and b.get("status") not in (None, "current"):
+        # Register E9: the authorised scope comes back for review with what changed, in its own words.
+        changed = [f"What changed: {r.get('detail')}" for r in (b.get("reassessment") or [])
+                   if isinstance(r, dict) and r.get("detail")][:5]
         lc = _mk("solutioning", "blocked", NextAction(
-            kind="task", summary="The story changed after the solution was designed. Re-run solutioning.",
+            kind="task", summary="Something the solution depends on changed after it was designed. Re-run solutioning.",
             owner="product_manager", action="rerun_solutioning", tab="solution",
-            effect="JADE reassesses the solution against the updated story."), route=route)
+            effect="JADE reassesses the solution against what changed; the earlier design stays on record."),
+            route=route, open_items=changed)
     elif route in TECHNICAL_ROUTES:
         lc = _technical_route(change, company_id, story_id, design, route)
     elif route == "Human Implementation":

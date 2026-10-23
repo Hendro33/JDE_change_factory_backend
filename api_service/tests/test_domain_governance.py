@@ -551,3 +551,17 @@ def test_metrics_bucket_unclassified_and_classified_domains_separately(client, m
     assert breakdown2 == [
         {"domainId": "DOM-BWM-ORDER-FULFIL", "domainName": "Order Fulfilment & Shipment Management", "apqcCode": "4.4.3", "count": 1}
     ]
+
+
+def test_b3_an_intake_rerun_never_overwrites_the_domain_owners_edit(client, monkeypatch):
+    change_id = _seed_and_enhance_t001(client, monkeypatch)
+    client.post(f"/changes/{change_id}/domain-review/start", headers=headers(customer="bwm"), json={"decidedBy": "Domain Owner"})
+    monkeypatch.setattr(sdk, "query", _fake_review_success)
+    edited = _enhance_summary(change_id)["user_story"]
+    edited["statement"] = "As a sales team member, I want delivery dates to also exclude public holidays..."
+    assert client.post(f"/changes/{change_id}/domain-review/edit", headers=headers(customer="bwm"),
+                       json={"editedBy": "Domain Owner", "note": "holidays", "userStory": edited}).status_code == 200
+    r = client.post(f"/changes/{change_id}/enhance", headers=headers(customer="bwm"))
+    assert r.status_code == 409 and "Domain Owner corrected" in r.json()["detail"]
+    history = client.get(f"/changes/{change_id}/domain-review", headers=headers(customer="bwm")).json()["history"]
+    assert history[1]["userStory"]["statement"] == edited["statement"]
