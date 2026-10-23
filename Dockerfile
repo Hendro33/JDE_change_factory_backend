@@ -33,5 +33,8 @@ USER jade
 EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
   CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=4).status == 200 else 1)"
+# The commit this image was built from, shown in Jade's footer (register N3).
+ARG JDE_BUILD_COMMIT=unknown
+ENV JDE_BUILD_COMMIT=$JDE_BUILD_COMMIT
 # --proxy-headers: Azure's front end terminates TLS and forwards the request.
 CMD ["uvicorn", "jde_api_service.main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers", "--forwarded-allow-ips", "*"]

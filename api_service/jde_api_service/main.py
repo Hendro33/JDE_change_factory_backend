@@ -222,9 +222,13 @@ async def _unhandled_exception_handler(request: Request, exc: Exception) -> JSON
 
 
 def _build_commit() -> str:
-    """The backend commit actually running, so the UI can show it."""
+    """The backend commit actually running, so the UI can show it: the image's
+    build commit (set by the deploy, register N3), else the git checkout."""
     import subprocess
 
+    built = os.environ.get("JDE_BUILD_COMMIT", "").strip()
+    if built and built != "unknown":
+        return built[:10]
     try:
         return subprocess.run(["git", "rev-parse", "--short=10", "HEAD"], cwd=os.path.dirname(__file__),
                               capture_output=True, text=True, timeout=5).stdout.strip() or "unknown"

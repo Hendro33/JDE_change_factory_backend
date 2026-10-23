@@ -182,4 +182,61 @@ def record_acceptance(change_id: str, payload: AcceptanceInput, ctx: AuthContext
         who = entry.get("on_behalf_of") or ctx.identity.display_name
         backlog.close_resolved(change_id, (finding + f" -- accepted by the business ({who})").strip(" -"),
                                resolved_by=ctx.identity.display_name)
+    updated = _change(change_id, ctx)
+    if entry["decision"] == "accepted":
+        from ..services import closure
+
+        closure.post_outcome(ctx.customer_id, updated)   # H3: the outcome back to the ticket (best effort)
+        updated = _change(change_id, ctx)
+    return updated
+
+
+class RequesterConfirmationInput(ApiModel):
+    solved: bool
+    note: str = ""
+    on_behalf_of: str = ""
+
+
+class FollowUpInput(ApiModel):
+    text: str
+
+
+@router.post("/changes/{change_id}/requester-confirmation", response_model=Change)
+def requester_confirmation(change_id: str, payload: RequesterConfirmationInput,
+                           ctx: AuthContext = Depends(require_write_access)) -> Change:
+    """Register H4: the requester confirms solved / not solved. "Not solved"
+    opens a new linked request at intake with the reason; the finished story
+    keeps its record. Recorded by the Domain Owner, or by the AM on behalf."""
+    from ..services import closure
+
+    change = _change(change_id, ctx)
+    roles = set(ctx.roles)
+    if "domain_owner" in roles and not payload.on_behalf_of.strip():
+        require_domain_owner_access(ctx, change.business_domain_id)
+    elif not roles & {"product_manager", "admin"}:
+        raise HTTPException(status_code=403, detail="the Domain Owner, or the Application Manager on the requester's "
+                                                    "behalf, records this")
+    elif not payload.on_behalf_of.strip():
+        raise HTTPException(status_code=422, detail="name the requester you record this for")
+    try:
+        closure.confirm(ctx.customer_id, change, solved=payload.solved, note=payload.note,
+                        by=ctx.identity.display_name, by_user_id=ctx.identity.id, on_behalf_of=payload.on_behalf_of)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+    return _change(change_id, ctx)
+
+
+@router.post("/changes/{change_id}/follow-up", response_model=Change)
+def follow_up(change_id: str, payload: FollowUpInput, ctx: AuthContext = Depends(require_write_access)) -> Change:
+    """Register F4: an improvement raised after authorisation becomes a linked
+    follow-up request at intake, never silent scope growth."""
+    from ..services import closure
+
+    change = _change(change_id, ctx)
+    if len(payload.text.strip()) < 10:
+        raise HTTPException(status_code=422, detail="describe the improvement in a sentence")
+    if not set(ctx.roles) & {"product_manager", "admin", "domain_owner"}:
+        raise HTTPException(status_code=403, detail="requires the Domain Owner or Application Manager role")
+    closure.open_linked_request(ctx.customer_id, change, kind="follow_up", text=payload.text,
+                                by=ctx.identity.display_name, by_user_id=ctx.identity.id)
     return _change(change_id, ctx)

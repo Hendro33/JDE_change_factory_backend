@@ -64,5 +64,11 @@ class OutcomeCard(ApiModel):
     # Each acceptance criterion with how far it is verified (register C12). The
     # DEV test covers the change as a whole; that is said, not claimed per criterion.
     criteria: list[dict] = []
+    # Closing the loop (register H3, H4, F4): the requester's confirmation, the
+    # linked requests opened from this story, and what was written to Jira.
+    requester_confirmation: Optional[dict] = None
+    linked_requests: list[dict] = []
+    jira_posted: int = 0
+    jira_failed: list[str] = []
     jira_key: str = ""
     jira_url: str = ""

@@ -142,6 +142,15 @@ def my_work(ctx: AuthContext = Depends(require_customer_access)) -> MyWork:
     return work.build(changes, ctx.roles, domains, names)
 
 
+@router.get("/insights/usefulness")
+def usefulness(days: int = 30, ctx: AuthContext = Depends(require_customer_access)) -> list[dict]:
+    """Register M7: usefulness and completion measured from recorded events."""
+    from ..services import usefulness as measures
+
+    changes = [c for c in get_change_service().list_for_customer(ctx.customer_id) if c.lifecycle]
+    return measures.measure(ctx.customer_id, changes, days=max(1, min(days, 365)))
+
+
 @router.get("/figures")
 def portfolio_figures(ctx: AuthContext = Depends(require_customer_access)) -> list[dict]:
     """The portfolio figures of the one figure strip (decision X1), the same
@@ -196,7 +205,14 @@ def resolve_issue(change_id: str, issue_id: str, payload: ResolveIssueInput,
     issues_service.record_resolution(ctx.customer_id, change_id, issue=issue, status=payload.status,
                                      answer=payload.answer, by=ctx.identity.display_name,
                                      by_user_id=ctx.identity.id)
-    return get_change_service().get_for_customer(change_id, ctx.customer_id)
+    updated = get_change_service().get_for_customer(change_id, ctx.customer_id)
+    try:
+        from ..services import closure
+
+        closure.sync_questions(ctx.customer_id, updated)   # C4: the answer noted on the Jira ticket (best effort)
+    except Exception:  # noqa: BLE001
+        pass
+    return updated
 
 
 @router.get("/completion-gaps")

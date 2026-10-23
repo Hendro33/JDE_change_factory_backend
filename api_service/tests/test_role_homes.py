@@ -106,3 +106,10 @@ def test_the_clarification_route_follows_the_answers(client):
     w = am.get("/work").json()
     assert any(c["id"] == "CR-HW-010" for c in w["needsYou"])
     assert not any(c["id"] == "CR-HW-010" for c in do.get("/work").json()["needsYou"])
+
+
+def test_usefulness_measures_come_from_recorded_events(client):
+    _setup(client)
+    rows = {r["key"]: r for r in _session("u-am").get("/insights/usefulness").json()}
+    assert set(rows) == {"manual_starts", "waiting", "repeat_questions", "verified_outcomes", "first_time_right"}
+    assert all(r["definition"] for r in rows.values())

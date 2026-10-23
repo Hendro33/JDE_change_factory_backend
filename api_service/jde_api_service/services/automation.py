@@ -560,6 +560,12 @@ def sweep(company_id: str, *, loop: Optional[asyncio.AbstractEventLoop] = None, 
             logger.exception("could not start automatic %s for %s", plan.kind, change.id)
     if recheck and settings["enabled"]:
         out["rechecked"] = recheck_before_delivery(company_id, changes)
+    try:
+        from . import closure
+
+        out["jira_written"] = [closure.sweep(company_id, changes)]   # C4, H3: questions and outcomes to Jira
+    except Exception:  # noqa: BLE001
+        logger.exception("Jira write-back sweep failed for %s", company_id)
     return out
 
 

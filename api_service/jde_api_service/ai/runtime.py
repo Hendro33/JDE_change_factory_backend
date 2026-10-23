@@ -595,14 +595,19 @@ def health(company_id: str) -> list[dict]:
             ai_connection.resolve_for_run(company_id)
         except AiNotConfigured as exc:
             conn_problem = str(exc)
+        # Register J4: configured, last run succeeded and running now are three
+        # separate facts; a finished run is never reported as "working".
+        running = any(r["status"] == "running" for r in mine)
         if role in disabled_roles:
             state = "disabled"
         elif conn_problem or pack_problem:
             state = "not configured"
+        elif running:
+            state = "running now"
         elif last and last["status"] in ("failed", "blocked"):
-            state = "failed"
-        elif real_ok:
-            state = "working"
+            state = "last run failed"
+        elif real_ok and last and last["run_id"] == real_ok["run_id"]:
+            state = "last run succeeded"
         elif view.get("tested"):
             state = "connection tested"
         else:
@@ -611,6 +616,8 @@ def health(company_id: str) -> list[dict]:
             "role": role, "label": info["label"], "state": state, "disabled": role in disabled_roles,
             "blockedReason": conn_problem or pack_problem,
             "configured": not conn_problem and not pack_problem, "connectionTested": bool(view.get("tested")),
+            "runningNow": running,
+            "lastRunSucceeded": (last["status"] == "completed") if last and last["status"] != "running" else None,
             "connectionRevision": view.get("revision"),
             "activity": ai_connection.ROLE_ACTIVITY.get(role),
             "configuredModel": (view.get("activityModels") or {}).get(ai_connection.ROLE_ACTIVITY.get(role, ""),

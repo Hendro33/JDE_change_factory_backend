@@ -307,7 +307,17 @@ def outcome(change, lc: Lifecycle, tech: dict, hs: dict, accepted: Optional[dict
     crit_state = ("verified in DEV with the change as a whole" + (f" ({dev.by})" if dev.by else "")) if dev.done else "not verified yet"
     criteria = [{"text": a.text, "state": crit_state, "verified": dev.done}
                 for a in (change.user_story.acceptance_criteria if change.user_story else [])]
+    from . import closure
+
+    try:
+        wb = closure.writebacks(change.customer_id, change.id)
+        conf = closure.confirmation(change.customer_id, change.id)
+        linked = closure.links(change.customer_id, change.id)
+    except Exception:  # noqa: BLE001
+        wb, conf, linked = {"posted": {}, "failed": {}}, None, []
     return OutcomeCard(headline=headline, what_changed=changed, verified=verified, dev_verified=dev, criteria=criteria,
+                       requester_confirmation=conf, linked_requests=linked, jira_posted=len(wb["posted"]),
+                       jira_failed=[f"{k}: {v['error']}" for k, v in wb["failed"].items()],
                        business_accepted=acc, released=rel, not_accepted=not_acc, what_to_do_now=todo,
                        jira_key=key, jira_url=url)
 

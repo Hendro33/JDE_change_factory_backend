@@ -52,6 +52,9 @@ jobs:
             ${{ env.IMAGE }}:dev
             ${{ env.IMAGE }}:dev-${{ github.sha }}
           labels: org.opencontainers.image.revision=${{ github.sha }}
+          # The running commit, shown in Jade's footer (register N3).
+          build-args: |
+            JDE_BUILD_COMMIT=${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
