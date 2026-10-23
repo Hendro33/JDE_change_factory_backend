@@ -272,13 +272,61 @@ def get_revision(company_id: str, pack_id: str, revision: int) -> dict:
             "publishedAt": r["published_at"], "publishedBy": r["published_by"], "ceiling": list(ceiling(p["role"]))}
 
 
+def _latest_published(conn, pack_id: str):
+    return conn.execute("SELECT revision, content, sha256, note, published_at FROM agent_pack_revisions WHERE pack_id = ? "
+                        "AND status = 'published' ORDER BY revision DESC LIMIT 1", (pack_id,)).fetchone()
+
+
+def _sections(text: str) -> dict[str, str]:
+    """The instructions split by their headings, for a short 'what changed'."""
+    out: dict[str, list[str]] = {"(opening)": []}
+    cur = "(opening)"
+    for line in (text or "").splitlines():
+        if line.lstrip().startswith("#"):
+            cur = line.strip("# ").strip() or cur
+            out.setdefault(cur, [])
+        else:
+            out.setdefault(cur, []).append(line)
+    return {k: "\n".join(v).strip() for k, v in out.items()}
+
+
+def what_changed(old: dict, new: dict) -> list[str]:
+    """Which parts of the instructions differ between two pack contents."""
+    a, b = _sections(old.get("instructions", "")), _sections(new.get("instructions", ""))
+    changed = [f"changed: {k}" for k in b if k in a and a[k] != b[k]]
+    changed += [f"added: {k}" for k in b if k not in a]
+    changed += [f"removed: {k}" for k in a if k not in b]
+    if sorted(old.get("capabilities") or []) != sorted(new.get("capabilities") or []):
+        changed.append("changed: tool permissions")
+    return changed
+
+
 def assignments(company_id: str) -> dict[str, dict]:
+    """Each role's assignment. A role on the standard Jade instructions follows
+    the latest standard revision (decision X2, 23 Oct); a customer's own pack
+    stays pinned, and says when a newer standard version exists."""
+    out: dict[str, dict] = {}
     with connection() as conn:
-        rows = conn.execute("SELECT a.*, p.name FROM agent_pack_assignments a JOIN agent_packs p ON p.pack_id = a.pack_id "
-                            "WHERE a.company_id = ?", (company_id,)).fetchall()
-    return {r["role"]: {"packId": r["pack_id"], "packName": r["name"], "revision": r["pack_revision"],
-                        "version": r["version"], "assignedAt": r["assigned_at"], "assignedBy": r["assigned_by"]}
-            for r in rows}
+        rows = conn.execute("SELECT a.*, p.name, p.company_id AS owner FROM agent_pack_assignments a JOIN agent_packs p "
+                            "ON p.pack_id = a.pack_id WHERE a.company_id = ?", (company_id,)).fetchall()
+        for r in rows:
+            row = {"packId": r["pack_id"], "packName": r["name"], "revision": r["pack_revision"],
+                   "version": r["version"], "assignedAt": r["assigned_at"], "assignedBy": r["assigned_by"],
+                   "followsStandard": r["owner"] is None, "newerStandard": None}
+            std = _latest_published(conn, template_pack_id(r["role"]))
+            if r["owner"] is None:
+                latest = _latest_published(conn, r["pack_id"])
+                if latest is not None:
+                    row["revision"] = latest["revision"]   # what runs now
+                    row["assignedRevision"] = r["pack_revision"]
+            elif std is not None:
+                mine = conn.execute("SELECT content, created_at FROM agent_pack_revisions WHERE pack_id = ? AND revision = ?",
+                                    (r["pack_id"], r["pack_revision"])).fetchone()
+                if mine is not None and (std["published_at"] or "") > (mine["created_at"] or ""):
+                    row["newerStandard"] = {"revision": std["revision"], "publishedAt": std["published_at"],
+                                            "changes": what_changed(json.loads(mine["content"]), json.loads(std["content"]))}
+            out[r["role"]] = row
+    return out
 
 
 def audit(company_id: str, limit: int = 50) -> list[dict]:
@@ -482,12 +530,18 @@ def snapshot(company_id: str, role: str) -> PackSnapshot:
         if a["disabled_at"]:
             raise AiNotConfigured(f"the Start-up Pack assigned to the {ROLES.get(role, {}).get('label', role)} is disabled "
                                   "(Administration › Agents & AI › Instructions & knowledge)")
+        revision = a["pack_revision"]
+        if a["company_id"] is None:
+            # The standard Jade instructions: the latest published revision (X2).
+            latest = _latest_published(conn, a["pack_id"])
+            if latest is not None:
+                revision = latest["revision"]
         r = conn.execute("SELECT status, content, sha256 FROM agent_pack_revisions WHERE pack_id = ? AND revision = ?",
-                         (a["pack_id"], a["pack_revision"])).fetchone()
+                         (a["pack_id"], revision)).fetchone()
     if r is None or r["status"] != "published":
         raise AiNotConfigured(f"the pack assigned to the {role} is not a published revision")
     content = json.loads(r["content"])
     if content_sha(content) != r["sha256"]:
         raise AiNotConfigured(f"the pack assigned to the {role} failed its integrity check")
-    return PackSnapshot(role=role, pack_id=a["pack_id"], pack_name=a["name"], revision=a["pack_revision"],
+    return PackSnapshot(role=role, pack_id=a["pack_id"], pack_name=a["name"], revision=revision,
                         sha256=r["sha256"], content=content)

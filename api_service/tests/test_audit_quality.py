@@ -207,6 +207,7 @@ def test_f05_technical_questions_go_to_jade_and_discovery_retires_them(client, m
     assert tech["owner"] == "jade" and tech["resolution"]["by"] == "JADE (discovery)"
     assert "Stocking type N" in tech["resolution"]["answer"]
     biz = story_issues["Should the export include items with zero stock?"]
-    assert biz["owner"] == "domain_owner" and biz["resolution"] is None
+    # No domain yet, so the Application Manager has it first (register C3).
+    assert biz["owner"] == "product_manager" and "no domain yet" in biz["ownerLabel"] and biz["resolution"] is None
 
 

@@ -503,6 +503,17 @@ def apply(change, lc: Lifecycle, company_id: Optional[str] = None) -> Lifecycle:
     if lc.phase != "understand":
         issues += story_issues(change)
     issues = _dedupe(issues)
+    if not change.business_domain_id:
+        # No domain yet, so no Domain Owner may answer (register C3): the
+        # Application Manager gets it first -- place the story, or answer.
+        for i in issues:
+            if i.owner == "domain_owner":
+                # A named party (Finance, the requester) stays named; the AM relays it.
+                i.owner = "product_manager"
+                if i.owner_label in ("", "Domain Owner"):
+                    i.owner_label = "Application Manager (no domain yet)"
+                i.action = ("Place the story in a business domain so its Domain Owner answers, or record the answer "
+                            "yourself.")
     done = resolutions(company_id, change.id) if issues else {}
     from .design_quality import discovery_answer
 
@@ -538,6 +549,30 @@ def _adjust_next_action(change, lc: Lifecycle, open_: list[Issue], done: dict[st
                                     owner_label=b.owner_label, action=b.action_id, tab=b.tab,
                                     effect="Delivery continues once this is resolved; JADE checks again when you "
                                            "press the button.")
+        return
+    if na.action == "clarify":
+        # The clarification route follows the open points (register E12): the
+        # first open question's owner answers it; once everything is answered,
+        # the Application Manager runs the Architect again.
+        asks = [i for i in open_ if i.kind in ("business", "decision")]
+        if asks:
+            first = asks[0]
+            lc.next_action = NextAction(
+                kind="decision", summary=f"Answer JADE's question: {first.title}", owner=first.owner,
+                owner_label=first.owner_label or OWNER_LABELS.get(first.owner, ""), action=first.action_id or "answer_issue",
+                tab=first.tab,
+                effect="Your answer is recorded with the story; the Application Manager then runs the Architect "
+                       "again with it.")
+            return
+        lc.health, lc.health_label = "waiting", "Waiting"
+        answered = any(r.get("answer") for r in done.values())
+        lc.next_action = NextAction(
+            kind="task", owner="product_manager", owner_label=OWNER_LABELS["product_manager"], action="rerun_solutioning",
+            tab="solution",
+            summary=("The questions are answered. Run the Architect again so the solution uses the answers."
+                     if answered else "JADE asked for clarification but listed no question. Run the Architect again, "
+                                      "or ask JADE on the solution what it needs."),
+            effect="JADE reassesses the solution with the answers.")
         return
     if na.action not in _SOLUTION_DECISIONS:
         return

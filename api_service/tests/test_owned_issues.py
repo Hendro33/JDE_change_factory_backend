@@ -71,7 +71,7 @@ def test_a_blocking_business_question_replaces_authorise_with_waiting_for(facts)
     result = AgentResult(conclusion="Standard line type F exists and fits; only the revenue account is open.",
                          issues=[FINANCE, ResultIssue(title="Line type F may need a new description", owner="decision",
                                                       blocks=False)])
-    lc = lifecycle.derive(_change(architect_decision=_decision(result), **_proposed()))
+    lc = lifecycle.derive(_change(architect_decision=_decision(result), business_domain_id="DOM-SALES", **_proposed()))
     assert lc.phase == "solution_review" and lc.health == "blocked"
     na = lc.next_action
     assert na.summary.startswith("Waiting for Finance:") and na.owner == "domain_owner"

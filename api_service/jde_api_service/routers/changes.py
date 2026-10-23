@@ -128,33 +128,28 @@ def get_activity(ctx: AuthContext = Depends(require_customer_access)) -> list[Ac
 @router.get("/work", response_model=MyWork)
 def my_work(ctx: AuthContext = Depends(require_customer_access)) -> MyWork:
     """What needs the signed-in person's attention, derived only from the
-    canonical lifecycle (services/lifecycle.py) and their roles here."""
-    from datetime import datetime, timedelta, timezone
+    canonical lifecycle and their roles (and, for a Domain Owner, their
+    domains) here. Sections and figures come from services/work.py."""
+    from ..services import membership_service, work
+    from ..services.registry import get_business_domain_service
 
-    from ..services.lifecycle import is_mine
+    changes = [c for c in get_change_service().list_for_customer(ctx.customer_id) if c.lifecycle]
+    domains = membership_service.domain_ids_for_membership(ctx.identity.id, ctx.customer_id)
+    try:
+        names = {d.id: d.name for d in get_business_domain_service().list_for_customer(ctx.customer_id)}
+    except Exception:  # noqa: BLE001 -- names are presentation only
+        names = {}
+    return work.build(changes, ctx.roles, domains, names)
 
-    roles = set(ctx.roles)
-    all_changes = [c for c in get_change_service().list_for_customer(ctx.customer_id) if c.lifecycle]
-    open_ = [c for c in all_changes if c.lifecycle.phase != "done"]
-    mine = [c for c in open_ if is_mine(c.lifecycle, roles)]
-    mine_ids = {c.id for c in mine}
-    # Decisions first, then tasks; longest-waiting first within each -- by when
-    # the current step began (services/timing.py), not a generic updated-at.
-    mine.sort(key=lambda c: (c.lifecycle.next_action.kind != "decision", c.lifecycle.since or c.created_at))
-    cutoff = (datetime.now(timezone.utc) - timedelta(days=31)).isoformat()
-    return MyWork(
-        needs_you=mine,
-        waiting_on_others=[c for c in open_ if c.id not in mine_ids and not c.backlog_hold
-                           and c.lifecycle.next_action.owner not in ("jade", "none")],
-        jade_working=[c for c in open_ if c.lifecycle.next_action.owner == "jade"],
-        # User stories in progress; requests that are not a story yet are counted apart.
-        in_progress_count=len([c for c in open_ if c.lifecycle.phase != "understand"]),
-        requests_count=len([c for c in open_ if c.lifecycle.phase == "understand"]),
-        # Finished in the last 31 days: by when the story finished (its last recorded event).
-        completed_this_month=[c for c in all_changes if c.lifecycle.phase == "done"
-                              and c.lifecycle.outcome != "rejected" and (c.lifecycle.since or "") >= cutoff],
-        roles=sorted(roles),
-    )
+
+@router.get("/figures")
+def portfolio_figures(ctx: AuthContext = Depends(require_customer_access)) -> list[dict]:
+    """The portfolio figures of the one figure strip (decision X1), the same
+    numbers My Work and the Application Manager home show."""
+    from ..services import work
+
+    changes = [c for c in get_change_service().list_for_customer(ctx.customer_id) if c.lifecycle]
+    return [f.model_dump(by_alias=True) for f in work.figures(changes)]
 
 
 # -- Owned issues ----------------------------------------------------------------------------

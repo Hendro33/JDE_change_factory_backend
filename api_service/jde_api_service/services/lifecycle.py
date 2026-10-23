@@ -823,7 +823,8 @@ def _solution_onwards(change, company_id: str, story_id: str) -> Lifecycle:
         lc = _mk("solution_review", "blocked", NextAction(
             kind="decision", summary="JADE needs a business answer before it can propose a solution.",
             owner="domain_owner", action="clarify", tab="solution",
-            effect="Record the answer, then run the Architect again so the solution uses it."), route=route)
+            effect="Your answer is recorded with the story; the Application Manager then runs the Architect again "
+                   "with it."), route=route)
     elif route == "Resolve without Change":
         lc = _no_change_route(change, route)
     elif b is not None and b.get("status") not in (None, "current"):
