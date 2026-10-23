@@ -558,13 +558,17 @@ def _record_design(story_id: str, domain_id: Optional[str], change_id: Optional[
         summary=summary, agent_run_id=None, initiated_by=None, proposed_change_id=change_id)
 
 
-def _approve(change_id: str, am: dict) -> None:
+def _approve(change_id: str, am: dict, *, still_in_flight: bool = False) -> None:
     from jde_mcp_server import approval, binding
 
     record = approval._load(change_id)  # noqa: SLF001 -- recorded history, see the module docstring
     now = time.time()
+    # An approval whose work is still in flight (applied, test to come) is valid
+    # now; only the sample's deliberately expired approval (HW-007) and finished
+    # work carry an expiry in the past. The real clock, not the sample clock.
+    expires = datetime.now(timezone.utc).timestamp() + 24 * 3600 if still_in_flight else now + 24 * 3600
     record.update({
-        "status": "approved", "approved_by": am["name"], "approved_at": now, "expires_at": now + 24 * 3600,
+        "status": "approved", "approved_by": am["name"], "approved_at": now, "expires_at": expires,
         "approver_authority": {"user_id": am["id"], "roles": ["product_manager"], "policy_version": 1,
                                "scope_revision": "sample data"},
         "decision_note": "Reviewed the proposed value and the test approach.",
@@ -747,7 +751,7 @@ def _seed_request(spec: dict, people: dict[str, dict], now: datetime) -> None:
         return
 
     at("approved")
-    _approve(change_id, am)
+    _approve(change_id, am, still_in_flight=stage == "applied")
     if not _at_least(stage, "applied"):
         return
     at("applied")

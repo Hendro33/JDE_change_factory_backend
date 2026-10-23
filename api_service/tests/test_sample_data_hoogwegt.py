@@ -6,7 +6,9 @@ from .conftest import TEST_PASSWORD, _apply_csrf_header
 
 EXPECTED = {
     "CR-HW-001": ("done", "done"), "CR-HW-004": ("done", "done"), "CR-HW-005": ("release", "waiting"),
-    "CR-HW-006": ("validation", "waiting"),
+    # Audit F02: without a saved engagement scope the test gate refuses recording, so the
+    # story says it is blocked (and why) instead of asking for a test that would be refused.
+    "CR-HW-006": ("validation", "blocked"),
     # Approved, but the delivery gate refuses it in this data set: the next
     # action names the blocker instead of offering "record applied".
     "CR-HW-007": ("delivery", "blocked"),
