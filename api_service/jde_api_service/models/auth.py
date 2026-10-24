@@ -146,6 +146,19 @@ class InviteInput(ApiModel):
     domain_ids: list[str] = []
 
 
+class CreateUserInput(ApiModel):
+    """The Administrator creates a person with a password they choose (no e-mail, no link)."""
+    email: str
+    display_name: str = ""
+    password: str = ""        # required for a new account; ignored for someone who already has one
+    roles: list[Role]
+    domain_ids: list[str] = []
+
+
+class SetPasswordInput(ApiModel):
+    password: str
+
+
 class UpdateMembershipInput(ApiModel):
     roles: list[Role]
     domain_ids: list[str] = []

@@ -18,11 +18,13 @@ from ..config import settings
 from ..dependencies import AuthContext, require_role
 from ..models.auth import (
     CompanyUsersOut,
+    CreateUserInput,
     InvitationOut,
     InviteInput,
     MembershipOut,
     MembershipStatusInput,
     PasswordResetLinkOut,
+    SetPasswordInput,
     UpdateMembershipInput,
 )
 from ..services import auth_service, invitation_service, membership_service
@@ -226,3 +228,66 @@ def reactivate(
     membership_id: str, payload: MembershipStatusInput | None = None, ctx: AuthContext = Depends(require_role("admin"))
 ) -> MembershipOut:
     return _set_status(membership_id, "active", payload, ctx)
+
+
+# -- Creating people and setting passwords directly (Hendro, 24 Oct) --------------------------
+# The usual pattern in business applications: the Administrator creates a person with a
+# temporary password, or sets a new one, right on the user screen. No e-mail or link needed.
+MIN_PASSWORD_LENGTH = 8
+
+
+def _check_new_password(password: str) -> None:
+    if len(password or "") < MIN_PASSWORD_LENGTH:
+        raise HTTPException(status_code=422, detail=f"the password must be at least {MIN_PASSWORD_LENGTH} characters")
+
+
+def _admin_everywhere_or_403(user_id: str, ctx: AuthContext) -> None:
+    """A password change takes over the whole account, so the Administrator must be an
+    Administrator of every company this person belongs to (the reset-link rule)."""
+    elsewhere = [c["company_id"] for c in membership_service.companies_for_user(user_id)
+                 if "admin" not in membership_service.roles_for(ctx.identity.id, c["company_id"])]
+    if elsewhere:
+        raise HTTPException(status_code=403, detail="this person also belongs to a company you are not an Admin of, "
+                                                    "so you cannot set their password")
+
+
+@router.post("", response_model=MembershipOut)
+def create_user(payload: CreateUserInput, ctx: AuthContext = Depends(require_role("admin"))) -> MembershipOut:
+    """Create a person with a password and give them roles in this company. Someone who already has a
+    login is added to this company with these roles (their password is not changed here)."""
+    email = payload.email.strip()
+    if "@" not in email:
+        raise HTTPException(status_code=422, detail="enter a valid e-mail address")
+    if not payload.roles:
+        raise HTTPException(status_code=422, detail="choose at least one role")
+    _require_company_domains(payload.domain_ids, ctx.customer_id)
+    user = auth_service.get_user_by_email(email)
+    if user is None:
+        _check_new_password(payload.password)
+        user = auth_service.create_user(email, payload.password, payload.display_name.strip() or email)
+    existing = next((m for m in membership_service.list_company_members(ctx.customer_id) if m["user_id"] == user.id), None)
+    if existing is not None:
+        membership_service.update_membership_roles(existing["membership_id"], set(payload.roles), set(payload.domain_ids),
+                                                   actor_user_id=ctx.identity.id, as_admin=True)
+        if existing.get("status") != "active":
+            membership_service.set_membership_status(existing["membership_id"], "active", actor_user_id=ctx.identity.id, as_admin=True)
+        membership_id = existing["membership_id"]
+    else:
+        membership_id = membership_service.create_membership(user.id, ctx.customer_id, payload.roles, payload.domain_ids,
+                                                             created_by=ctx.identity.id)
+    # A pending invitation for the same address in this company is no longer needed.
+    for inv in invitation_service.list_for_company(ctx.customer_id):
+        if inv["email"].lower() == email.lower() and inv["status"] == "pending":
+            invitation_service.revoke_invitation(inv["id"], actor_user_id=ctx.identity.id)
+    return _member_out(membership_id, ctx.customer_id)
+
+
+@router.post("/{membership_id}/password")
+def set_password(membership_id: str, payload: SetPasswordInput, ctx: AuthContext = Depends(require_role("admin"))) -> dict:
+    """Set a new password for a person; their open sessions end."""
+    member = _membership_in_company_or_404(membership_id, ctx.customer_id)
+    _check_new_password(payload.password)
+    _admin_everywhere_or_403(member["user_id"], ctx)
+    auth_service.set_password(member["user_id"], payload.password)
+    auth_service.revoke_all_sessions_for_user(member["user_id"])
+    return {"ok": True}
