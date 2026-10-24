@@ -57,7 +57,9 @@ def _invitation_out(inv: dict, *, invited_by_display_name: str, preview_url: str
         id=inv["id"], email=inv["email"], roles=inv["roles"], domain_ids=inv["domain_ids"],
         status=inv["status"], created_at=inv["created_at"], expires_at=inv["expires_at"],
         invited_by_display_name=invited_by_display_name,
-        preview_url=preview_url if delivery is not None and not delivery.sent else None,
+        # Test phase (Hendro, 24 Oct): the Administrator always sees the link too, so a test user
+        # can be set up without a mailbox. Only Administrators can call these endpoints.
+        preview_url=preview_url,
         email_sent=bool(delivery and delivery.sent), email_detail=delivery.detail if delivery else "",
     )
 
@@ -158,7 +160,7 @@ def issue_password_reset_link(
         body=(f"Your Jade administrator started a password reset for you.\n\nChoose a new password here:\n{link}\n\n"
               "The link is personal and expires."), action_url=link,
     ))
-    return PasswordResetLinkOut(sent=delivery.sent, preview_url=None if delivery.sent else link,
+    return PasswordResetLinkOut(sent=delivery.sent, preview_url=link,
                                 detail=delivery.detail)
 
 

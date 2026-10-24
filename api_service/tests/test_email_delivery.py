@@ -60,11 +60,11 @@ def _invite(client, email="new.person@customer.example"):
                        json={"email": email, "roles": ["domain_owner"], "domainIds": []})
 
 
-def test_an_invitation_is_emailed_over_starttls_and_the_link_is_not_shown(client, smtp):
+def test_an_invitation_is_emailed_over_starttls_and_the_admin_also_sees_the_link(client, smtp):
     r = _invite(client)
     assert r.status_code == 200, r.text
     body = r.json()
-    assert body["emailSent"] is True and body["previewUrl"] is None
+    assert body["emailSent"] is True and "acceptInvitation=" in body["previewUrl"]   # test phase: shown to the Admin too
     assert len(smtp) == 1
     mail = smtp[0]
     assert mail["to"] == "new.person@customer.example" and mail["from"] == "jade@consultiq.example"
@@ -103,5 +103,5 @@ def test_an_admin_issued_reset_is_emailed_when_possible(client, smtp):
     members = client.get("/admin/users", headers=headers("vdb")).json()["members"]
     ellen = next(m for m in members if m["email"] == "ellen@test.local")
     r = client.post(f"/admin/users/{ellen['membershipId']}/password-reset-link", headers=headers("vdb"))
-    assert r.json()["sent"] is True and r.json()["previewUrl"] is None
+    assert r.json()["sent"] is True and "resetToken=" in r.json()["previewUrl"]
     assert smtp[-1]["to"] == "ellen@test.local"
