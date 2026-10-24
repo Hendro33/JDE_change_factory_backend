@@ -70,6 +70,11 @@ class AuthoriseInput(ApiModel):
 @router.post("/changes/{change_id}/handoff/authorise", response_model=Change)
 def authorise(change_id: str, payload: AuthoriseInput, ctx: AuthContext = Depends(require_write_access)) -> Change:
     change = _change(change_id, ctx)
+    from ..services import readiness
+
+    reason = readiness.refusal(change)
+    if reason:
+        raise HTTPException(status_code=409, detail=reason)
     try:
         handoff.authorise(change, actor_name=ctx.identity.display_name, actor_user_id=ctx.identity.id,
                           roles=set(ctx.roles), note=payload.note)

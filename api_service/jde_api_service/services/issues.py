@@ -213,6 +213,8 @@ def _from_result_issue(ri: ResultIssue) -> Issue:
         label = "Finance"
     issue = Issue(id=_id(kind, ri.title), kind=kind, title=_short(ri.title, 300), consequence=ri.consequence,
                   owner=role, owner_label=ri.who.strip() or label, action=ri.action,
+                  # JADE's own read notes never block (AG-005); a question returned to JADE from a person
+                  # keeps its blocking flag (_return_to_jade, repair brief 24 Oct).
                   action_id=_ACTION_FOR_KIND.get(kind), blocks=ri.blocks and kind != "jade",
                   proposed_answer=ri.proposed_answer, source="architect",
                   tab="story" if kind == "business" else "solution", options=list(ri.options))
@@ -221,18 +223,20 @@ def _from_result_issue(ri: ResultIssue) -> Issue:
 
 
 def _return_to_jade(issue: Issue) -> Issue:
-    """Register E6: a question about how JD Edwards is set up is JADE's to read,
-    never a person's. It goes back to the Architect (the next run is told) and
-    is not shown to anyone as their question."""
+    """Register E6, repair brief 24 Oct: technical investigation is JADE's, never a person's question.
+    It goes back to the Architect (the next run is told) and leaves every person's queue -- but it
+    keeps blocking authorisation when it blocked, so a design never looks ready while facts are
+    still unknown."""
     if issue.kind not in ("business", "decision"):
         return issue
-    from .design_quality import classify_story_question
+    from .design_quality import is_technical_investigation
 
-    if classify_story_question(issue.title) != "jade":
+    if not is_technical_investigation(issue.title, kind=issue.kind, options=issue.options,
+                                      text=f"{issue.consequence} {issue.action}"):
         return issue
     return issue.model_copy(update={
-        "kind": "jade", "owner": "jade", "owner_label": "JADE", "blocks": False, "action_id": None,
-        "action": "Returned to JADE: it reads this in DEV on the next solution run; nobody is asked.",
+        "kind": "jade", "owner": "jade", "owner_label": "JADE", "action_id": None,
+        "action": "JADE investigates this in DEV when the Architect runs again; nobody is asked.",
         "returned": True})
 
 
@@ -636,6 +640,20 @@ def _adjust_next_action(change, lc: Lifecycle, open_: list[Issue], done: dict[st
     if na.action not in _SOLUTION_DECISIONS:
         return
     blocking = [i for i in open_ if i.blocks and i.owner not in ("jade", "none")]
+    investigating = [i for i in open_ if i.blocks and i.owner == "jade" and i.source != "delivery_gate"]
+    if not blocking and investigating:
+        # Repair brief 24 Oct: facts JADE still has to find out block authorisation; the Application
+        # Manager re-runs the Architect (their button) -- nobody is asked to decide an unknown.
+        n = len(investigating)
+        lc.health, lc.health_label = "blocked", "Blocked"
+        lc.next_action = NextAction(
+            kind="task", owner="product_manager", owner_label=OWNER_LABELS["product_manager"], action="rerun_solutioning",
+            tab="solution",
+            summary=f"JADE still has to find out {n} technical point{'s' if n > 1 else ''} before this can be authorised: "
+                    f"{investigating[0].title}",
+            effect="Run the Architect again; it investigates these in DEV. Authorising becomes available once nothing "
+                   "blocks it.")
+        return
     if blocking:
         first = blocking[0]
         others = [i for i in blocking if i.owner_label != first.owner_label]

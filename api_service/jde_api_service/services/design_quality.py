@@ -195,12 +195,48 @@ def confidence_threshold() -> float:
         return DEFAULT_CONFIDENCE_THRESHOLD
 
 
+# Repair brief 24 Oct, priority 1: technical investigation is JADE's work, whatever the wording.
+# A question is technical investigation when it asks a FACT about JD Edwards artefacts (which object,
+# table, report, field, version, value or test data; where something is held or configured), or when
+# it says itself that the Architect/JADE/an agent should find it out. A question about intent, choice
+# or policy stays with people.
+_JDE_ARTEFACT = (r"(jd ?e(dwards)?|e1|object|table|file|report|program|application|form|field|column|data item|"
+                 r"udc|user defined code|version|processing option|data selection|sequencing|aai|line type|"
+                 r"document type|order type|stocking type|next number|business function|orchestration|"
+                 r"\b[FPR]\d{4,6}\b|\b[PRF]5[5-9]\w*|test (data|item|record|order|customer|case)s?)")
+_FACT_SEEKING_RE = re.compile(
+    r"\b(which|what|where|whether|is there|are there|does (it|the|jd ?e)|do (we|they) have|exists?|holds?|stores?|"
+    r"stored|contains?|configured|set up|currently|already|source)\b[^?.;]{0,80}" + _JDE_ARTEFACT
+    + r"|" + _JDE_ARTEFACT + r"[^?.;]{0,60}\b(holds?|stores?|contains?|exists?|is (used|configured|set))\b", re.I)
+_SELF_INVESTIGATION_RE = re.compile(
+    r"\b(the )?(architect|jade|functional agent|technical agent|agent|discovery)\b[^.;]{0,40}\b(should|will|can|must|"
+    r"needs? to|to)\b[^.;]{0,20}\b(resolve|investigate|confirm|read|check|determine|identify|verify|look up|find)", re.I)
+_UNKNOWN_TECH_VALUE_RE = re.compile(
+    r"\b(unknown|not (yet )?known|to be (determined|confirmed)|tbd|not determined|could not (be )?(read|identified|"
+    r"determined|confirmed)|which (exact |target )?values?|what (exact |target )?values?)\b", re.I)
+
+
 def classify_story_question(question: str) -> str:
     """'jade' for technical investigation JADE answers from discovery,
     'business' for intent and choices."""
-    if _TECH_Q_RE.search(question or "") and not _BUSINESS_Q_RE.search(question or ""):
+    q = question or ""
+    if _SELF_INVESTIGATION_RE.search(q):
+        return "jade"
+    if (_TECH_Q_RE.search(q) or _FACT_SEEKING_RE.search(q)) and not _BUSINESS_Q_RE.search(q):
         return "jade"
     return "business"
+
+
+def is_technical_investigation(title: str, *, kind: str, options: list | None = None, text: str = "") -> bool:
+    """For an Architect issue: True when it is JADE's own investigation rather than a person's decision.
+    A 'decision' about technical values nobody knows yet, without real alternatives to choose from, is
+    incomplete investigation -- not a choice for the Application Manager."""
+    if classify_story_question(title) == "jade" or _SELF_INVESTIGATION_RE.search(text or ""):
+        return True
+    if kind == "decision" and len(options or []) < 2 and _UNKNOWN_TECH_VALUE_RE.search(f"{title} {text}") \
+            and re.search(_JDE_ARTEFACT + r"|configur|setting|value", f"{title} {text}", re.I):
+        return True
+    return False
 
 
 def discovery_answer(change, question: str) -> Optional[dict]:

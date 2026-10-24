@@ -104,6 +104,13 @@ def technical_work(story_id: str, ctx: AuthContext = Depends(require_customer_ac
 def approve_design(story_id: str, payload: DesignApprovalInput,
                    ctx: AuthContext = Depends(require_write_access)) -> dict:
     _require_story(story_id, ctx.customer_id)
+    from ..services import readiness
+    from ..services.registry import get_change_service
+
+    change = get_change_service().get_for_customer(story_id, ctx.customer_id)
+    reason = readiness.refusal(change) if change is not None else None
+    if reason:
+        raise HTTPException(status_code=409, detail=reason)
     try:
         return service.approve_design(ctx.customer_id, story_id, payload.design_revision,
                                       actor_name=ctx.identity.display_name, actor_user_id=ctx.identity.id,

@@ -24,7 +24,7 @@ def test_e6_a_question_about_how_jde_is_set_up_never_reaches_a_person(facts):
     lc = _derive(r)
     by = {i.title: i for i in lc.issues}
     tech = by["Which stocking type value marks a non-stock item?"]
-    assert tech.owner == "jade" and tech.returned and not tech.blocks
+    assert tech.owner == "jade" and tech.returned and tech.blocks   # repair brief: the blocker is kept, with JADE
     assert by["Should zero-stock items be in the export?"].owner == "domain_owner"
     change = _change(architect_decision=ArchitectDecision(recommended_route="Functional Agent", confidence=0.8,
                                                           decided_at="2026-10-01T00:00:00+00:00", result=r))

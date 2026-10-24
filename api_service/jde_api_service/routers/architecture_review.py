@@ -225,6 +225,16 @@ def _start_agents(background_tasks: BackgroundTasks, change_record_id: str, ctx:
                                   ctx.identity.display_name)
 
 
+def _require_ready(change_id: str, company_id: str) -> None:
+    """The same readiness rule as the screen (services/readiness.py)."""
+    from ..services import readiness
+
+    change = get_change_service().get_for_customer(change_id, company_id)
+    reason = readiness.refusal(change) if change is not None else None
+    if reason:
+        raise HTTPException(status_code=409, detail=reason)
+
+
 @router.post("/changes/{change_id}/approve-change", status_code=200)
 def approve_exact_change(
     change_id: str, payload: GovernanceDecisionInput, background_tasks: BackgroundTasks,
@@ -236,6 +246,7 @@ def approve_exact_change(
     and the caller holds a role that policy allows."""
     _require_queued_change(change_id, ctx.customer_id)
     record = _pending_change_record(change_id)
+    _require_ready(change_id, ctx.customer_id)
     try:
         # Authority comes from this company's approval policy and the
         # approver's roles on this company -- both from the session.
@@ -469,6 +480,7 @@ def confirm_resolved_without_change(
     from ..delivery import handoff
 
     change = _require_queued_change(change_id, ctx.customer_id)
+    _require_ready(change_id, ctx.customer_id)
     try:
         handoff.confirm_no_change(change, actor_name=ctx.identity.display_name, actor_user_id=ctx.identity.id,
                                   roles=set(ctx.roles), note=payload.note or "")

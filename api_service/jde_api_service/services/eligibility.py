@@ -73,6 +73,16 @@ def apply(change, lc: Lifecycle) -> Lifecycle:
         elif lc.next_action.action in ("provide_technical_evidence", "answer_issue", "rerun_solutioning") \
                 and lc.health == "blocked":
             blocked["start_technical_prepare"] = lc.next_action.summary
+    # Every approval surface follows the same readiness rule (services/readiness.py).
+    if lc.phase in ("solutioning", "solution_review"):
+        from . import readiness
+
+        reason = readiness.refusal(change, lc)
+        for action in readiness.APPROVAL_ACTIONS:
+            if reason:
+                blocked[action] = reason
+            else:
+                allowed.append(action)
     lc.allowed_actions = allowed
     lc.action_blockers = blocked
     return lc
