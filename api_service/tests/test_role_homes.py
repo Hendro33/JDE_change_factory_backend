@@ -48,7 +48,11 @@ def test_the_domain_owner_home_has_needs_you_and_your_requests(client):
     assert not ids_needs & {q["changeId"] for q in w["questions"]}
     assert w["yourRequests"] and all(c["id"] not in ids_needs for c in w["yourRequests"])
     new = [c for c in w["needsYou"] if c["lifecycle"]["nextAction"]["action"] == "start_analysis"]
-    assert w["attentionCount"] == len(w["needsYou"]) - len(new) + (1 if new else 0) + len(w["questions"])
+    # Repair brief P4: one item per story (its questions inside it), new requests as one.
+    stories = {c["id"] for c in w["needsYou"] if c not in new} | {q["changeId"] for q in w["questions"]}
+    assert w["attentionCount"] == len(stories) + (1 if new else 0)
+    assert w["areaCounts"]["business"] == len({q["changeId"] for q in w["questions"]} | {
+        c["id"] for c in w["needsYou"] if c["lifecycle"]["nextAction"]["owner"] == "domain_owner"})
     assert w["stuck"] == [] and w["perDomain"] == []   # AM sections are not the Domain Owner's
 
 

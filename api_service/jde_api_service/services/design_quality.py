@@ -52,7 +52,10 @@ _NEW_OBJECT_RE = re.compile(r"\b(new|custom)\s+(ube|report|program|application|b
 _DECISION_STEP_RE = re.compile(
     r"\b(decide|choose|determine (the )?(rate|threshold|mapping|value|percentage|amount)|"
     r"confirm (the )?(rate|threshold|mapping|percentage|amount|branch mapping)|"
-    r"approve (the )?(combined |overall |technical |functional )?design)\b", re.I)
+    r"approve (the )?(combined |overall |technical |functional )?design)\b"
+    # Repair brief P3: approving the design is the gate itself, however it is worded.
+    r"|\b(approv\w*|sign(?:ed)?[- ]?off|authoris\w*|authoriz\w*)\b[^.;]{0,40}\bdesign\b"
+    r"|\bdesign\b[^.;]{0,30}\b(approv\w*|sign(?:ed)?[- ]?off|authoris\w*|authoriz\w*)\b", re.I)
 _APPROVE_DESIGN_RE = re.compile(r"\bapprove (the )?(combined |overall |technical |functional )?design\b", re.I)
 _TECH_Q_RE = re.compile(
     r"\b(which (jd ?e(dwards)? )?(application|program|table|field|udc|code|value|version|report|data item|"

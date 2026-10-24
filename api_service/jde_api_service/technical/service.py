@@ -110,6 +110,20 @@ STOPPED_OUTCOMES = {
 }
 
 
+def missing_items(outcome: dict) -> list[str]:
+    """Repair brief P3: what is missing, one line each -- from the agent's structured list, else from a
+    numbered list in its explanation. Never the opening words of the report cut off mid-way."""
+    import re
+
+    listed = [m for m in (outcome.get("missing") or []) if str(m).strip()]
+    if listed:
+        return [str(m).strip() for m in listed]
+    text = outcome.get("explanation") or ""
+    parts = re.split(r"(?:^|\s)(?:\(?\d{1,2}[.)])\s+", text)
+    items = [p.strip().rstrip(";") for p in parts[1:] if len(p.strip()) > 3]
+    return [re.split(r"(?<=[.;])\s", i)[0].strip() for i in items][:10]
+
+
 def stopped_outcome(company_id: str, story_id: str) -> Optional[dict]:
     """The latest Technical Agent run, when it completed WITHOUT a package
     because it reported a blocking outcome -- and whether anything it could
@@ -148,7 +162,8 @@ def stopped_outcome(company_id: str, story_id: str) -> Optional[dict]:
     except Exception:  # noqa: BLE001
         pass
     return {"kind": kind, "label": STOPPED_OUTCOMES[kind], "explanation": out.get("explanation", ""),
-            "questions": out.get("questions") or [], "finished_at": finished, "run_id": last.get("run_id"),
+            "questions": out.get("questions") or [], "missing": missing_items(out),
+            "finished_at": finished, "run_id": last.get("run_id"),
             "changed": changed}
 
 

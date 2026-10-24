@@ -157,7 +157,20 @@ def build(changes: list, roles: Iterable[str], my_domains: frozenset[str], domai
 
     # New requests waiting for "Start analysis" count as one item, as every view groups them.
     new_requests = [c for c in mine if c.lifecycle.next_action.action == "start_analysis"]
-    attention = len(mine) - len(new_requests) + (1 if new_requests else 0) + len(questions)
+    # Repair brief P4: the unit of attention is the story and its next genuine decision; its individual
+    # questions stay inside it. Counted per area, so each role's section shows its own total.
+    def _area(owner: str) -> str:
+        return "business" if owner == "domain_owner" else "application"
+
+    units: dict[str, set[str]] = {"business": set(), "application": set()}
+    for c in mine:
+        if c.lifecycle.next_action.action != "start_analysis":
+            units[_area(c.lifecycle.next_action.owner)].add(c.id)
+    for q in questions:
+        units[_area(q.issue.owner)].add(q.change_id)
+    if new_requests:
+        units["application"].add("__new_requests__")
+    attention = len(units["business"] | units["application"])
     waits_mine = [d for d in (_days(c.lifecycle.since, now) for c in mine) if d is not None]
     waits_mine += [d for d in (_days(q.since, now) for q in questions) if d is not None]
     cutoff = (now - timedelta(days=31)).isoformat()
@@ -171,6 +184,7 @@ def build(changes: list, roles: Iterable[str], my_domains: frozenset[str], domai
         completed_this_month=[c for c in changes if c.lifecycle.phase == "done" and c.lifecycle.outcome != "rejected"
                               and (c.lifecycle.since or "") >= cutoff],
         attention_count=attention,
+        area_counts={k: len(v) for k, v in units.items()},
         figures=figures(changes, attention=attention, oldest_mine=max(waits_mine) if waits_mine else None),
         roles=sorted(roles),
     )

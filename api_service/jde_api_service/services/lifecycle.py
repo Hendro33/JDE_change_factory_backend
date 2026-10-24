@@ -465,8 +465,17 @@ def _stopped_technical(stopped: dict, steps: list, route: str) -> Lifecycle:
     package (audit 23 Oct, F02): blocked, with what is missing and who
     provides it. Starting again is offered only once something it needs has
     changed (technical/service.stopped_outcome)."""
-    first = (stopped["explanation"] or "").split(". ")[0].strip().rstrip(".")
+    # Repair brief P3: name the missing prerequisites (one line each), never the cut-off opening of the report.
+    missing = stopped.get("missing") or []
+    if missing:
+        first = missing[0].rstrip(".") + (f" (and {len(missing) - 1} more)" if len(missing) > 1 else "")
+    else:
+        import re as _re
+
+        sentences = [x.strip() for x in _re.split(r"(?<=[.!?])\s+(?=[A-Z])", stopped["explanation"] or "") if x.strip()]
+        first = sentences[0].rstrip(".") if sentences and len(sentences[0]) <= 220 else ""
     kind = stopped["kind"]
+    detail = missing or ([stopped["explanation"]] if stopped["explanation"] else [])
     if stopped["changed"] or kind == "inconclusive":
         why = (" since it stopped: " + ", ".join(stopped["changed"])) if stopped["changed"] else ""
         return _mk("delivery", "waiting", NextAction(
@@ -474,7 +483,7 @@ def _stopped_technical(stopped: dict, steps: list, route: str) -> Lifecycle:
                                  "start it again.",
             owner="product_manager", action="start_technical_prepare", tab="delivery",
             effect="JADE prepares the package with what is available now."), delivery_steps=steps, route=route,
-            open_items=[stopped["explanation"][:400]] if stopped["explanation"] else [])
+            open_items=detail)
     if kind == "blocked_missing_evidence":
         na = NextAction(kind="task", summary=f"{stopped['label']}: {first}." if first else stopped["label"] + ".",
                         owner="admin", owner_label="Administrator", action="provide_technical_evidence",
@@ -489,8 +498,7 @@ def _stopped_technical(stopped: dict, steps: list, route: str) -> Lifecycle:
         na = NextAction(kind="task", summary=f"{stopped['label']}: {first}. Route it to implementation by a person.",
                         owner="product_manager", owner_label="Application Manager", action="rerun_solutioning",
                         tab="solution", effect="Run the Architect again for a specification a developer implements.")
-    return _mk("delivery", "blocked", na, delivery_steps=steps, route=route,
-               open_items=[stopped["explanation"][:400]] if stopped["explanation"] else [])
+    return _mk("delivery", "blocked", na, delivery_steps=steps, route=route, open_items=detail)
 
 
 def _technical_route(change, company_id: str, story_id: str, design: dict, route: str) -> Lifecycle:

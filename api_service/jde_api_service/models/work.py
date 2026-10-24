@@ -70,6 +70,8 @@ class MyWork(ApiModel):
     completed_this_month: list[Change] = []
     # "Things need you": needs_you rows plus question rows.
     attention_count: int = 0
+    # Repair brief P4: stories needing each role area (business, application), as each section shows them.
+    area_counts: dict[str, int] = {}
     # The one figure strip (decision X1), the same everywhere.
     figures: list[Figure] = []
     roles: list[str] = []

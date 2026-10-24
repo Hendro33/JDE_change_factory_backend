@@ -274,10 +274,14 @@ class TechnicalAgentTools:
                                                               "person; nothing has been applied"}
 
     def report_outcome(self, kind: str, explanation: str, questions: list[str],
-                       document_citations: Optional[list] = None) -> dict[str, Any]:
+                       document_citations: Optional[list] = None, missing: Optional[list] = None) -> dict[str, Any]:
         if kind not in OUTCOME_KINDS:
             return {"recorded": False, "reason": f"kind must be one of {sorted(OUTCOME_KINDS)}"}
+        # Repair brief P3: each missing prerequisite as its own short line, so people see exactly what is
+        # needed instead of the opening of a long report. The explanation is kept in full.
+        missing_lines = [str(m.get("what") if isinstance(m, dict) else m).strip()[:300] for m in (missing or [])]
         self.outcome = {"kind": kind, "explanation": explanation[:3000], "questions": [q[:500] for q in questions][:20],
+                        "missing": [m for m in missing_lines if m][:20],
                         "document_citations": self._citations(document_citations)}
         self._event("report_outcome", kind)
         return {"recorded": True, **self.outcome}
@@ -352,14 +356,18 @@ class TechnicalAgentTools:
                 lambda a: _async(reply(self.submit(a)))),
             sdk.tool("report_outcome", "Report that no package can safely be prepared: kind clarification_required | "
                      "inconclusive | blocked_unsupported | blocked_missing_evidence, with the explanation and the "
-                     "questions a person must answer, and document_citations [{claim, source}] for anything resting "
+                     "questions a person must answer, missing: one short line per missing prerequisite (what is "
+                     "missing and who can provide it, e.g. 'The source of B5542001 -- upload it under Administration'), "
+                     "and document_citations [{claim, source}] for anything resting "
                      "on a document you read. This is a valid outcome, not a failure.",
                      {**obj, "properties": {"kind": {"type": "string"}, "explanation": {"type": "string"},
                                             "questions": {"type": "array", "items": {"type": "string"}},
+                                            "missing": {"type": "array", "items": {"type": "string"}},
                                             "document_citations": {"type": "array", "items": obj}},
                       "required": ["kind", "explanation"]})(
                 lambda a: _async(reply(self.report_outcome(a.get("kind", ""), a.get("explanation", ""),
-                                                           a.get("questions") or [], a.get("document_citations"))))),
+                                                           a.get("questions") or [], a.get("document_citations"),
+                                                           a.get("missing"))))),
             sdk.tool("get_package_status", "A package revision's approval, recorded milestones (apply, build, CNC, "
                      "verify), last build log and whether its next step may be recorded. Omit revision for the latest.",
                      {**obj, "properties": {"revision": {"type": "integer"}}})(

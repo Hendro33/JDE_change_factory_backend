@@ -257,8 +257,7 @@ def outcome(change, lc: Lifecycle, tech: dict, hs: dict, accepted: Optional[dict
         ec = change.exact_change
         ver = (ec.execution.verification if ec else None) or {}
         if ver:
-            verified.append(("Test passed" if ver.get("passed") else "Test failed")
-                            + (f" ({ver.get('source')})" if ver.get("source") else ""))
+            verified.append(_verified_line(ver))
             if ver.get("passed") is True and ec.execution.test_state == "completed":
                 dev = OutcomeStep(done=True, by=str(ver.get("by") or ""), at=_iso(ver.get("at")))
     changed += [f"{w.title} (by {w.completed_by or w.who})" for w in work
@@ -301,8 +300,7 @@ def outcome(change, lc: Lifecycle, tech: dict, hs: dict, accepted: Optional[dict
         todo = "Done. The change is handed over for release to production by CNC."
     result = change.architect_decision.result if change.architect_decision else None
     # The business result, not the proposed technical work (audit HW-005/F08).
-    headline = (result.business_summary if result and result.business_summary else
-                change.user_story.statement if change.user_story else change.title)
+    headline = _business_headline(result.business_summary if result else "", change)
     key, url = _jira(change)
     crit_state = ("verified in DEV with the change as a whole" + (f" ({dev.by})" if dev.by else "")) if dev.done else "not verified yet"
     criteria = [{"text": a.text, "state": crit_state, "verified": dev.done}
@@ -320,6 +318,39 @@ def outcome(change, lc: Lifecycle, tech: dict, hs: dict, accepted: Optional[dict
                        jira_failed=[f"{k}: {v['error']}" for k, v in wb["failed"].items()],
                        business_accepted=acc, released=rel, not_accepted=not_acc, what_to_do_now=todo,
                        jira_key=key, jira_url=url)
+
+
+def _verified_line(ver: dict) -> str:
+    """Repair brief P5: say who or what verified it -- JADE's own test in DEV, or a person's recorded test --
+    never implying automated verification where only a person recorded a result."""
+    result = "passed" if ver.get("passed") else "failed"
+    source = str(ver.get("source") or "")
+    if "orchestration" in source:
+        name = ver.get("orchestration") or "the approved test orchestration"
+        return f"Checked by JADE in DEV with {name}: {result}"
+    if "person" in source:
+        ref = ver.get("evidence_reference") or ""
+        return f"Test in DEV recorded by {ver.get('by') or 'a person'}: {result}" + (f" (evidence: {ref})" if ref else "")
+    return f"Test {result}" + (f" ({source})" if source else "")
+
+
+
+
+def _business_headline(summary: str, change) -> str:
+    """Repair brief P5: the outcome in business terms. A summary that only restates the technical setting
+    ("the requirement is met by setting it to 1") falls back to what the business asked for."""
+    import re
+
+    from .issues import _TECH_SENTENCE_RE
+
+    s = (summary or "").strip()
+    technical = bool(s) and (bool(_TECH_SENTENCE_RE.search(s)) or bool(re.search(
+        r"\b(requirement is met|by setting|set(ting)? (it|this|the (option|value|field))? ?to)\b", s, re.I)))
+    if s and not technical:
+        return s
+    if change.user_story and change.user_story.statement:
+        return change.user_story.statement
+    return change.title
 
 
 def settle_finished(work: list[WorkItem]) -> list[WorkItem]:

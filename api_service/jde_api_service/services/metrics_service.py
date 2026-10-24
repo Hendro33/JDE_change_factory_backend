@@ -184,8 +184,11 @@ class MetricsService:
         lifecycles = [c.lifecycle for c in all_changes if c.lifecycle is not None]
         phase_counts = [PipelineStage(stage=PHASE_LABELS[p], count=sum(1 for lc in lifecycles if lc.phase == p))
                         for p in PHASES]
-        health_counts = [PipelineStage(stage=label, count=sum(1 for lc in lifecycles if lc.health == h))
-                         for h, label in HEALTH_LABELS.items()]
+        # Repair brief P5: "health of open work" counts open work only -- delivered and closed stories are
+        # outcomes, shown with the phases, never as a health state of open work.
+        open_lcs = [lc for lc in lifecycles if lc.phase != "done"]
+        health_counts = [PipelineStage(stage=label, count=sum(1 for lc in open_lcs if lc.health == h))
+                         for h, label in HEALTH_LABELS.items() if h not in ("done", "closed")]
 
         return FactoryMetrics(
             phases=phase_counts,
