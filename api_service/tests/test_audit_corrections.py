@@ -342,3 +342,12 @@ def test_f07_a_story_finished_under_the_earlier_workflow_states_what_was_not_rec
     assert card["businessAccepted"]["done"] is False and "Nothing is asked" in card["whatToDoNow"]
     assert not lc["nextAction"]["action"]
     assert backlog._load("S-AUD-HIST")["state"] == "CLOSED"  # noqa: SLF001 -- reading changed nothing
+    # Repair brief P2: no impossible retrospective task -- the acceptance step says "not recorded", not "to do".
+    assert not [w for w in lc["workItems"] if w["state"] in ("todo", "in_progress", "blocked")], lc["workItems"]
+    from jde_api_service.models.delivery_view import WorkItem
+    from jde_api_service.services.work_items import settle_finished
+
+    settled = settle_finished([WorkItem(id="ACCEPT", title="Accept the outcome", owner_kind="business", who="Domain Owner",
+                                        state="todo", group="acceptance"),
+                               WorkItem(id="BUILD", title="Build", owner_kind="agent", who="JADE", state="done")])
+    assert [w.state for w in settled] == ["not_recorded", "done"]

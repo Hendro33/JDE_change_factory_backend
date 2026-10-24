@@ -322,6 +322,13 @@ def outcome(change, lc: Lifecycle, tech: dict, hs: dict, accepted: Optional[dict
                        jira_key=key, jira_url=url)
 
 
+def settle_finished(work: list[WorkItem]) -> list[WorkItem]:
+    """Repair brief P2: a finished story has no outstanding work. A step that was never recorded
+    (finished under an earlier workflow) says so; it is not a task nobody can do any more."""
+    return [w.model_copy(update={"state": "not_recorded", "detail": w.detail or "Not recorded when the story was finished."})
+            if w.state in ("todo", "in_progress", "blocked") else w for w in work]
+
+
 def apply(change, lc: Lifecycle) -> Lifecycle:
     """Attach work items and the outcome card; add open people's work to
     "What needs to happen"."""
@@ -344,6 +351,8 @@ def apply(change, lc: Lifecycle) -> Lifecycle:
     accepted = acceptance.current(change, tech)
     final = _final(change)
     lc.work_items = items(change, lc, tech, hs, accepted, final)
+    if lc.phase == "done":
+        lc.work_items = settle_finished(lc.work_items)
     lc.outcome_card = outcome(change, lc, tech, hs, accepted, final, lc.work_items)
     if lc.phase == "done" and lc.outcome == "delivered" and lc.outcome_card is not None:
         card = lc.outcome_card

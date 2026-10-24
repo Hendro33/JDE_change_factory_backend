@@ -21,7 +21,7 @@ from typing import Literal, Optional
 from .base import ApiModel
 
 WorkOwnerKind = Literal["agent", "person", "implementer", "cnc", "business", "release", "jade"]
-WorkState = Literal["todo", "in_progress", "done", "failed", "blocked", "not_needed"]
+WorkState = Literal["todo", "in_progress", "done", "failed", "blocked", "not_needed", "not_recorded"]
 
 
 class WorkItem(ApiModel):
