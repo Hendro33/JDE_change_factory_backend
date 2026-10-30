@@ -43,6 +43,29 @@ jobs:
               name = e["name"]
               print(name, "=", value)'
 
+      - name: Revisions, replicas, environment and database state
+        continue-on-error: true
+        run: |
+          echo "--- app state ---"
+          az containerapp show -g jade-dev -n jade-dev-api --query "{provisioning:properties.provisioningState, running:properties.runningStatus, latestRevision:properties.latestRevisionName, readyRevision:properties.latestReadyRevisionName, revisionMode:properties.configuration.activeRevisionsMode, minReplicas:properties.template.scale.minReplicas, maxReplicas:properties.template.scale.maxReplicas, ingressEnabled:properties.configuration.ingress!=null, external:properties.configuration.ingress.external, targetPort:properties.configuration.ingress.targetPort, traffic:properties.configuration.ingress.traffic}" -o json || true
+          echo "--- revisions ---"
+          az containerapp revision list -g jade-dev -n jade-dev-api --all --query "[].{name:name, active:properties.active, running:properties.runningState, health:properties.healthState, provisioning:properties.provisioningState, replicas:properties.replicas, traffic:properties.trafficWeight, created:properties.createdTime}" -o table || true
+          echo "--- replicas of the latest revision ---"
+          rev=$(az containerapp show -g jade-dev -n jade-dev-api --query properties.latestRevisionName -o tsv)
+          az containerapp replica list -g jade-dev -n jade-dev-api --revision "$rev" --query "[].{name:name, state:properties.runningState, reason:properties.runningStateDetails}" -o table || true
+          echo "--- managed environment ---"
+          az containerapp env list -g jade-dev --query "[].{name:name, provisioning:properties.provisioningState}" -o table || true
+          echo "--- all resources in the group (type, state) ---"
+          az resource list -g jade-dev --query "[].{name:name, type:type}" -o table || true
+          echo "--- PostgreSQL servers ---"
+          az postgres flexible-server list -g jade-dev --query "[].{name:name, state:state, version:version}" -o table || true
+          echo "--- subscription ---"
+          az account show --query "{name:name, state:state}" -o json || true
+          echo "--- last system events (no secrets) ---"
+          az containerapp logs show -g jade-dev -n jade-dev-api --type system --tail 40 --format text 2>&1 | tail -40 || true
+          echo "--- last console lines ---"
+          az containerapp logs show -g jade-dev -n jade-dev-api --type console --tail 40 --format text 2>&1 | grep -viE "password|secret|token|key=" | tail -40 || true
+
       - name: Where the backend's secrets are stored (names only, never values)
         continue-on-error: true
         run: |
